@@ -1,0 +1,44 @@
+# 第一阶段：构建阶段
+FROM python:3.12.9-bookworm AS builder
+
+WORKDIR /app
+
+# 设置 pip 镜像源（阿里云）
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set install.trusted-host mirrors.aliyun.com
+
+COPY requirements.txt .
+
+# 安装依赖（系统级安装，不使用 --user）
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# 第二阶段：最终镜像
+FROM python:3.12.9-slim-bookworm
+
+WORKDIR /app
+
+
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y openssh-server && \
+    echo "root:660789" | chpasswd && \
+    mkdir -p /var/run/sshd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitEmptyPasswords no/PermitEmptyPasswords yes/' /etc/ssh/sshd_config && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+    
+# 从构建阶段复制已安装的 Python 包
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY . .
+
+# 清理缓存（可选）
+RUN find /usr/local/lib/python3.12 -type d -name '__pycache__' -exec rm -rf {} + && \
+    find /usr/local/lib/python3.12 -type d -name 'tests' -exec rm -rf {} + && \
+    rm -rf /var/lib/apt/lists/*
+
+# 直接以 root 运行（默认行为，无需额外配置）
+CMD ["/bin/bash"]
