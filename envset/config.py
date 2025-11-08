@@ -1,29 +1,9 @@
-from pydantic import BaseModel, ValidationError
 import yaml
 from logger import get_logger
+from pydantic import ValidationError
+from models.config_models import Config
 
 logger = get_logger("main.settings")
-
-
-class ServerSettings(BaseModel):
-    name: str
-    port: int
-    host: str
-    log_level: str
-    log_dir: str
-
-
-# Database settings
-class DatabaseSettings(BaseModel):
-    name: str
-    path: str
-    thread: bool
-
-
-# main model
-class Config(BaseModel):
-    server: ServerSettings
-    database: DatabaseSettings
 
 
 class ConfigCreate:
@@ -37,7 +17,8 @@ class ConfigCreate:
         try:
             with open("config.yaml", "r") as file:
                 self.config = Config(**yaml.safe_load(file))
-                logger.info(f"config data has read in \n" + '\n'.join(f"{k}: {v}" for k, v in self.config))
+                logger.info(f"config data has read in \n" +
+                            '\n'.join(f"{k}: {v}" for k, v in self.config))
 
         except ValidationError as e:
             logger.error(e)

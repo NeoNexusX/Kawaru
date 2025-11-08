@@ -11,7 +11,7 @@ from starlette import status
 from logger import get_logger
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
 
-logger = get_logger("main.email-api")
+logger = get_logger("api.email-api")
 
 email_send_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
@@ -29,6 +29,7 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
         {**email_info.model_dump(),
          "text_content": f"Welcome\r\n Your code is {code}"}
     )
+
     logger.info(f"Request data: {request_data}")
     async with httpx.AsyncClient() as client:
         try:
@@ -48,12 +49,13 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
         except httpx.HTTPStatusError as e:
             logger.error(e)
             raise HTTPException(
-                status_code=e.response.status_code,
-                detail=e.response.text
-            )
+                status_code=502,
+                detail="Upstream service error"
+            ) from e
+
         except Exception as e:
             logger.error(e)
-            raise email_send_exception
+            raise email_send_exception from e
 
 
 async def send_smtp_email(email_info: EmailConfirmResponseBase):
@@ -99,20 +101,21 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
                 server.send_message(msg)
             return request_data
 
-    except smtplib.SMTPException as e:
+    except smtplib.SMTPResponseException as e:
         if 'qq.com' in request_data.last_smtp_from_email and e.smtp_code == -1:
             logger.error(f"SMTP error: {str(e)}")
             logger.warning("SMTP server returned non-standard response during QUIT.")
             return request_data
         logger.error(f"SMTP error: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"SMTP server error: {str(e)}"
-        )
+        ) from e
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        raise email_send_exception
+        raise email_send_exception from e
 
 EmailConfirmSMTPDep = Annotated[EmailConfirmResponseBase, Depends(send_smtp_email)]
 EmailConfirmDep = Annotated[EmailConfirmResponseBase, Depends(send_mailgun_message)]

@@ -6,8 +6,16 @@ from colorama import init, Fore, Back, Style
 
 init(autoreset=True)  # 自动重置颜色
 
+# 日志级别映射
+LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL
+}
 
-# 新增部分：自定义带颜色的 Formatter
+
 class ColorFormatter(logging.Formatter):
     """带颜色的日志格式化器（仅对控制台生效）"""
 
@@ -22,20 +30,19 @@ class ColorFormatter(logging.Formatter):
 
     def format(self, record):
         original_message = super().format(record)
+        levelname_fixed = f"{record.levelname + ':':<10.10}"
         # get color
         color = self.LEVEL_COLORS.get(record.levelno, Fore.RESET)
         # replace [LEVEL] with color
-        colored_level = (
-            f"{color}{record.levelname}{Fore.RESET}"
-        )
+        colored_level = f"{color}{levelname_fixed}{Fore.RESET}"
         formatted_record = original_message.replace(f"{record.levelname}", colored_level)
 
         # multilines helper
         if '\n' in record.message:
             # calculate prefix length
             first_line = formatted_record.split('\n')[0]
-            # len(f"{color}{Fore.RESET}") == 10
-            prefix_length = len(first_line) - len(record.message.split('\n')[0]) - 10
+            # (len(colored_level)-len(levelname_fixed)) = 10
+            prefix_length = len(first_line) - len(record.message.split('\n')[0])-10
             # split into sever lines
             lines = record.message.split('\n')
             # add first line
@@ -52,14 +59,32 @@ class ColorFormatter(logging.Formatter):
         return formatted_record
 
 
-# 日志级别映射
-LOG_LEVELS = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
-    "critical": logging.CRITICAL
-}
+class FileFormatter(logging.Formatter):
+
+    def format(self, record):
+        original_message = super().format(record)
+        levelname_fixed = f"{record.levelname + ':':<10.10}"
+        formatted_record = original_message.replace(f"{record.levelname}", levelname_fixed)
+
+        # multilines helper
+        if '\n' in record.message:
+            # calculate prefix length
+            first_line = formatted_record.split('\n')[0]
+            prefix_length = len(first_line) - len(record.message.split('\n')[0])
+            # split into sever lines
+            lines = record.message.split('\n')
+            # add first line
+            formatted_lines = [first_line]
+
+            # add prefix
+            for line in lines[1:]:
+                aligned_prefix = ' ' * prefix_length
+                formatted_lines.append(f"{aligned_prefix}{line}")
+
+            # rebuild lines
+            formatted_record = '\n'.join(formatted_lines)
+
+        return formatted_record
 
 
 class LoggerManager:
@@ -106,11 +131,11 @@ class LoggerManager:
         # add console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(self.log_level)
-        formatter = logging.Formatter(
-            '%(levelname)s: %(asctime)s %(lineno)d  %(name)s - %(message)s'
+        formatter = FileFormatter(
+            '%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s'
         )
         console_formatter = ColorFormatter(  # console Formatter for colors
-            '%(levelname)s:     %(asctime)s %(lineno)d %(name)s - %(message)s',
+            '%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s',
             datefmt='%y-%m-%d %H:%M'
         )
         console_handler.setFormatter(console_formatter)
@@ -126,17 +151,6 @@ class LoggerManager:
         file_handler.setLevel(self.log_level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
-
-        # add error file logger
-        error_file_path = os.path.join(self.log_dir, "error.log")
-        error_file_handler = RotatingFileHandler(
-            error_file_path,
-            maxBytes=self.max_bytes,
-            backupCount=self.backup_count
-        )
-        error_file_handler.setLevel(logging.ERROR)
-        error_file_handler.setFormatter(formatter)
-        root_logger.addHandler(error_file_handler)
 
     def get_logger(self, name) -> logging.Logger:
         """get or create specify logger"""

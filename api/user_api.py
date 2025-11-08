@@ -1,19 +1,20 @@
 #########################
 # API
 #########################
+import random
 from datetime import timedelta
 from typing import Annotated
-
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select
 from starlette import status
-
 from api.auth_api import credentials_exception, create_access_token, hashed_password, \
     verify_password, token_invalid_exception, token_expired_exception
-from database.db import SessionDep
+from database.db import SessionDep, get_session
+from envset.config import get_config
+
 from logger import get_logger
 from models.auth import ACCESS_TOKEN_EXPIRE_MINUTES, Token, oauth2_scheme, SECRET_KEY, ALGORITHM, TokenData
 from models.email_models import TOTP
@@ -28,19 +29,23 @@ user_already_exists_exception = HTTPException(
 
 user_not_exists_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,  # 409 Conflict
-    detail="Username not exists",  # 明确提示用户已存在
+    detail="Username not exists",  # 明确提示用户不存在
 )
 
 user_not_active_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,  # 409 Conflict
-    detail="Username not  activate",  # 明确提示用户已存在
+    detail="Username not  activate",  # 明确提示用户没激活
 )
 
 user_verification_bad = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,  # 409 Conflict
-    detail="verification code is wrong",  # 明确提示用户已存在
+    detail="verification code is wrong",  # 明确提示用户验证失败
 )
 
+user_name_bad = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,  # 401 Unauthorized
+    detail="user is unauthorized",  # 明确提示操作用户不一致
+)
 
 # 获取用户基础函数
 async def get_user(username: str, db: SessionDep):
@@ -107,6 +112,7 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: 
 
     except Exception as e:
         logger.error(e)
+        # 此处可以添加自定义异常处理
         raise
 
 
@@ -131,6 +137,8 @@ async def create_user(user: UserCreate, session: SessionDep):
 
 async def update_user(user: UserUpdate, user_past: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
     user_data = user.model_dump(exclude_unset=True)
+    if user_past.username != user.username:
+        raise user_name_bad
     user_past.sqlmodel_update(user_data)
     session.add(user_past)
     session.commit()
@@ -143,6 +151,31 @@ async def del_user(user: Annotated[UserInDB, Depends(token_authen)], session: Se
     session.commit()
     return user
 
+
+async def create_admin_user():
+    config = get_config()
+    random_serc = str(random.randint(10 ** 7, 10 ** 8 - 1))
+    user = UserInDB(username=config.server.name,
+                    identity="admin",
+                    active=True,
+                    password=random_serc,
+                    hashed_password=hashed_password(random_serc),
+                    email=config.server.admin_email)
+    session = next(get_session())
+    user_past = await has_admin_user(session, user.username)
+    if not user_past:
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        logger.info(f"create admin user {user.username}, password {random_serc}")
+    else:
+        logger.warning(f"cannot create user,user already exists, username:{user.username}, password:{user_past.password}")
+
+
+async def has_admin_user(session, username: str) -> UserInDB | None:
+    statement = select(UserInDB).where((UserInDB.identity == "admin") & (UserInDB.username == username))
+    result = session.exec(statement).first()
+    return result
 
 UserDep = Annotated[UserInDB, Depends(get_activate_user)]
 UserLoginDep = Annotated[Token, Depends(login)]

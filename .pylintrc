@@ -1,0 +1,6 @@
+[FORMAT]
+max-line-length=130
+
+[MESSAGES CONTROL]
+# Skip missing docstring for functions/methods
+disable=missing-module-docstring
