@@ -1,7 +1,8 @@
+#负责从 config.yaml 文件读取配置，并使用 Pydantic 模型进行数据验证
 import yaml
 from logger import get_logger
 from pydantic import ValidationError
-from models.config_models import Config
+from models.config_models import Config  #在models.config_models中导入了config函数，是基于Pydantic库的数据验证正确
 
 logger = get_logger("main.settings")
 

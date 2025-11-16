@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
-from api.user_api import UserLoginDep, token_authen, UserCreateDep, UserUpdateDep, UserDeleDep, create_admin_user
+from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep, create_admin_user
 from database.db import create_db_and_tables
 from envset.config import get_config
 from envset.envset import EnvSet
@@ -64,6 +64,9 @@ async def get_current_usr(user: Annotated[UserInDB, Depends(token_authen)]):
 async def create_user(user: UserCreateDep):
     return user
 
+@app.post("/admin_signup", response_model=UserPublic)#新增管理员用户接口
+async def create_admin_user_endpoint(user: AdminCreateDep):
+    return user
 
 @app.post("/user_change", response_model=UserPublic)
 async def update_user(user: UserUpdateDep):

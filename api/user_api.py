@@ -46,6 +46,10 @@ user_name_bad = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,  # 401 Unauthorized
     detail="user is unauthorized",  # 明确提示操作用户不一致
 )
+identity_not_allowed_exception = HTTPException(#异常定义，identity设为none，不允许传入
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail="Identity field must be None, it will be set by the API endpoint",
+)
 
 # 获取用户基础函数
 async def get_user(username: str, db: SessionDep):
@@ -117,12 +121,18 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: 
 
 
 async def create_user(user: UserCreate, session: SessionDep):
+    # 1. 验证identity必须为None或空字符串（前端可能传空字符串）
+    if user.identity is not None and user.identity != "":
+        raise identity_not_allowed_exception
     if TOTP.verify(user.verify_code, valid_window=30):
 
         user_past = await get_user(user.username, session)
 
         if not user_past:
-            user = UserInDB(**user.model_dump(), hashed_password=hashed_password(user.password))
+            user_data = user.model_dump(exclude={'password'})#排除password这个参数
+            user_data['identity']="user" #由API设置为普通用户
+            user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
+            #user = UserInDB(**user.model_dump(), hashed_password=hashed_password(user.password))#user.model_dump包含password字段，但是我在UserInDB函数中已经删除，会报错，所以我用以上方法排除了password字段
             session.add(user)
             session.commit()
             session.refresh(user)
@@ -134,17 +144,57 @@ async def create_user(user: UserCreate, session: SessionDep):
     else:
         raise user_verification_bad
 
+#创建管理员用户的API函数，需要当前用户是管理员才能调用
+async def create_admin_user_api(user: UserCreate, current_admin: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
+
+    #  验证当前用户是管理员
+    if current_admin.identity != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can create admin accounts",
+        )
+    
+    #  验证identity必须为null或""（前端可能传空字符串）
+    if user.identity is not None and user.identity != "":
+        raise identity_not_allowed_exception
+    
+    #  TOTP验证
+    if TOTP.verify(user.verify_code, valid_window=30):
+        user_past = await get_user(user.username, session)
+        
+        if not user_past:
+            # 排除password，显式设置identity为"admin"
+            user_data = user.model_dump(exclude={'password'})
+            user_data['identity'] = "admin"  # 由API设置身份为管理员
+            user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            logger.info(f"Admin user {current_admin.username} created new admin user {user.username}")
+            return user
+        else:
+            raise user_already_exists_exception
+    else:
+        raise user_verification_bad
 
 async def update_user(user: UserUpdate, user_past: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
     user_data = user.model_dump(exclude_unset=True)
     if user_past.username != user.username:
         raise user_name_bad
+    
+    ###后面添加
+    # 处理密码更新：如果提供了新密码，需要hash后更新hashed_password
+    if 'password' in user_data and user_data['password'] is not None:
+        # 将明文密码hash后存储到hashed_password字段
+        user_past.hashed_password = hashed_password(user_data['password'])
+        # 从user_data中移除password，因为UserInDB没有这个字段
+        user_data.pop('password')###后面添加
+    
     user_past.sqlmodel_update(user_data)
     session.add(user_past)
     session.commit()
     session.refresh(user_past)
     return user
-
 
 async def del_user(user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
     session.delete(user)
@@ -152,13 +202,13 @@ async def del_user(user: Annotated[UserInDB, Depends(token_authen)], session: Se
     return user
 
 
-async def create_admin_user():
+async def create_admin_user():#此函数只是服务器启动时调用一次创建一个管理员账户，然后其他的没啥用了
     config = get_config()
     random_serc = str(random.randint(10 ** 7, 10 ** 8 - 1))
     user = UserInDB(username=config.server.name,
                     identity="admin",
                     active=True,
-                    password=random_serc,
+                    #password=random_serc,  此处不要password字段
                     hashed_password=hashed_password(random_serc),
                     email=config.server.admin_email)
     session = next(get_session())
@@ -169,7 +219,7 @@ async def create_admin_user():
         session.refresh(user)
         logger.info(f"create admin user {user.username}, password {random_serc}")
     else:
-        logger.warning(f"cannot create user,user already exists, username:{user.username}, password:{user_past.password}")
+        logger.warning(f"cannot create user,user already exists, username:{user.username}") # password:{user_past.password} 此处做了修改，以后每次启动只会输出用户名
 
 
 async def has_admin_user(session, username: str) -> UserInDB | None:
@@ -180,6 +230,7 @@ async def has_admin_user(session, username: str) -> UserInDB | None:
 UserDep = Annotated[UserInDB, Depends(get_activate_user)]
 UserLoginDep = Annotated[Token, Depends(login)]
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]
+AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增（管理员用户）
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]
 UserDeleDep = Annotated[UserPublic, Depends(del_user)]
 TokenDep = Annotated[UserInDB, Depends(token_authen)]
