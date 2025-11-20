@@ -1,3 +1,5 @@
+from sqlalchemy import Column
+from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
 from logger import get_logger
 
@@ -14,23 +16,15 @@ class UserBase(SQLModel):
 class UserInDB(UserBase, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     email: str = Field()
-                            #此处做了修改，删掉了password这个字段
     hashed_password: str = Field()
-    # token: str = Field(default=None)
+    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
 
 
 class UserPublic(UserBase):
     email: str
 
 
-# class UserCreate(UserBase):
-#     email: str
-#     password: str
-#     verify_code: str
-
-class UserCreate(SQLModel):#没有继承UserBaase,自己定义字段，将identity定义为None
-    username: str = Field()
-    active: bool = Field(default=True)
+class UserCreate(UserBase):
     email: str
     password: str
     verify_code: str

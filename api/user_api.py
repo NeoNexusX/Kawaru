@@ -51,8 +51,13 @@ identity_not_allowed_exception = HTTPException(#异常定义，identity设为non
     detail="Identity field must be None, it will be set by the API endpoint",
 )
 
+admin_create_not_allowed_exception = HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can create admin accounts",
+        )
 # 获取用户基础函数
 async def get_user(username: str, db: SessionDep):
+    """通过 Session 查询指定用户名的用户（可返回未激活用户）"""
     # 通过 Session 查询用户
     statement = select(UserInDB).where(UserInDB.username == username)
     return db.exec(statement).first()
@@ -60,6 +65,7 @@ async def get_user(username: str, db: SessionDep):
 
 # 检查用户是否激活的函数
 async def get_activate_user(username: str, db: SessionDep) -> UserInDB:
+    """获取已激活用户，不存在或未激活都会抛出异常"""
     user = await get_user(username, db)
     if not user:
         raise user_not_exists_exception
@@ -72,6 +78,7 @@ async def get_activate_user(username: str, db: SessionDep) -> UserInDB:
 # token api for user
 #########################
 async def authenticate_user(username: str, password: str, db: SessionDep):
+    """校验用户名/密码并返回用户对象，失败返回 False"""
     user = await get_activate_user(username, db)
     if not verify_password(password, user.hashed_password):
         return False
@@ -79,6 +86,7 @@ async def authenticate_user(username: str, password: str, db: SessionDep):
 
 
 async def get_authenticated_user(username: str, password: str, db: SessionDep):
+    """包装 authenticate_user，失败时抛出统一凭证异常"""
     user = await authenticate_user(username, password, db)
     if not user:
         raise credentials_exception
@@ -86,6 +94,7 @@ async def get_authenticated_user(username: str, password: str, db: SessionDep):
 
 
 async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], db: SessionDep):
+    """解析并校验 JWT Token，返回当前登录用户"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
@@ -105,6 +114,7 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], db: Sessio
 
 
 async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: SessionDep) -> Token:
+    """用户登录，返回 access token"""
     try:
         user = await get_authenticated_user(form_data.username, form_data.password, db)
         if not user:
@@ -121,18 +131,18 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: 
 
 
 async def create_user(user: UserCreate, session: SessionDep):
-    # 1. 验证identity必须为None或空字符串（前端可能传空字符串）
-    if user.identity is not None and user.identity != "":
+    """注册普通用户，自动校验验证码并设置默认身份"""
+    # 1. 验证identity必须为None或空字符串（包括仅空白字符）
+    if user.identity and user.identity.strip():
         raise identity_not_allowed_exception
     if TOTP.verify(user.verify_code, valid_window=30):
 
         user_past = await get_user(user.username, session)
 
         if not user_past:
-            user_data = user.model_dump(exclude={'password'})#排除password这个参数
+            user_data = user.model_dump(exclude={'password'})
             user_data['identity']="user" #由API设置为普通用户
             user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
-            #user = UserInDB(**user.model_dump(), hashed_password=hashed_password(user.password))#user.model_dump包含password字段，但是我在UserInDB函数中已经删除，会报错，所以我用以上方法排除了password字段
             session.add(user)
             session.commit()
             session.refresh(user)
@@ -146,16 +156,14 @@ async def create_user(user: UserCreate, session: SessionDep):
 
 #创建管理员用户的API函数，需要当前用户是管理员才能调用
 async def create_admin_user_api(user: UserCreate, current_admin: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
+    """管理员接口：创建新的管理员账号"""
 
     #  验证当前用户是管理员
     if current_admin.identity != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admin users can create admin accounts",
-        )
+        raise admin_create_not_allowed_exception 
     
-    #  验证identity必须为null或""（前端可能传空字符串）
-    if user.identity is not None and user.identity != "":
+    #  验证identity必须为None或空字符串（包括仅空白字符）
+    if user.identity and user.identity.strip():
         raise identity_not_allowed_exception
     
     #  TOTP验证
@@ -178,17 +186,15 @@ async def create_admin_user_api(user: UserCreate, current_admin: Annotated[UserI
         raise user_verification_bad
 
 async def update_user(user: UserUpdate, user_past: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
+    """更新当前用户信息，支持可选字段及密码变更"""
     user_data = user.model_dump(exclude_unset=True)
     if user_past.username != user.username:
         raise user_name_bad
     
-    ###后面添加
     # 处理密码更新：如果提供了新密码，需要hash后更新hashed_password
     if 'password' in user_data and user_data['password'] is not None:
-        # 将明文密码hash后存储到hashed_password字段
         user_past.hashed_password = hashed_password(user_data['password'])
-        # 从user_data中移除password，因为UserInDB没有这个字段
-        user_data.pop('password')###后面添加
+        user_data.pop('password')
     
     user_past.sqlmodel_update(user_data)
     session.add(user_past)
@@ -197,18 +203,19 @@ async def update_user(user: UserUpdate, user_past: Annotated[UserInDB, Depends(t
     return user
 
 async def del_user(user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
+    """删除当前登录用户"""
     session.delete(user)
     session.commit()
     return user
 
 
 async def create_admin_user():#此函数只是服务器启动时调用一次创建一个管理员账户，然后其他的没啥用了
+    """应用启动时检查并创建初始管理员用户"""
     config = get_config()
     random_serc = str(random.randint(10 ** 7, 10 ** 8 - 1))
     user = UserInDB(username=config.server.name,
                     identity="admin",
                     active=True,
-                    #password=random_serc,  此处不要password字段
                     hashed_password=hashed_password(random_serc),
                     email=config.server.admin_email)
     session = next(get_session())
@@ -219,10 +226,11 @@ async def create_admin_user():#此函数只是服务器启动时调用一次创�
         session.refresh(user)
         logger.info(f"create admin user {user.username}, password {random_serc}")
     else:
-        logger.warning(f"cannot create user,user already exists, username:{user.username}") # password:{user_past.password} 此处做了修改，以后每次启动只会输出用户名
+        logger.warning(f"cannot create user,user already exists, username:{user.username}") 
 
 
 async def has_admin_user(session, username: str) -> UserInDB | None:
+    """检查指定用户名的管理员是否已存在"""
     statement = select(UserInDB).where((UserInDB.identity == "admin") & (UserInDB.username == username))
     result = session.exec(statement).first()
     return result
