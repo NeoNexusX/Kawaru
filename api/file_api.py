@@ -13,6 +13,7 @@ from sqlmodel import select
 from starlette import status
 
 from api.user_api import token_authen
+from envset.config import get_config
 from database.db import SessionDep
 from logger import get_logger
 from models.file_models import FileDownload, FileInDB, FilePublic
@@ -91,22 +92,16 @@ file_type_not_allowed_exception = HTTPException(
     detail="file type is not allowed",
 )
 
-# 基础存储配置
-STORAGE_ROOT = Path("storage")          # 所有文件相关目录的根路径
-LOCAL_STORAGE_ROOT = STORAGE_ROOT / "local"  # 默认存储类型对应的最终文件目录
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 支持的最大文件大小（这里是 2GB，可按需求调整）
-ALLOWED_STORAGE_TYPES = {"local"}       # 当前允许的存储类型集合，后续可扩展 distributed 等
-CHUNK_BUFFER_SIZE = 1024 * 1024         # 上传读写缓冲区大小（1MB）
-ALLOWED_FILE_TYPES = {                  # 允许的文件扩展名集合 这里稍微多了一点，后续可适当删掉一点
-    "jpg", "jpeg", "png", "gif", "bmp", "webp",  # 图片
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",  # 文档
-    "txt", "csv", "json", "xml", "yaml", "yml",  # 文本
-    "zip", "rar", "7z", "tar", "gz",  # 压缩包
-    "mp4", "avi", "mov", "wmv", "flv",  # 视频
-    "mp3", "wav", "flac", "aac",  # 音频
-    "imzml","ibd", # 质谱数据
-}
-MAX_FILENAME_LENGTH = 255  # 最大文件名长度
+# 基础存储配置来自 config
+storage_config = get_config().storage
+
+STORAGE_ROOT = Path(storage_config.root)
+LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
+MAX_FILE_SIZE = storage_config.max_file_size
+ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
+CHUNK_BUFFER_SIZE = storage_config.chunk_buffer_size
+ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
+MAX_FILENAME_LENGTH = storage_config.max_filename_length
 
 
 def ensure_storage_dirs():
