@@ -1,0 +1,21 @@
+server:
+  name: bionet
+  port: 8000
+  host: 0.0.0.0
+  log_level: debug
+  log_dir: logs
+  admin_email: examplr@example.com
+
+database:
+  name: bionet
+  path: database/
+  thread : False
+
+storage:
+  root: ./
+  local_root: data/
+  max_file_size: 2000000000
+  chunk_buffer_size: 1024
+  allowed_storage_types: ["local"]
+  allowed_file_types: ["imzML","ibd"]
+  max_filename_length: 100

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 
 class ServerSettings(BaseModel):
