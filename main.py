@@ -14,7 +14,7 @@ from logger import get_logger
 from models.auth import Token
 from models.email_models import EmailConfirmRequest
 from models.user_models import UserInDB, UserPublic
-from models.file_models import FileInDB, FilePublic
+from models.file_models import FilePublic
 
 
 @asynccontextmanager

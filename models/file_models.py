@@ -14,6 +14,7 @@ def now_local_timezone() -> datetime:
     """返回东八区本地时间（无时区信息，便于 SQLite 存储）"""
     return datetime.now(timezone.utc) + LOCAL_TIME_OFFSET
 
+# TODO：三个应该有继承关系的模型，不应该是独立的
 
 class FileInDB(SQLModel, table=True):
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})#文件编号（自增主键）

@@ -7,9 +7,8 @@ import asyncio#高并发IO操作
 import hashlib#提供hash算法 用于数据加密和校验
 from pathlib import Path#提供面向对象的文件系统路径操作
 from typing import Annotated, List
-
+from sqlmodel import col,select
 from fastapi import Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import select
 from starlette import status
 
 from api.user_api import token_authen
@@ -98,7 +97,7 @@ storage_config = get_config().storage
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 MAX_FILE_SIZE = storage_config.max_file_size
-ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
+ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types) 
 CHUNK_BUFFER_SIZE = storage_config.chunk_buffer_size
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
 MAX_FILENAME_LENGTH = storage_config.max_filename_length
@@ -114,17 +113,17 @@ def validate_filename(filename: str):
     """校验文件名安全性"""
     if not filename or not filename.strip():
         raise filename_invalid_exception
-    
+
     # 检查文件名长度
     if len(filename) > MAX_FILENAME_LENGTH:
         raise filename_invalid_exception
-    
+
     # 检查路径遍历攻击（../, ..\, /, \）
     unsafe_patterns = ["../", "..\\", "/", "\\", ".."]
     for pattern in unsafe_patterns:
         if pattern in filename:
             raise filename_invalid_exception
-    
+
     # 检查危险字符
     dangerous_chars = ['<', '>', ':', '"', '|', '?', '*', '\x00']
     for char in dangerous_chars:
@@ -136,13 +135,13 @@ def validate_file_type(filename: str):
     """校验文件类型"""
     if not filename:
         raise file_type_not_allowed_exception
-    
+
     # 提取文件扩展名
     file_ext = Path(filename).suffix.lstrip('.').lower()
-    
+
     if not file_ext:
         raise file_type_not_allowed_exception
-    
+
     if file_ext not in ALLOWED_FILE_TYPES:
         raise file_type_not_allowed_exception
 
@@ -203,22 +202,32 @@ def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> tuple[str, int]:
     """
     将 UploadFile 保存到指定路径，并返回 (sha256, size)
+    # md5 ? 功能和性能，
     """
+    # 后端接收到数据 --> 缓冲区，安全区里面[内存临时区，本地磁盘空间里面] -->没问题之后才写入对应的文件系统里面
+    #TODO：单位不确定，更新参数单位
     sha256 = hashlib.sha256()
     size = 0
-    with destination.open("wb") as buffer:#计算这个文件的hash和大小 
+    with destination.open("wb") as buffer:#计算这个文件的hash和大小
+        #存疑？
         while True:
+            #TODO：同步和异步混用？aiofiles
             chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
             if not chunk:
                 break
+            # 异步里面所有操作 都应该是异步
             buffer.write(chunk)
             sha256.update(chunk)
             size += len(chunk)
+            #设计目标是：不符合要求的文件不要写到存储系统里面。
     await upload_file.close()
     return sha256.hexdigest(), size
 
 
 async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
+    # TODO：没做异常捕获等，如果文件不存在了，或者文件不属于这个用户了，都会抛出异常。
+    #后端分布式存储，是一个不保证的系统。
+    #先判断文件是否存在？判断不是一次就结束，try catch 作处理。要把异常先捕获处理完抛出
     """根据 file_id 获取文件记录，若不存在抛出 404"""
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
     file_record = session.exec(statement).first()
@@ -230,12 +239,15 @@ async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
 
 async def assert_file_owner(file_record: FileInDB, current_user: UserInDB):
     """校验文件归属"""
+
+    #TODO：添加一个特权可以下载所有文件
+    # 如果是管理员用户，可以下载所有文件
     if file_record.owner_id != current_user.id:
         logger.warning("permission denied user=%s file_id=%s owner=%s",
                        current_user.id, file_record.file_id, file_record.owner_id)
         raise permission_denied_exception#没有权限，只能删除自己的文件
 
-
+#TODO：还会残留一个文件夹，需要删除
 async def delete_local_file(path: str):
     """删除本地文件，忽略不存在情况"""
     file_path = Path(path)
@@ -270,20 +282,22 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     ensure_storage_dirs()
     logger.info("simple upload start user=%s filename=%s storage=%s",
                 current_user.id, file.filename, storage_type)
-    
+
     # 基础校验：
     if storage_type not in ALLOWED_STORAGE_TYPES:
         raise storage_type_not_allowed_exception#存储类型不在允许列表异常
 
     if storage_type != "local":
         raise storage_type_not_supported_exception#存储类型尚未实现异常
-    
+
     # 文件安全校验
     if not file.filename:
         raise filename_invalid_exception
     validate_filename(file.filename)
     validate_file_type(file.filename)
     final_path = prepare_local_storage_path(current_user.id, file.filename)
+
+    #TODO：是不是应该直接在循环里面判断文件大小？不然如果文件过大了，已经写了一部分了
     hash_sha256, size = await save_upload_file(file, final_path)
     if size > MAX_FILE_SIZE:
         final_path.unlink(missing_ok=True)
@@ -316,13 +330,15 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
     """
     if not current_user.file_ids:
         return []
-    statement = select(FileInDB).where(FileInDB.file_id.in_(current_user.file_ids))
+    #user的存储属性上限制，一个user只能上传20个文件，文件没有重复的
+    #文件名 and hash/md5 都要满足要求
+    #每一个用户有一个限制字段，记录上文件数量和总大小
+    #TODO：主动数量限制没做，可以是文件总大小，或者总数量。
+    statement = select(FileInDB).where(col(FileInDB.file_id).in_(current_user.file_ids))
     results = session.exec(statement).all()
     files = [to_file_public(record) for record in results]
     logger.debug("list user files user=%s count=%s", current_user.id, len(files))
     return files
-
-
 
 
 #主删除函数

@@ -16,6 +16,7 @@ class ConfigCreate:
 
     def read(self):
         try:
+            #TODO:没有检查目标的config是否存在，需要读取完成之后检查一下。
             with open("config.yaml", "r") as file:
                 self.config = Config(**yaml.safe_load(file))
                 logger.info(f"config data has read in \n" +
@@ -30,7 +31,6 @@ class ConfigCreate:
         if self.config is None:
             logger.error("config file not found")
         return self.config
-
 
 CONFIG = ConfigCreate()
 
