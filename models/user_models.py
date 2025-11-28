@@ -18,6 +18,8 @@ class UserInDB(UserBase, table=True):
     email: str = Field()
     hashed_password: str = Field()
     file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
+    file_count: int = Field(default=0)
+    total_file_size: int = Field(default=0)
 
 
 class UserPublic(UserBase):

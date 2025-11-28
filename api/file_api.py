@@ -7,7 +7,10 @@ import asyncio#高并发IO操作
 import hashlib#提供hash算法 用于数据加密和校验
 from pathlib import Path#提供面向对象的文件系统路径操作
 from typing import Annotated, List
-from sqlmodel import col,select
+
+import aiofiles
+from sqlmodel import select
+from sqlalchemy.exc import SQLAlchemyError
 from fastapi import Depends, File, Form, HTTPException, UploadFile
 from starlette import status
 
@@ -15,7 +18,7 @@ from api.user_api import token_authen
 from envset.config import get_config
 from database.db import SessionDep
 from logger import get_logger
-from models.file_models import FileDownload, FileInDB, FilePublic
+from models.file_models import FileInDB, FilePublic, FileStreamingResponse, FileDownloadMeta
 from models.user_models import UserInDB
 
 logger = get_logger("main.file_api")
@@ -79,6 +82,24 @@ file_content_missing_exception = HTTPException(
     detail="file content missing",
 )
 
+# 文件查询失败异常
+file_query_failed_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail="failed to query file record",
+)
+
+# 数据库会话异常
+invalid_db_session_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail="database session not available",
+)
+
+# 文件写入失败异常
+file_persist_failed_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail="failed to persist file content",
+)
+
 # 文件名不安全异常
 filename_invalid_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
@@ -91,16 +112,42 @@ file_type_not_allowed_exception = HTTPException(
     detail="file type is not allowed",
 )
 
+# 用户文件数量限制异常
+user_file_limit_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail="user file count limit reached",
+)
+
+# 用户存储空间限制异常
+user_storage_limit_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail="user storage limit exceeded",
+)
+
+# 文件重复异常
+duplicate_file_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail="duplicate filename or hash detected",
+)
+
 # 基础存储配置来自 config
-storage_config = get_config().storage
+config = get_config()
+if not config:
+    raise RuntimeError("Application configuration is not loaded")
+storage_config = config.storage
 
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
-MAX_FILE_SIZE = storage_config.max_file_size
-ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types) 
-CHUNK_BUFFER_SIZE = storage_config.chunk_buffer_size
+BYTES_IN_GB = 1024 ** 3
+BYTES_IN_MB = 1024 ** 2
+# 注意：YAML 不支持 Python 表达式，所以配置文件中写数字（如 10 表示 10GB），然后在代码中转换为字节
+MAX_FILE_SIZE = int(storage_config.max_file_size) * BYTES_IN_GB
+ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
+CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
-MAX_FILENAME_LENGTH = storage_config.max_filename_length
+MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
+MAX_FILES_PER_USER = 20
+MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
 
 
 def ensure_storage_dirs():
@@ -137,7 +184,7 @@ def validate_file_type(filename: str):
         raise file_type_not_allowed_exception
 
     # 提取文件扩展名
-    file_ext = Path(filename).suffix.lstrip('.').lower()
+    file_ext = Path(filename).suffix.lstrip('.')
 
     if not file_ext:
         raise file_type_not_allowed_exception
@@ -163,11 +210,14 @@ def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """上传成功后，将文件 ID 记录到用户的文件列表中"""
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
-    file_ids = list(user.file_ids or [])
-    if file_id not in file_ids:
-        file_ids.append(file_id)
-        user.file_ids = file_ids
-        session.add(user)
+    file_ids = list(dict.fromkeys(user.file_ids or []))
+    if file_id in file_ids:
+        return
+    if len(file_ids) >= MAX_FILES_PER_USER:
+        raise user_file_limit_exception
+    file_ids.append(file_id)
+    user.file_ids = file_ids
+    session.add(user)
 
 
 def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
@@ -182,55 +232,61 @@ def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
 
 
 def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
-    """为简单上传准备最终保存路径，若重名则自动追加序号"""
+    """为简单上传准备最终保存路径,在别处会检查文件名是否重复"""
     user_storage_dir = LOCAL_STORAGE_ROOT / str(owner_id)
     user_storage_dir.mkdir(parents=True, exist_ok=True)
     final_path = user_storage_dir / filename
-    if not final_path.exists():
-        return final_path
-
-    stem = final_path.stem
-    suffix = final_path.suffix
-    counter = 1
-    while True:
-        candidate = user_storage_dir / f"{stem}_{counter}{suffix}"
-        if not candidate.exists():
-            return candidate
-        counter += 1
+    return final_path
 
 
-async def save_upload_file(upload_file: UploadFile, destination: Path) -> tuple[str, int]:
+async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, int]:
     """
-    将 UploadFile 保存到指定路径，并返回 (sha256, size)
-    # md5 ? 功能和性能，
+    分片读取 UploadFile 的内容来计算 (sha256, size)，避免一次性将文件加载到内存。
     """
-    # 后端接收到数据 --> 缓冲区，安全区里面[内存临时区，本地磁盘空间里面] -->没问题之后才写入对应的文件系统里面
-    #TODO：单位不确定，更新参数单位
     sha256 = hashlib.sha256()
     size = 0
-    with destination.open("wb") as buffer:#计算这个文件的hash和大小
-        #存疑？
-        while True:
-            #TODO：同步和异步混用？aiofiles
-            chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
-            if not chunk:
-                break
-            # 异步里面所有操作 都应该是异步
-            buffer.write(chunk)
-            sha256.update(chunk)
-            size += len(chunk)
-            #设计目标是：不符合要求的文件不要写到存储系统里面。
-    await upload_file.close()
+    await upload_file.seek(0)
+    while True:
+        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)#这里一定要分片来计算hash值，不分片会消耗很大的内存
+        if not chunk:
+            break
+        sha256.update(chunk)#同步操作 但是轻量级 应该没啥问题
+        size += len(chunk)
+    await upload_file.seek(0)
     return sha256.hexdigest(), size
 
 
+async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
+    """
+    使用 aiofiles 将 UploadFile 内容写到指定路径。
+    """
+    await upload_file.seek(0)
+    async with aiofiles.open(destination, "wb") as buffer:
+        while True: 
+            chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
+            if not chunk:
+                break
+            await buffer.write(chunk)
+    await upload_file.close()
+
+
 async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
-    # TODO：没做异常捕获等，如果文件不存在了，或者文件不属于这个用户了，都会抛出异常。
-    #后端分布式存储，是一个不保证的系统。
-    #先判断文件是否存在？判断不是一次就结束，try catch 作处理。要把异常先捕获处理完抛出
+
     """根据 file_id 获取文件记录，若不存在抛出 404"""
-    statement = select(FileInDB).where(FileInDB.file_id == file_id)
-    file_record = session.exec(statement).first()
+    try:
+        statement = select(FileInDB).where(FileInDB.file_id == file_id)
+        file_record = session.exec(statement).first()
+    except SQLAlchemyError as exc:
+        logger.error("database error when querying file_id=%s error=%s", file_id, exc)
+        raise file_query_failed_exception from exc
+    except AttributeError as exc:
+        logger.error("invalid session when querying file_id=%s error=%s", file_id, exc)
+        raise invalid_db_session_exception from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("unexpected error when querying file_id=%s", file_id)
+        raise file_query_failed_exception from exc
     if not file_record:
         logger.warning("file record missing file_id=%s", file_id)
         raise file_not_found_exception#404  文件不存在
@@ -240,20 +296,25 @@ async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
 async def assert_file_owner(file_record: FileInDB, current_user: UserInDB):
     """校验文件归属"""
 
-    #TODO：添加一个特权可以下载所有文件
-    # 如果是管理员用户，可以下载所有文件
+    if current_user.identity == "admin":
+        return
     if file_record.owner_id != current_user.id:
         logger.warning("permission denied user=%s file_id=%s owner=%s",
                        current_user.id, file_record.file_id, file_record.owner_id)
         raise permission_denied_exception#没有权限，只能删除自己的文件
 
-#TODO：还会残留一个文件夹，需要删除
 async def delete_local_file(path: str):
     """删除本地文件，忽略不存在情况"""
     file_path = Path(path)
 
     def _unlink():
         file_path.unlink(missing_ok=True)
+        parent_dir = file_path.parent
+        try:
+            if parent_dir.exists() and not any(parent_dir.iterdir()):
+                parent_dir.rmdir()
+        except OSError:
+            pass
 
     await asyncio.to_thread(_unlink)
 
@@ -290,6 +351,11 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     if storage_type != "local":
         raise storage_type_not_supported_exception#存储类型尚未实现异常
 
+    # 用户限制校验
+    current_count = current_user.file_count or len(current_user.file_ids or [])
+    if current_count >= MAX_FILES_PER_USER:
+        raise user_file_limit_exception
+
     # 文件安全校验
     if not file.filename:
         raise filename_invalid_exception
@@ -297,12 +363,43 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     validate_file_type(file.filename)
     final_path = prepare_local_storage_path(current_user.id, file.filename)
 
-    #TODO：是不是应该直接在循环里面判断文件大小？不然如果文件过大了，已经写了一部分了
-    hash_sha256, size = await save_upload_file(file, final_path)
+    hash_sha256, size = await compute_upload_file_metadata(file)#先计算文件的大小，再判断是否写入文件系统
     if size > MAX_FILE_SIZE:
-        final_path.unlink(missing_ok=True)
         raise file_size_limit_exception#文件超出大小限制异常
-    file_type = final_path.suffix.lstrip(".").lower()
+
+    projected_total_size = (current_user.total_file_size or 0) + size
+    if projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
+        raise user_storage_limit_exception
+
+    # 检查重复文件名
+    existing_name = session.exec(
+        select(FileInDB).where(
+            (FileInDB.owner_id == current_user.id) &
+            (FileInDB.filename == file.filename)
+        )
+    ).first()
+    if existing_name:
+        raise duplicate_file_exception
+
+    # 检查重复 hash
+    existing_hash = session.exec(
+        select(FileInDB).where(
+            (FileInDB.owner_id == current_user.id) &
+            (FileInDB.hash_sha256 == hash_sha256)
+        )
+    ).first()
+    if existing_hash:
+        raise duplicate_file_exception
+
+    try:
+        await save_upload_file(file, final_path)
+    except Exception as exc:
+        logger.error("save upload file failed user=%s filename=%s error=%s",
+                     current_user.id, file.filename, exc)
+        final_path.unlink(missing_ok=True)
+        raise file_persist_failed_exception from exc
+
+    file_type = final_path.suffix.lstrip(".")
     file_record = FileInDB(filename=final_path.name,
                            path=str(final_path),
                            owner_id=current_user.id,
@@ -313,6 +410,8 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     session.add(file_record)
     session.flush()
     append_file_id(session, current_user, file_record.file_id)
+    current_user.file_count = (current_user.file_count or 0) + 1
+    current_user.total_file_size = (current_user.total_file_size or 0) + size
     session.commit()
     session.refresh(file_record)
     session.refresh(current_user)
@@ -330,11 +429,11 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
     """
     if not current_user.file_ids:
         return []
-    #user的存储属性上限制，一个user只能上传20个文件，文件没有重复的
-    #文件名 and hash/md5 都要满足要求
-    #每一个用户有一个限制字段，记录上文件数量和总大小
-    #TODO：主动数量限制没做，可以是文件总大小，或者总数量。
-    statement = select(FileInDB).where(col(FileInDB.file_id).in_(current_user.file_ids))
+    seen_ids = list(dict.fromkeys(current_user.file_ids))[:MAX_FILES_PER_USER]
+    if not seen_ids:
+        return []
+
+    statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))
     results = session.exec(statement).all()
     files = [to_file_public(record) for record in results]
     logger.debug("list user files user=%s count=%s", current_user.id, len(files))
@@ -352,24 +451,29 @@ async def delete_user_file(file_id: int,
     - 移除数据库记录
     """
     file_record = await get_file_record(file_id, session)
-    await assert_file_owner(file_record, current_user)
+    await assert_file_owner(file_record, current_user)#如果是管理员也可以删除任意文件
     await delete_file_by_storage(file_record)
     session.delete(file_record)
     session.flush()
     remove_file_id(session, current_user, file_id)
+    current_user.file_count = max(0, (current_user.file_count or 0) - 1)
+    current_user.total_file_size = max(0, (current_user.total_file_size or 0) - file_record.size)
     session.commit()
     session.refresh(current_user)
     logger.info("delete file success user=%s file_id=%s", current_user.id, file_id)
     return {"file_id": file_id, "status": "deleted"}
 
 #主下载函数
-async def download_user_file(file_id: int,
-                             current_user: Annotated[UserInDB, Depends(token_authen)],
-                             session: SessionDep) -> FileDownload:
+async def get_download_file_metadata(
+    file_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    session: SessionDep
+) -> FileDownloadMeta:
     """
-    下载文件：
+    返回文件元数据和路径，不处理文件流
     - 校验身份与所有权
     - 仅支持 local 存储类型
+    - 更新下载计数
     """
     file_record = await get_file_record(file_id, session)
     await assert_file_owner(file_record, current_user)
@@ -384,16 +488,20 @@ async def download_user_file(file_id: int,
                        current_user.id, file_id, path)
         raise file_content_missing_exception#文件内容缺失异常
 
+    # 更新下载计数
     file_record.download_count += 1
     session.add(file_record)
     session.commit()
     logger.info("download success user=%s file_id=%s filename=%s",
                 current_user.id, file_id, file_record.filename)
 
-    return FileDownload(path=str(path), filename=file_record.filename)
+    return FileDownloadMeta.from_record(file_record)
 
 
-DownloadFileDep = Annotated[FileDownload, Depends(download_user_file)]
+
+
+
 DeleteFileDep = Annotated[dict, Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
 ListFilesDep = Annotated[List[FilePublic], Depends(list_user_files)]
+DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]

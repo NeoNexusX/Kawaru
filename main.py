@@ -2,12 +2,15 @@ import uvicorn
 from contextlib import asynccontextmanager
 from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
-from api.file_api import DeleteFileDep, DownloadFileDep, ListFilesDep, SimpleUploadDep
+from models.file_models import FileStreamingResponse
+from api.file_api import (
+    DeleteFileDep, ListFilesDep, SimpleUploadDep, 
+    CHUNK_BUFFER_SIZE, DownloadFileDep
+)
 from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep, create_admin_user
-from database.db import create_db_and_tables
+from database.db import create_db_and_tables, SessionDep
 from envset.config import get_config
 from envset.envset import EnvSet
 from logger import get_logger
@@ -15,6 +18,7 @@ from models.auth import Token
 from models.email_models import EmailConfirmRequest
 from models.user_models import UserInDB, UserPublic
 from models.file_models import FilePublic
+
 
 
 @asynccontextmanager
@@ -109,13 +113,18 @@ async def list_user_files(files: ListFilesDep):
 
 
 @file_router.get("/files/{file_id}/download")#下载文件
-async def download_file(payload: DownloadFileDep):
-    return FileResponse(payload.path, filename=payload.filename)
+async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
+    return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)      
 
 
 @file_router.delete("/files/{file_id}")#删除文件
 async def delete_file(result: DeleteFileDep):
     return result
+
+
+# @file_router.post("/files/upload_chunk")#分片上传（自动合并）
+# async def upload_chunk(chunk_result: ChunkUploadDep):
+#     return chunk_result
 
 app.include_router(user_router)
 app.include_router(file_router)
