@@ -1,3 +1,5 @@
+from sqlalchemy import Column
+from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
 from logger import get_logger
 
@@ -14,9 +16,10 @@ class UserBase(SQLModel):
 class UserInDB(UserBase, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     email: str = Field()
-    password: str = Field()
     hashed_password: str = Field()
-    # token: str = Field(default=None)
+    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
+    file_count: int = Field(default=0)
+    total_file_size: int = Field(default=0)
 
 
 class UserPublic(UserBase):
@@ -27,6 +30,7 @@ class UserCreate(UserBase):
     email: str
     password: str
     verify_code: str
+    identity: str | None = Field(default=None)  # 传入的时候必须为None
 
 
 class UserUpdate(UserBase):

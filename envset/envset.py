@@ -1,11 +1,11 @@
 import os
-
+#这个模块负责从 .env 文件加载邮件环境变量
 from dotenv import load_dotenv
 
 from logger import get_logger
 
 logger = get_logger("env logger")
-load_dotenv(".env")  # laod env file
+
 
 
 class EnvSet:

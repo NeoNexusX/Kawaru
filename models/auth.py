@@ -1,4 +1,4 @@
-from typing import Annotated, Union
+from typing import Union
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -25,6 +25,3 @@ class FormData(BaseModel):
     username: str
     password: str
     model_config = {"extra": "forbid"}
-
-
-
