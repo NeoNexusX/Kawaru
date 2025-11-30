@@ -18,7 +18,7 @@ from api.user_api import token_authen
 from envset.config import get_config
 from database.db import SessionDep
 from logger import get_logger
-from models.file_models import FileInDB, FilePublic, FileStreamingResponse, FileDownloadMeta
+from models.file_models import FileInDB, FilePublic, FileDownloadMeta
 from models.user_models import UserInDB
 
 logger = get_logger("main.file_api")
@@ -133,6 +133,7 @@ duplicate_file_exception = HTTPException(
 # 基础存储配置来自 config
 config = get_config()
 if not config:
+    logger.error("application configuration is not loaded")
     raise RuntimeError("Application configuration is not loaded")
 storage_config = config.storage
 
@@ -149,12 +150,10 @@ MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
 MAX_FILES_PER_USER = 20
 MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
 
-
 def ensure_storage_dirs():
     """确保存储目录存在"""
     for path in (STORAGE_ROOT, LOCAL_STORAGE_ROOT):
         path.mkdir(parents=True, exist_ok=True)
-
 
 def validate_filename(filename: str):
     """校验文件名安全性"""
@@ -177,7 +176,6 @@ def validate_filename(filename: str):
         if char in filename:
             raise filename_invalid_exception
 
-
 def validate_file_type(filename: str):
     """校验文件类型"""
     if not filename:
@@ -192,20 +190,6 @@ def validate_file_type(filename: str):
     if file_ext not in ALLOWED_FILE_TYPES:
         raise file_type_not_allowed_exception
 
-
-def to_file_public(record: FileInDB) -> FilePublic:#强行转换成了不带隐私数据的
-    return FilePublic(
-        file_id=record.file_id,
-        filename=record.filename,
-        file_type=record.file_type,
-        size=record.size,
-        storage_type=record.storage_type,
-        hash_sha256=record.hash_sha256,
-        uploaded_at=record.uploaded_at,
-        download_count=record.download_count,
-    )
-
-
 def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """上传成功后，将文件 ID 记录到用户的文件列表中"""
     if not user.id:
@@ -219,7 +203,6 @@ def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     user.file_ids = file_ids
     session.add(user)
 
-
 def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """删除文件后，从用户文件列表里移除对应 ID"""
     if not user.id:
@@ -230,14 +213,12 @@ def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
         user.file_ids = file_ids
         session.add(user)
 
-
 def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
     """为简单上传准备最终保存路径,在别处会检查文件名是否重复"""
     user_storage_dir = LOCAL_STORAGE_ROOT / str(owner_id)
     user_storage_dir.mkdir(parents=True, exist_ok=True)
     final_path = user_storage_dir / filename
     return final_path
-
 
 async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, int]:
     """
@@ -255,20 +236,18 @@ async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, in
     await upload_file.seek(0)
     return sha256.hexdigest(), size
 
-
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     使用 aiofiles 将 UploadFile 内容写到指定路径。
     """
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
-        while True: 
+        while True:
             chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
             if not chunk:
                 break
             await buffer.write(chunk)
     await upload_file.close()
-
 
 async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
 
@@ -292,7 +271,6 @@ async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
         raise file_not_found_exception#404  文件不存在
     return file_record
 
-
 async def assert_file_owner(file_record: FileInDB, current_user: UserInDB):
     """校验文件归属"""
 
@@ -314,12 +292,12 @@ async def delete_local_file(path: str):
             if parent_dir.exists() and not any(parent_dir.iterdir()):
                 parent_dir.rmdir()
         except OSError:
-            pass
+            logger.error("failed to remove empty directory %s", parent_dir)
 
     await asyncio.to_thread(_unlink)
 
-
 async def delete_file_by_storage(file_record: FileInDB):
+
     """根据 storage_type 调用对应删除实现"""
     if file_record.storage_type == "local":
         await delete_local_file(file_record.path)
@@ -329,12 +307,11 @@ async def delete_file_by_storage(file_record: FileInDB):
     else:
         raise storage_type_delete_unsupported_exception#不支持的存储类型删除异常
 
-
 #主上传函数
 async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_authen)],
                              session: SessionDep,
                              storage_type: str = Form("local"),
-                             file: UploadFile = File(...)) -> FilePublic:
+                             file: UploadFile = File(...)):
     """
     简单上传接口：一次性接收完整文件，不做分片。
     - 根据 storage_type 选择存储方式，目前仅支持 local
@@ -343,7 +320,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     ensure_storage_dirs()
     logger.info("simple upload start user=%s filename=%s storage=%s",
                 current_user.id, file.filename, storage_type)
-
+    # 校验part
     # 基础校验：
     if storage_type not in ALLOWED_STORAGE_TYPES:
         raise storage_type_not_allowed_exception#存储类型不在允许列表异常
@@ -371,6 +348,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     if projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
         raise user_storage_limit_exception
 
+    #TODO：文件元数据可以依赖前端传入，减少计算量
     # 检查重复文件名
     existing_name = session.exec(
         select(FileInDB).where(
@@ -398,7 +376,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
                      current_user.id, file.filename, exc)
         final_path.unlink(missing_ok=True)
         raise file_persist_failed_exception from exc
-
+    # 刷新 file表
     file_type = final_path.suffix.lstrip(".")
     file_record = FileInDB(filename=final_path.name,
                            path=str(final_path),
@@ -409,6 +387,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
                            hash_sha256=hash_sha256)
     session.add(file_record)
     session.flush()
+    #刷新 用户表
     append_file_id(session, current_user, file_record.file_id)
     current_user.file_count = (current_user.file_count or 0) + 1
     current_user.total_file_size = (current_user.total_file_size or 0) + size
@@ -417,9 +396,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     session.refresh(current_user)
     logger.info("simple upload completed user=%s file_id=%s filename=%s size=%s",
                 current_user.id, file_record.file_id, file_record.filename, file_record.size)
-    return to_file_public(file_record)
-
-
+    return file_record
 
 #主查询函数
 async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -435,10 +412,9 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
 
     statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))
     results = session.exec(statement).all()
-    files = [to_file_public(record) for record in results]
+    files = [record for record in results]
     logger.debug("list user files user=%s count=%s", current_user.id, len(files))
     return files
-
 
 #主删除函数
 async def delete_user_file(file_id: int,
@@ -450,11 +426,13 @@ async def delete_user_file(file_id: int,
     - 根据 storage_type 调用对应删除实现
     - 移除数据库记录
     """
+    #
     file_record = await get_file_record(file_id, session)
     await assert_file_owner(file_record, current_user)#如果是管理员也可以删除任意文件
     await delete_file_by_storage(file_record)
     session.delete(file_record)
     session.flush()
+    #
     remove_file_id(session, current_user, file_id)
     current_user.file_count = max(0, (current_user.file_count or 0) - 1)
     current_user.total_file_size = max(0, (current_user.total_file_size or 0) - file_record.size)
@@ -496,9 +474,6 @@ async def get_download_file_metadata(
                 current_user.id, file_id, file_record.filename)
 
     return FileDownloadMeta.from_record(file_record)
-
-
-
 
 
 DeleteFileDep = Annotated[dict, Depends(delete_user_file)]

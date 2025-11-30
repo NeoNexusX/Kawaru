@@ -30,7 +30,7 @@ class UserCreate(UserBase):
     email: str
     password: str
     verify_code: str
-    identity: str | None = Field(default=None)  # 必须为None
+    identity: str | None = Field(default=None)  # 传入的时候必须为None
 
 
 class UserUpdate(UserBase):

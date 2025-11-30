@@ -25,8 +25,6 @@ def now_local_timezone() -> datetime:
     """返回东八区本地时间（无时区信息，便于 SQLite 存储）"""
     return datetime.now(timezone.utc) + LOCAL_TIME_OFFSET
 
-# TODO：三个应该有继承关系的模型，不应该是独立的
-
 
 class FileBase(SQLModel):
     """公共字段，供数据库与返回模型复用"""
@@ -55,13 +53,14 @@ class FileInDB(FileBase, table=True):
 
 class FileStreamingResponse(StreamingResponse):#是响应类模型 不能使用依赖注入
     """文件流式响应，继承自 StreamingResponse，使用 FileBase 的字段"""
-    
+
     def __init__(self, file_path: Path, file_base: FileBase, chunk_size: int, media_type: str = "application/octet-stream"):
+
         async def file_generator() -> AsyncGenerator[bytes, None]:
             async with aiofiles.open(file_path, "rb") as f:
                 while chunk := await f.read(chunk_size):
                     yield chunk
-        
+
         super().__init__(
             file_generator(),
             media_type=media_type,
@@ -78,7 +77,7 @@ class FileDownloadMeta(FileBase):
     file_id: int | None = None
     uploaded_at: datetime
     download_count: int
-    
+
     @classmethod
     def from_record(cls, record: FileInDB) -> "FileDownloadMeta":#利用该函数将文件记录创建文件元数据
         return cls(

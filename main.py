@@ -114,7 +114,7 @@ async def list_user_files(files: ListFilesDep):
 
 @file_router.get("/files/{file_id}/download")#下载文件
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
-    return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)      
+    return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
 
 
 @file_router.delete("/files/{file_id}")#删除文件
