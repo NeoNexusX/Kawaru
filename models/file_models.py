@@ -1,11 +1,3 @@
-'''
-Author: xiongqiurong 1513401658@qq.com
-Date: 2025-11-25 17:21:17
-LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-11-28 00:02:11
-FilePath: \Kawaru\models\file_models.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncGenerator
@@ -13,6 +5,8 @@ import aiofiles
 from sqlmodel import Field, SQLModel
 from fastapi.responses import StreamingResponse
 from logger import get_logger
+from sqlalchemy import Column
+from sqlalchemy.types import JSON
 
 # 获取服务器状态模块的日志器
 logger = get_logger("main.file_control")
@@ -46,7 +40,7 @@ class FileInDB(FileBase, table=True):
     """数据库模型"""
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})#文件编号（自增主键）
     path: str = Field()#存储路径
-    owner_id: int = Field(foreign_key="userindb.id", index=True)#文件所有者id
+    owners: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件所属用户ID列表JSON格式
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)#上传时间
     download_count: int = Field(default=0)#下载次数
 
@@ -60,6 +54,7 @@ class FileStreamingResponse(StreamingResponse):#是响应类模型 不能使用�
             async with aiofiles.open(file_path, "rb") as f:
                 while chunk := await f.read(chunk_size):
                     yield chunk
+
 
         super().__init__(
             file_generator(),

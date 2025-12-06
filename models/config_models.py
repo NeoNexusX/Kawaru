@@ -26,7 +26,9 @@ class StorageSettings(BaseModel):
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
     max_filename_length: int
-
+    max_downloads_per_user: int
+    max_files_per_user: int
+    preflight_ttl_minutes: int
 
 class Config(BaseModel):
     server: ServerSettings

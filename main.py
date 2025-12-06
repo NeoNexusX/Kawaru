@@ -7,7 +7,7 @@ from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
 from models.file_models import FileStreamingResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep, 
-    CHUNK_BUFFER_SIZE, DownloadFileDep
+    CHUNK_BUFFER_SIZE, DownloadFileDep,PreflightDep
 )
 from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep, create_admin_user
 from database.db import create_db_and_tables, SessionDep
@@ -102,6 +102,10 @@ async def create_user_smtp_email_server(email: EmailConfirmSMTPDep):
 # 文件管理 API
 #########################
 
+@file_router.post("/files/preflight", response_model=FilePublic)  # 上传预检
+async def preflight_file(file_record: PreflightDep):
+    return file_record
+    
 @file_router.post("/files/upload_simple", response_model=FilePublic)#简单上传
 async def upload_simple_file(file_record: SimpleUploadDep):
     return file_record
