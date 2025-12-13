@@ -7,7 +7,8 @@ from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
 from models.file_models import FileStreamingResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep, 
-    CHUNK_BUFFER_SIZE, DownloadFileDep,PreflightDep
+    CHUNK_BUFFER_SIZE, DownloadFileDep, PreflightDep,
+    ChunkedPreflightDep, ChunkUploadDep, ChunkedStatusDep
 )
 from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep, create_admin_user
 from database.db import create_db_and_tables, SessionDep
@@ -17,7 +18,7 @@ from logger import get_logger
 from models.auth import Token
 from models.email_models import EmailConfirmRequest
 from models.user_models import UserInDB, UserPublic
-from models.file_models import FilePublic
+from models.file_models import FilePublic, ChunkedUploadStatus
 
 
 
@@ -126,9 +127,17 @@ async def delete_file(result: DeleteFileDep):
     return result
 
 
-# @file_router.post("/files/upload_chunk")#分片上传（自动合并）
-# async def upload_chunk(chunk_result: ChunkUploadDep):
-#     return chunk_result
+@file_router.post("/files/chunked/preflight", response_model=FilePublic)  # 分片上传预检
+async def preflight_chunked_file(file_record: ChunkedPreflightDep):
+    return file_record
+
+@file_router.post("/files/chunked/upload")  # 分片上传
+async def upload_chunk(chunk_result: ChunkUploadDep):
+    return chunk_result
+
+@file_router.get("/files/chunked/{file_id}/status", response_model=ChunkedUploadStatus)  # 查询分片上传状态
+async def get_upload_status(status: ChunkedStatusDep):
+    return status
 
 app.include_router(user_router)
 app.include_router(file_router)
