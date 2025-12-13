@@ -30,40 +30,54 @@
 
 ### 3.1 FileInDB（文件表）
 
-| 字段         | 说明                   |
-| ------------ | ---------------------- |
-| file_id      | 文件唯一 ID            |
-| filename     | 文件名                 |
-| path         | 物理存储路径           |
-| hash_sha256  | 文件内容 hash          |
-| size         | 文件大小               |
-| owners       | 关联的用户 ID 列表     |
-| storage_type | local                  |
-| total_parts  | 分片总数（仅分片上传） |
-| uploaded_at  | 创建时间               |
+| 字段           | 说明                   |
+| -------------- | ---------------------- |
+| file_id        | 文件唯一 ID            |
+| filename       | 文件名                 |
+| path           | 物理存储路径           |
+| hash_sha256    | 文件内容 hash          |
+| size           | 文件大小               |
+| owners         | 关联的用户 ID 列表     |
+| storage_type   | local                  |
+| total_parts    | 分片总数（仅分片上传） |
+| uploaded_at    | 创建时间               |
+| download_count | 下载次数               |
+| total_parts    | 分片的片数（默认为零） |
 
 ------
 
 ### 3.2 UserInDB（用户表）
 
-| 字段            | 说明                   |
-| --------------- | ---------------------- |
-| file_ids        | 用户拥有的文件 ID 列表 |
-| file_count      | 文件数量               |
-| total_file_size | 已用存储空间           |
+| 字段            | 说明                       |
+| --------------- | -------------------------- |
+| username        | 用户名字                   |
+| active          | 默认为ture                 |
+| identity        | 身份（管理员或者普通用户） |
+| id              | 主键                       |
+| email           | 邮箱                       |
+| hashed_password | hash加密的密码             |
+| file_ids        | 用户拥有的文件 ID 列表     |
+| file_count      | 文件数量                   |
+| total_file_size | 已用存储空间               |
+| download_used   | 文件的空间使用量           |
 
 ------
 
 ### 3.3 PartInDB（分片表）
 
-| 字段        | 说明                  |
-| ----------- | --------------------- |
-| file_hash   | 对应文件 hash         |
-| part_number | 分片序号（从 1 开始） |
-| part_hash   | 分片 hash             |
-| part_size   | 分片大小              |
-| temp_path   | 临时分片路径          |
-| owner_id    | 上传用户              |
+| 字段            | 说明                  |
+| --------------- | --------------------- |
+| part_id         | 主键                  |
+| file_hash       | 对应文件 hash         |
+| part_number     | 分片序号（从 1 开始） |
+| part_hash       | 分片 hash             |
+| part_size       | 分片大小              |
+| temp_path       | 临时分片路径          |
+| owner_id        | 上传用户              |
+| upload_at       | 上传时间              |
+| file_id         | 所属文件的id          |
+| total_file_size | 总文件的大小          |
+| total_parts     | 文件的总片数          |
 
 ------
 
