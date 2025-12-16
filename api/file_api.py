@@ -594,7 +594,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                 raise part_number_out_of_range_exception
         
         # 检查分片完整性
-        uploaded_parts = [chunk.part_number for chunk in chunks]
+        uploaded_parts = sorted([chunk.part_number for chunk in chunks])# 做了一个排序，在其他函数校验了不会上传重复分片
         expected_parts = list(range(1, expected_total_parts + 1))
         
         # 记录当前上传状态
@@ -608,7 +608,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                        file_record.file_id, current_user.id, missing_parts)
             return False
         
-        # 检查分片序列是否连续
+         #检查分片序列是否连续  
         if uploaded_parts != expected_parts:
             logger.error("chunk sequence invalid file_id=%s user=%s uploaded=%s expected=%s", 
                         file_record.file_id, current_user.id, uploaded_parts, expected_parts)
@@ -617,8 +617,10 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
         # 所有分片都已上传，开始合并
         logger.info("all chunks uploaded, starting merge file_id=%s user=%s", 
                    file_record.file_id, current_user.id)
-        
-        # 检查是否可以复用现有文件
+        chunks = sorted(chunks, key=lambda c: c.part_number)#把所有上传的分片排序，保证写入的时候是按顺序写入的
+
+                                    #这种情况概率比较小，就是在两个用户同时上传同一个文件的时候出现这种问题。
+        # 检查是否可以复用现有文件  #这个地方是用来检测有一种情况， 分片都已上传完，但在真正写最终文件之前，再次检查是否已经存在完全相同内容的文件，如果存在，就直接复用那个文件，而不生成新的物理文件，然后把分片记录全部删除
         existing_files = session.exec(
             select(FileInDB).where(
                 FileInDB.hash_sha256 == file_record.hash_sha256,
@@ -708,7 +710,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
         raise chunk_merge_failed_exception from exc
 
 
-#预检函数
+#预检函数#TODO 检测到已有文件 1：已有文件，不用再上传真正文件，2：无文件，检测文件路径是否存在，告诉他 正在上传，等一会 注意：这里不能等，因为可能存在过期的预检记录还没清理
 async def preflight_create_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: SessionDep,
@@ -765,8 +767,7 @@ async def preflight_create_file(
                               current_user.id, filename)
                 raise duplicate_file_exception#表示该用户已经上传过相同的文件
     
-    # 检查 2：是否存在相同文件名或相同内容的文件（可复用逻辑）
-    # 优先检查相同 hash 的文件（内容完全相同）
+    # 检查 2：是否存在相同内容的文件（通过 hash 检查）
     same_hash_records = session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256)).all() or []
     for rec in same_hash_records:
         # 检查用户是否已拥有该文件
@@ -775,19 +776,34 @@ async def preflight_create_file(
                           current_user.id, hash_sha256)
             raise duplicate_file_exception  # 表示该用户已经上传过相同的文件
         
-        # 发现其他用户已上传的相同内容文件，直接复用该记录
+        # 发现相同 hash 的文件，先将当前用户添加到 owners 列表中
+        current_owners = list(rec.owners or [])
+        if current_user.id not in current_owners:
+            current_owners.append(current_user.id)
+            rec.owners = current_owners
+            session.add(rec)
+            session.flush()  # 立即写入数据库但不提交
+        
+        # 检查该文件路径是否存在（文件是否已完成上传）
         if Path(rec.path).exists():
-            # 将当前用户添加到该文件的 owners 列表中（文件复用）
-            current_owners = list(rec.owners or [])
-            if current_user.id not in current_owners:
-                current_owners.append(current_user.id)
-                rec.owners = current_owners
-                session.add(rec)
-                session.commit()
-                session.refresh(rec)
-                logger.info("preflight reused existing file user=%s file_id=%s filename=%s (added to owners, not to user file_ids)",
-                           current_user.id, rec.file_id, rec.filename)
-                return rec
+            # 文件已存在，直接将文件ID添加到用户的 file_ids 中，并更新用户统计
+            append_file_id(session, current_user, rec.file_id)
+            current_user.file_count = (current_user.file_count or 0) + 1
+            current_user.total_file_size = (current_user.total_file_size or 0) + (rec.size or 0)
+            session.add(current_user)
+            session.commit()
+            session.refresh(rec)
+            session.refresh(current_user)
+            logger.info("preflight reused existing completed file user=%s file_id=%s filename=%s (file already uploaded by others, no need to upload again)",
+                       current_user.id, rec.file_id, rec.filename)
+            return rec
+        else:
+            # 文件路径不存在，说明是预检记录，返回该记录供后续上传使用
+            session.commit()
+            session.refresh(rec)
+            logger.info("preflight found existing record user=%s file_id=%s filename=%s (added to owners, file not yet completed)",
+                       current_user.id, rec.file_id, rec.filename)
+            return rec
     
 
     final_path = prepare_local_storage_path(current_user.id, filename)
@@ -871,8 +887,7 @@ async def preflight_create_chunked_file(
                               current_user.id, filename)
                 raise duplicate_file_exception  # 表示该用户已经上传过同名文件
     
-    # 检查 2：是否存在相同文件名或相同内容的文件（可复用逻辑）
-    # 优先检查相同 hash 的文件（内容完全相同）
+    # 检查 2：是否存在相同内容的文件（通过 hash 检查）
     same_hash_records = session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256)).all() or []
     for rec in same_hash_records:
         # 检查用户是否已拥有该文件
@@ -881,20 +896,37 @@ async def preflight_create_chunked_file(
                           current_user.id, hash_sha256)
             raise duplicate_file_exception  # 表示该用户已经上传过相同的文件
         
-        # 发现其他用户已上传的相同内容文件，直接复用该记录
+        # 发现相同 hash 的文件，先将当前用户添加到 owners 列表中
+        current_owners = list(rec.owners or [])
+        if current_user.id not in current_owners:
+            current_owners.append(current_user.id)
+            rec.owners = current_owners
+        
+        # 分片复用时需要修改 total_parts 字段
+        rec.total_parts = total_parts
+        session.add(rec)
+        session.flush()  # 立即写入数据库但不提交
+        
+        # 检查该文件路径是否存在（文件是否已完成上传）
         if Path(rec.path).exists():
-            # 将当前用户添加到该文件的 owners 列表中（文件复用）
-            # 注意：分片预检阶段也不写入用户表，只更新文件表的 owners
-            current_owners = list(rec.owners or [])
-            if current_user.id not in current_owners:
-                current_owners.append(current_user.id)
-                rec.owners = current_owners
-                session.add(rec)
-                session.commit()
-                session.refresh(rec)
-                logger.info("chunked preflight reused existing file user=%s file_id=%s filename=%s (added to owners, not to user file_ids)",
-                           current_user.id, rec.file_id, rec.filename)
-                return rec
+            # 文件已存在，直接将文件ID添加到用户的 file_ids 中，并更新用户统计
+            append_file_id(session, current_user, rec.file_id)
+            current_user.file_count = (current_user.file_count or 0) + 1
+            current_user.total_file_size = (current_user.total_file_size or 0) + (rec.size or 0)
+            session.add(current_user)
+            session.commit()
+            session.refresh(rec)
+            session.refresh(current_user)
+            logger.info("chunked preflight reused existing completed file user=%s file_id=%s filename=%s (file already uploaded by others, no need to upload again)",
+                       current_user.id, rec.file_id, rec.filename)
+            return rec
+        else:
+            # 文件路径不存在，说明是预检记录，返回该记录供后续分片上传使用
+            session.commit()
+            session.refresh(rec)
+            logger.info("chunked preflight found existing record user=%s file_id=%s filename=%s (added to owners, updated total_parts=%s, file not yet completed)",
+                       current_user.id, rec.file_id, rec.filename, total_parts)
+            return rec
     
     # 检查相同文件名的文件（不同内容但同名）
     same_name_records = session.exec(select(FileInDB).where(FileInDB.filename == filename)).all() or []
@@ -1096,7 +1128,7 @@ async def get_chunked_upload_status(
         is_complete=False
     )
 
-#主上传函数
+#普通文件上传函数
 async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_authen)],
                              session: SessionDep,
                              storage_type: str = Form("local"),
@@ -1277,27 +1309,27 @@ async def delete_user_file(file_id: int,
     session.add(file_record)
     session.flush()
 
-    # 3) 检查是否还有其他用户持有该文件（双向检查：owners 和 file_ids）
-    # 首先检查 owners 列表
-    if file_record.owners:
-        session.commit()
-        session.refresh(current_user)
-        logger.info("unlinked file reference only user=%s file_id=%s (owners exist)", current_user.id, file_id)
-        return {"file_id": file_id, "status": "unlinked"}
-    
-    # owners 为空，进一步检查是否有其他用户的 file_ids 中仍包含此文件
+    # 3) 检查是否还有其他用户持有该文件（以用户表的 file_ids 字段为准）
     # 查询所有用户，检查是否有人的 file_ids 中包含该文件
     all_users = session.exec(select(UserInDB)).all()
+    other_users_have_file = False
+    
     for user in all_users:
         if user.id == current_user.id:
             continue  # 跳过当前用户
         if file_id in (user.file_ids or []):
-            # 发现其他用户仍持有该文件，仅解除当前用户关联
-            session.commit()
-            session.refresh(current_user)
-            logger.info("unlinked file reference only user=%s file_id=%s (found in other user file_ids)", 
-                       current_user.id, file_id)
-            return {"file_id": file_id, "status": "unlinked"}
+            # 发现其他用户仍持有该文件
+            other_users_have_file = True
+            logger.info("found other user still has file user_id=%s file_id=%s", user.id, file_id)
+            break
+    
+    if other_users_have_file:
+        # 其他用户仍持有该文件，仅解除当前用户关联，不删除文件
+        session.commit()
+        session.refresh(current_user)
+        logger.info("unlinked file reference only user=%s file_id=%s (other users still have this file)", 
+                   current_user.id, file_id)
+        return {"file_id": file_id, "status": "unlinked"}
 
     # 4) 确认无其他用户持有，删除物理文件与记录
     await delete_file_by_storage(file_record)

@@ -113,8 +113,9 @@ POST /preflight_create_file
 - 校验文件名 / 类型 / 配额
 - 检查用户是否已有同名 / 同内容文件
 - 如发现已有相同 hash 文件 → 直接复用（写 owners）
+- 如果对应hash文件路径存在，会直接**不会写 user.file_ids**，该用户不用再上传
 - 否则创建新的 FileInDB 记录
-- **不会写 user.file_ids**
+- 路径不存在，**不会写 user.file_ids**
 
 ------
 
@@ -144,6 +145,7 @@ POST /upload_simple_file
 - 写入物理文件
 - 更新 user.file_ids
 - 更新 file_count / total_file_size
+- ![普通文件上传](C:\桌面\普通文件上传.jpg)
 
 ------
 
@@ -190,8 +192,10 @@ POST /preflight_create_chunked_file
 - 校验用户配额
 - 清理过期预检 / 分片记录
 - 如果发现已有相同 hash 文件 → 直接复用
+- 如果路径存在则直接修改用户表file_ids字段，直接建立关联，不需要在重新上传。
 - 否则创建 FileInDB（含 total_parts）
-- **不写 user.file_ids**
+- 如果文件路径不存在，**不写 user.file_ids**
+- 
 
 ------
 
@@ -251,7 +255,10 @@ POST /upload_file_chunk
 **失败处理**
 
 - 删除已写文件
+
 - 调用 safe_cleanup_preflight_record
+
+  ![分片文件上传](C:\桌面\分片文件上传.jpg)
 
 ------
 

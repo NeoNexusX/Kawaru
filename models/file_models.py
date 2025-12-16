@@ -2,7 +2,7 @@
 Author: xiongqiurong 1513401658@qq.com
 Date: 2025-12-02 16:44:24
 LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-13 19:14:29
+LastEditTime: 2025-12-16 19:21:58
 FilePath: \Kawaru\models\file_models.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -51,7 +51,7 @@ class FileInDB(FileBase, table=True):
     owners: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件所属用户ID列表JSON格式
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)#上传时间
     download_count: int = Field(default=0)#下载次数
-    total_parts: int | None = Field(default=None)  # 分片上传的总分片数（仅用于分片上传）
+    total_parts: int | None = Field(default=1)  # 分片上传的总分片数（仅用于分片上传）
 
 
 class FileStreamingResponse(StreamingResponse):#是响应类模型 不能使用依赖注入
@@ -90,7 +90,7 @@ class PartInDB(SQLModel, table=True):
     total_parts: int = Field()  # 分片总数
 
 
-class ChunkedUploadStatus(SQLModel):
+class ChunkedUploadStatus(SQLModel): #todo  
     """分片上传状态响应模型"""
     file_hash: str
     filename: str
