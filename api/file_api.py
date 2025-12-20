@@ -184,7 +184,8 @@ def validate_file_type(filename: str):
     # 提取文件扩展名
     file_ext = Path(filename).suffix.lstrip('.')
 
-    if not file_ext:
+    # Not allow non-file-extension file
+    if not file_ext: 
         raise file_type_not_allowed_exception
 
     if file_ext not in ALLOWED_FILE_TYPES:
@@ -194,14 +195,18 @@ def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """上传成功后，将文件 ID 记录到用户的文件列表中"""
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
-    file_ids = list(dict.fromkeys(user.file_ids or []))
+    file_ids = list(dict.fromkeys(user.file_ids or [])) # using fromkeys() to deduplicate file_ids
+    # If file_id has been in user's file list, do nothing but return.
     if file_id in file_ids:
         return
+    # Check if exceed the MAX_FILE_PER_USER limit
     if len(file_ids) >= MAX_FILES_PER_USER:
         raise user_file_limit_exception
+    
+    # append new file id to user
     file_ids.append(file_id)
     user.file_ids = file_ids
-    session.add(user)
+    session.add(user) # 是否只要查询出来的对象，改过数据就会被标记，是否直接commit即可，无需额外session.add()？
 
 def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """删除文件后，从用户文件列表里移除对应 ID"""
@@ -243,7 +248,7 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
         while True:
-            chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
+            chunk = await upload_file.read(CHUNK_BUFFER_SIZE) # 分片写入文件
             if not chunk:
                 break
             await buffer.write(chunk)
@@ -329,27 +334,27 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
         raise storage_type_not_supported_exception#存储类型尚未实现异常
 
     # 用户限制校验
-    current_count = current_user.file_count or len(current_user.file_ids or [])
+    current_count = current_user.file_count or len(current_user.file_ids or []) # 直接从数据库获取文件数，如无则根据file id元素个数统计
     if current_count >= MAX_FILES_PER_USER:
         raise user_file_limit_exception
 
     # 文件安全校验
     if not file.filename:
         raise filename_invalid_exception
-    validate_filename(file.filename)
-    validate_file_type(file.filename)
+    validate_filename(file.filename) # 文件名合法性校验
+    validate_file_type(file.filename) # 文件类型合法性校验
     final_path = prepare_local_storage_path(current_user.id, file.filename)
 
     hash_sha256, size = await compute_upload_file_metadata(file)#先计算文件的大小，再判断是否写入文件系统
     if size > MAX_FILE_SIZE:
-        raise file_size_limit_exception#文件超出大小限制异常
+        raise file_size_limit_exception # 文件超出大小限制异常
 
     projected_total_size = (current_user.total_file_size or 0) + size
     if projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
-        raise user_storage_limit_exception
+        raise user_storage_limit_exception # 用户存储空间已满异常
 
     #TODO：文件元数据可以依赖前端传入，减少计算量
-    # 检查重复文件名
+    # 检查重复文件名（同时满足文件所有者和文件名相同）
     existing_name = session.exec(
         select(FileInDB).where(
             (FileInDB.owner_id == current_user.id) &
@@ -359,7 +364,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     if existing_name:
         raise duplicate_file_exception
 
-    # 检查重复 hash
+    # 检查重复 hash（同时满足文件所有者和文件hash相同）
     existing_hash = session.exec(
         select(FileInDB).where(
             (FileInDB.owner_id == current_user.id) &
@@ -386,12 +391,12 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
                            storage_type=storage_type,
                            hash_sha256=hash_sha256)
     session.add(file_record)
-    session.flush()
+    session.flush() # flush后file_record对象能自动拿到新的file_id
     #刷新 用户表
-    append_file_id(session, current_user, file_record.file_id)
+    append_file_id(session, current_user, file_record.file_id) # 更新用户表里的file_record
     current_user.file_count = (current_user.file_count or 0) + 1
     current_user.total_file_size = (current_user.total_file_size or 0) + size
-    session.commit()
+    session.commit() # 提交事务
     session.refresh(file_record)
     session.refresh(current_user)
     logger.info("simple upload completed user=%s file_id=%s filename=%s size=%s",
@@ -406,7 +411,7 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
     """
     if not current_user.file_ids:
         return []
-    seen_ids = list(dict.fromkeys(current_user.file_ids))[:MAX_FILES_PER_USER]
+    seen_ids = list(dict.fromkeys(current_user.file_ids))[:MAX_FILES_PER_USER] # 只提取MAX_FILE_PER_USER限定的前几个文件
     if not seen_ids:
         return []
 

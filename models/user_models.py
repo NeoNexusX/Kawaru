@@ -6,13 +6,13 @@ from logger import get_logger
 # 获取服务器状态模块的日志器
 logger = get_logger("main.user_control")
 
-
+# 基本用户信息模型
 class UserBase(SQLModel):
     username: str = Field()
     active: bool = Field(default=True)
     identity: str = Field(default="user")
 
-
+# 存储于数据库中的用户信息模型
 class UserInDB(UserBase, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     email: str = Field()
@@ -21,18 +21,18 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0)
     total_file_size: int = Field(default=0)
 
-
+# 用于返回响应信息的用户模型
 class UserPublic(UserBase):
     email: str
 
-
+# 创建用户时需要提供的用户信息模型，包括邮箱、密码、验证码
 class UserCreate(UserBase):
     email: str
     password: str
     verify_code: str
     identity: str | None = Field(default=None)  # 传入的时候必须为None
 
-
+# 更新用户信息，需要提供邮箱和密码
 class UserUpdate(UserBase):
     email: str = Field(default=None)
     password: str | None = None
