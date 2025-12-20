@@ -20,6 +20,7 @@ class UserInDB(UserBase, table=True):
     file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
     file_count: int = Field(default=0)
     total_file_size: int = Field(default=0)
+    download_used: int = Field(default=0)
 
 # 用于返回响应信息的用户模型
 class UserPublic(UserBase):
