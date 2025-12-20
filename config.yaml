@@ -1,0 +1,25 @@
+server:
+  name: bionet              # 服务名称
+  port: 8000                # 服务端口
+  host: 127.0.0.1            # 监听地址
+  log_level: debug          # 日志级别: debug/info/warning/error/critical
+  log_dir: logs             # 日志目录
+  admin_email: jszszzy@qq.com  # 管理员邮箱
+
+database:
+  name: bionet              # 数据库名称
+  path: database/           # 数据库文件路径
+  thread: False             # SQLite 线程检查
+
+storage:
+  root: storage             # 存储根目录
+  local_root: local         # 本地存储子目录
+  max_file_size: 10 # 最大文件大小  单位：GB
+  chunk_buffer_size: 2 # 上传读写缓冲区大小 单位：MB
+  allowed_storage_types: ["local"] # 允许的存储类型
+  allowed_file_types: ["imzML","ibd"] # 允许上传的文件扩展名
+  max_filename_length: 255  # 最大文件名长度
+  max_downloads_per_user: 50 #用户下载最大次数
+  max_files_per_user: 20 #用户最大上传次数
+  preflight_ttl_minutes: 20 #预清理时间阈值（分钟）
+  chunk_ttl_minutes: 20 #分片记录清理阈值（分钟）                         
