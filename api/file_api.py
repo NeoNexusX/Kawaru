@@ -1194,6 +1194,8 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     if hash_sha256 != (pre_record.hash_sha256 or ""):
         safe_cleanup_preflight_record(session, current_user, pre_record)
         session.commit()
+        logger.error("preflight hash mismatch user=%s expected=%s actual=%s",
+                     current_user.id, pre_record.hash_sha256, hash_sha256)
         raise preflight_hash_mismatch_exception
 
     # 用户配额（再次轻量校验，防止预检后状态变化）

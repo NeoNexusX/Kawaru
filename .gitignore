@@ -210,5 +210,7 @@ __marimo__/
 *.db
 .idea
 config.yaml
+.env
 .DS_Store
 .vscode
+storage/
