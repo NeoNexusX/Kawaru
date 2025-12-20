@@ -58,8 +58,25 @@ class FileStreamingResponse(StreamingResponse):#是响应类模型 不能使用�
     """文件流式响应，继承自 StreamingResponse，使用 FileBase 的字段"""
 
     def __init__(self, file_path: Path, file_base: FileBase, chunk_size: int, media_type: str = "application/octet-stream"):
-
+        
         async def file_generator() -> AsyncGenerator[bytes, None]:
+            """
+            Asynchronous generator that streams a file in fixed-size chunks.
+
+            Opens the file at `file_path` in binary mode, reads it piece-by-piece
+            using `aiofiles`, and yields each chunk as soon as it is fetched.
+            The loop terminates automatically when EOF is reached (empty read).
+
+            Usage
+            -----
+            async for chunk in file_generator():
+                await upload(chunk)  # memory-friendly streaming
+
+            Yields
+            ------
+            bytes
+                Up to `chunk_size` bytes of the file; the last chunk may be smaller.
+            """
             async with aiofiles.open(file_path, "rb") as f:
                 while chunk := await f.read(chunk_size):
                     yield chunk
