@@ -19,4 +19,4 @@ class EnvSet:
                         f"last_smtp_passwd: {os.getenv('LAST_SMTP_PASSWORD')}\n"
                         f"last_smtp_server: {os.getenv('LAST_SMTP_SERVER')}")
         else:
-            logger.info("loading environment variables failed")
+            logger.error("loading environment variables failed")
