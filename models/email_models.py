@@ -34,9 +34,9 @@ class EmailVerificationCodeTotp:
 
     def __init__(self):
         # create secret and TOTP
-        self.secret = pyotp.random_base32()
+        self.secret = pyotp.random_base32() # To set the otp secret for the first time.
         logger.debug(f"Totp init finish secret : {self.secret}")
-        self.totp = pyotp.TOTP(self.secret, interval=300, digits=6)
+        self.totp = pyotp.TOTP(self.secret, interval=300, digits=6) # 5mins interval, 6digits verification code
 
     def get_totp(self) -> pyotp.TOTP:
         return self.totp

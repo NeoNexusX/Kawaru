@@ -18,12 +18,15 @@ email_send_exception = HTTPException(
     detail="Send Failed error by server reason",
 )
 
-
+# Using MailGun to send an email verify code message
 async def send_mailgun_message(email_info: EmailConfirmResponseBase):
+    # MailGun environment settings
     MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
-    MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN")
+    MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN") 
     MAILGUN_API_URL = f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages"
-    code = TOTP.now()
+    ##############################
+
+    code = TOTP.now() # generate one-time code
 
     request_data = EmailConfirmRequest.model_validate(
         {**email_info.model_dump(),
@@ -36,11 +39,12 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
             response = await client.post(
                 MAILGUN_API_URL,
                 auth=("api", MAILGUN_API_KEY),
+                # Contents of email
                 data={
-                    "from": f"Mailgun Sandbox <postmaster@{MAILGUN_DOMAIN}>",
-                    "to": request_data.email,
-                    "subject": request_data.subject,
-                    "text": request_data.text_content
+                    "from": f"Mailgun Sandbox <postmaster@{MAILGUN_DOMAIN}>", # sender(server)'s info
+                    "to": request_data.email, # email address of receiver(user)
+                    "subject": request_data.subject, # subject of the email
+                    "text": request_data.text_content # text content of the email
                 }
             )
             response.raise_for_status()
@@ -57,7 +61,7 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
             logger.error(e)
             raise email_send_exception from e
 
-
+# Using SMTP to send an email verify code message
 async def send_smtp_email(email_info: EmailConfirmResponseBase):
     """generate code"""
     code = TOTP.now()
@@ -76,13 +80,15 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
     logger.info(f'request_data is {request_data}')
     # 构造邮件内容
     msg = EmailMessage()
-    msg["From"] = request_data.last_smtp_from_email
-    msg["To"] = request_data.email
-    msg["Subject"] = request_data.subject
-    msg.set_content(request_data.text_content)
-    context = ssl.create_default_context()
+    msg["From"] = request_data.last_smtp_from_email # sender(server)'s email
+    msg["To"] = request_data.email # user(receiver)'s email
+    msg["Subject"] = request_data.subject # the subject of the email
+    msg.set_content(request_data.text_content) # the content of the emai(verify code here)
+    context = ssl.create_default_context() # prepare the ssl context for smtp connection
 
     try:
+
+        # SMTP+STARTTLS protocol:
         if request_data.last_smtp_port == 587:
             # asny step use thread pool
             with smtplib.SMTP(request_data.last_smtp_server, request_data.last_smtp_port, timeout=10) as server:
@@ -91,6 +97,8 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
                 server.login(request_data.last_smtp_username, request_data.last_smtp_passwd)
                 server.send_message(msg)
             return request_data
+        
+        # SMTPS protocol:
         else:
             with smtplib.SMTP_SSL(request_data.last_smtp_server,
                                   request_data.last_smtp_port,
@@ -103,6 +111,13 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
 
     except smtplib.SMTPResponseException as e:
         if 'qq.com' in request_data.last_smtp_from_email and e.smtp_code == -1:
+            ######################################################################
+            # Workaround for QQ Mail: occasionally their SMTP server returns a
+            # non-RFC5321 response after QUIT (e.g. empty line, missing 221 code).
+            # smtplib fails to parse it and sets smtp_code = -1.
+            # The message has already been accepted, so we treat this as a benign
+            # exception and suppress the 502 error
+            ######################################################################
             logger.error(f"SMTP error: {str(e)}")
             logger.warning("SMTP server returned non-standard response during QUIT.")
             return request_data

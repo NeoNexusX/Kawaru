@@ -40,7 +40,7 @@ logger = get_logger("main")
 config = get_config()
 
 # CORSMiddleware跨域请求
-origins = ["*", ]
+origins = ["*", ] # 接受所有来源请求
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -49,14 +49,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-user_router = APIRouter(tags=["用户管理"])
-file_router = APIRouter(tags=["文件管理"])
+user_router = APIRouter(tags=["用户管理"]) # 挂接了用户管理相关的api
+file_router = APIRouter(tags=["文件管理"]) # 挂接了文件管理相关的api
 
 
 #########################
 # 用户管理 API
 #########################
 
+# 【hint】Annotated with a "dependable", FastAPI will take care of:
+# ·Calling "dependable" function with the correct parameters passed by.
+# ·Get the result from "dependable" function.
+# ·Assign that result to the parameter in the path operation function.
+
+# User log in：
+# Method：Post
+# Params（FormData）：username, password
 @user_router.post("/login")
 async def login(token: UserLoginDep) -> Token:
     try:
@@ -64,36 +72,51 @@ async def login(token: UserLoginDep) -> Token:
     except Exception as e:
         raise e
 
-
+# Get current user：
+# Method：Get
+# Params：N/A
 @user_router.get("/user", response_model=UserPublic)
 async def get_current_usr(user: Annotated[UserInDB, Depends(token_authen)]):
     return user
 
-
+# User sign up：
+# Method：Post
+# Params（Body）："username", "active", "identity=None", "email", "password", "verify_code"
 @user_router.post("/user_signup", response_model=UserPublic)
 async def create_user(user: UserCreateDep):
     return user
 
-
+# Admin user sign up：
+# Method：Post
+# Params（Body）："username", "active", "identity"=“admin”, "email", "password", "verify_code"
 @user_router.post("/admin_signup", response_model=UserPublic)#新增管理员用户接口
 async def create_admin_user_endpoint(user: AdminCreateDep):
     return user
 
-
+# Update user information：
+# Method：Post
+# Params（Body）："username", "active", "identity"(None), "email", "password"
 @user_router.post("/user_change", response_model=UserPublic)
 async def update_user(user: UserUpdateDep):
     return user
 
-
+# Delete current user：
+# Method：Delete
+# Params：N/A
 @user_router.delete("/user_delete")
 async def del_user(user: UserDeleDep):
     return user
 
+# Use MailGun to send verification code：
+# Method：Post
+# Params(Body)："email", "send_time"
 @user_router.post("/emailrequest", response_model=EmailConfirmRequest)#MAILGUN邮箱服务
 async def create_user_email_server(email: EmailConfirmDep):
     return email
 
-
+# Use SMTP to send verification code：
+# Method：Post
+# Params(Body)："email", "send_time"
 @user_router.post("/emailsmtprequest", response_model=EmailConfirmSMTPDep)#SMTP邮箱服务
 async def create_user_smtp_email_server(email: EmailConfirmSMTPDep):
     return email
