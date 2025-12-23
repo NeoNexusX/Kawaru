@@ -19,3 +19,7 @@ storage:
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd"]
   max_filename_length: 100
+  max_files_per_user: 20
+  max_downloads_per_user: 50
+  preflight_ttl_minutes: 30
+  chunk_ttl_minutes: 30

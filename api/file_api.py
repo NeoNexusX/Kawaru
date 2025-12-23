@@ -224,13 +224,12 @@ ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
 CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
-# 从配置读取（带默认值）
-MAX_FILES_PER_USER = int(getattr(storage_config, "max_files_per_user", 20))  # 用户上传最多文件数量
+# 从配置读取（默认值须由config_example.yaml提供，不要在代码中直接提供）
+MAX_FILES_PER_USER = int(storage_config.max_files_per_user)  # 用户上传最多文件数量
 MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
-# 若 storage.max_downloads_per_user 未配置，提供安全默认
-MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
-PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))  # 预检记录清理阈值（分钟）
-CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))  # 分片记录清理阈值（分钟）
+MAX_DOWNLOADS_PER_USER = int(storage_config.max_downloads_per_user)
+PREFLIGHT_TTL_MINUTES = int(storage_config.preflight_ttl_minutes)  # 预检记录清理阈值（分钟）
+CHUNK_TTL_MINUTES = int(storage_config.chunk_ttl_minutes)  # 分片记录清理阈值（分钟）
 TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"# 临时分片存储目录
 
 def ensure_storage_dirs():

@@ -29,6 +29,7 @@ class StorageSettings(BaseModel):
     max_downloads_per_user: int
     max_files_per_user: int
     preflight_ttl_minutes: int
+    chunk_ttl_minutes: int
 
 class Config(BaseModel):
     server: ServerSettings
