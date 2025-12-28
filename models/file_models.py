@@ -2,7 +2,7 @@
 Author: xiongqiurong 1513401658@qq.com
 Date: 2025-12-02 16:44:24
 LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-16 19:21:58
+LastEditTime: 2025-12-26 22:01:32
 FilePath: \Kawaru\models\file_models.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -32,9 +32,22 @@ class FileBase(SQLModel):
     """公共字段，供数据库与返回模型复用"""
     filename: str = Field()
     file_type: str = Field(default="")
+    # 【实验类型字段】用于定位对应的实验表（如 imzML/raw 等），由前端上传时指定
+    experiment_type: str = Field(default="", description="实验类型（imzml/raw等），用于定位实验表")
     size: int = Field(default=0)
     storage_type: str = Field(default="local")
     hash_sha256: str | None = Field(default=None)
+    
+    # 样本信息字段
+    organism: str = Field(default="", description="样本所属物种")
+    organism_part: str = Field(default="", description="样本来源组织")
+    condition: str = Field(default="", description="样本状态")
+    sample_growth_conditions: str = Field(default="", description="样本生长或处理条件（选填）")
+    sample_stabilisation: str = Field(default="", description="样本稳定方式")
+    tissue_modification: str = Field(default="", description="组织修饰方式")
+    maldi_matrix: str = Field(default="", description="MALDI 基质")
+    maldi_matrix_application: str = Field(default="", description="基质施加方式")
+    solvent: str = Field(default="", description="使用溶剂（选填）")
 
 
 class FilePublic(FileBase):
