@@ -11,7 +11,7 @@ from typing import Annotated, List
 import aiofiles
 from sqlmodel import select
 from sqlalchemy.exc import SQLAlchemyError
-from fastapi import Depends, File, Form, HTTPException, UploadFile
+from fastapi import Depends, File, Form, HTTPException, UploadFile, BackgroundTasks
 from starlette import status
 
 from api.user_api import token_authen
@@ -20,6 +20,7 @@ from database.db import SessionDep
 from logger import get_logger
 from models.file_models import FileInDB, FilePublic, FileDownloadMeta, PartInDB, ChunkedUploadStatus, now_local_timezone
 from models.user_models import UserInDB
+from api.experiment_api import process_imzml_experiment_background
 
 logger = get_logger("main.file_api")
 
@@ -288,7 +289,7 @@ def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     # append new file id to user
     file_ids.append(file_id)
     user.file_ids = file_ids
-    session.add(user) # 是否只要查询出来的对象，改过数据就会被标记，是否直接commit即可，无需额外session.add()？
+    session.add(user) # 是否只要查询出来的对象，改过数据就会被标记，是否直接commit即可，无需额外session.add()？  有时候是冗余的  属于安全性冗余
 
 def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
     """删除文件后，从用户文件列表里移除对应 ID"""
@@ -722,6 +723,18 @@ async def preflight_create_file(
     filename: str = Form(...),
     hash_sha256: str = Form(...),
     size: int = Form(...),
+    # 【实验类型】由前端指定，用于后续查询时定位对应实验表
+    experiment_type: str = Form(..., description="实验类型（imzML/raw等）"),
+    # 样本信息字段
+    organism: str = Form(..., description="样本所属物种"),
+    organism_part: str = Form(..., description="样本来源组织"),
+    condition: str = Form(..., description="样本状态"),
+    sample_growth_conditions: str = Form("", description="样本生长或处理条件（选填）"),
+    sample_stabilisation: str = Form(..., description="样本稳定方式"),
+    tissue_modification: str = Form(..., description="组织修饰方式"),
+    maldi_matrix: str = Form(..., description="MALDI 基质"),
+    maldi_matrix_application: str = Form(..., description="基质施加方式"),
+    solvent: str = Form("", description="使用溶剂（选填）")
 ) -> FilePublic:
     """
     预检：根据前端提供的元数据创建文件记录，但不写入用户 file_ids 与计数。
@@ -817,9 +830,20 @@ async def preflight_create_file(
         path=str(final_path),
         owners=[current_user.id],  # 预期归属，但不立即写入用户 file_ids
         file_type=file_type,
+        experiment_type=experiment_type,
         size=size,
         storage_type=storage_type,
         hash_sha256=hash_sha256,
+        # 样本信息字段
+        organism=organism,
+        organism_part=organism_part,
+        condition=condition,
+        sample_growth_conditions=sample_growth_conditions,
+        sample_stabilisation=sample_stabilisation,
+        tissue_modification=tissue_modification,
+        maldi_matrix=maldi_matrix,
+        maldi_matrix_application=maldi_matrix_application,
+        solvent=solvent,
     )
     session.add(file_record)
     session.commit()
@@ -838,6 +862,18 @@ async def preflight_create_chunked_file(
     hash_sha256: str = Form(...),
     size: int = Form(...),
     total_parts: int = Form(...),
+    # 【实验类型】由前端指定，用于后续查询时定位对应实验表
+    experiment_type: str = Form(..., description="实验类型（imzML/raw等）"),
+    # 样本信息字段
+    organism: str = Form(..., description="样本所属物种"),
+    organism_part: str = Form(..., description="样本来源组织"),
+    condition: str = Form(..., description="样本状态"),
+    sample_growth_conditions: str = Form("", description="样本生长或处理条件（选填）"),
+    sample_stabilisation: str = Form(..., description="样本稳定方式"),
+    tissue_modification: str = Form(..., description="组织修饰方式"),
+    maldi_matrix: str = Form(..., description="MALDI 基质"),
+    maldi_matrix_application: str = Form(..., description="基质施加方式"),
+    solvent: str = Form("", description="使用溶剂（选填）")
 ) -> FilePublic:
     """
     分片上传预检：创建文件记录，准备接收分片
@@ -953,10 +989,21 @@ async def preflight_create_chunked_file(
         path=str(final_path),
         owners=[current_user.id],  # 预期归属，但不立即写入用户 file_ids
         file_type=file_type,
+        experiment_type=experiment_type,
         size=size,
         storage_type=storage_type,
         hash_sha256=hash_sha256,
         total_parts=total_parts,  # 分片上传特有字段
+        # 样本信息字段
+        organism=organism,
+        organism_part=organism_part,
+        condition=condition,
+        sample_growth_conditions=sample_growth_conditions,
+        sample_stabilisation=sample_stabilisation,
+        tissue_modification=tissue_modification,
+        maldi_matrix=maldi_matrix,
+        maldi_matrix_application=maldi_matrix_application,
+        solvent=solvent,
     )
     session.add(file_record)
     session.commit()
@@ -971,6 +1018,7 @@ async def preflight_create_chunked_file(
 async def upload_file_chunk(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: SessionDep,
+    background_tasks: BackgroundTasks,
     file_hash: str = Form(...),
     part_number: int = Form(...),
     part_hash: str = Form(...),
@@ -1063,6 +1111,19 @@ async def upload_file_chunk(
             
             logger.info("chunked upload completed user=%s file_id=%s", 
                        current_user.id, file_record.file_id)
+            
+            # 如果是ZIP文件，自动触发解压处理
+            if file_record.file_type == "zip":
+                experiment_name = Path(file_record.filename).stem
+                background_tasks.add_task(
+                    process_imzml_experiment_background,
+                    current_user.id,
+                    file_record.file_id,
+                    experiment_name
+                )
+                logger.info("auto extraction triggered for chunked ZIP file user=%s file_id=%s", 
+                           current_user.id, file_record.file_id)
+            
             return {
                 "part_number": part_number,
                 "status": "uploaded_and_merged",
@@ -1135,6 +1196,7 @@ async def get_chunked_upload_status(
 #普通文件上传函数
 async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_authen)],
                              session: SessionDep,
+                             background_tasks: BackgroundTasks,
                              storage_type: str = Form("local"),
                              pre_file_id: int = Form(...),
                              file: UploadFile = File(...)):
@@ -1267,6 +1329,19 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     session.refresh(current_user)
     logger.info("simple upload completed user=%s file_id=%s filename=%s size=%s",
                 current_user.id, file_record.file_id, file_record.filename, file_record.size)
+    
+    # 如果是ZIP文件，自动触发解压处理
+    if file_record.file_type == "zip":
+        experiment_name = Path(file_record.filename).stem  # 使用文件名作为实验名称
+        background_tasks.add_task(
+            process_imzml_experiment_background,
+            current_user.id,
+            file_record.file_id,
+            experiment_name
+        )
+        logger.info("auto extraction triggered for ZIP file user=%s file_id=%s", 
+                   current_user.id, file_record.file_id)
+    
     return file_record
 
 #主查询函数
@@ -1284,8 +1359,11 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
     statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))
     results = session.exec(statement).all()
     files = [record for record in results]
-    logger.debug("list user files user=%s count=%s", current_user.id, len(files))
+    
+    logger.debug("list user files user=%s count=%s", 
+                current_user.id, len(files))
     return files
+
 
 #主删除函数
 async def delete_user_file(file_id: int,
