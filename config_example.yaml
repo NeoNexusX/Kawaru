@@ -8,18 +8,39 @@ server:
 
 database:
   name: bionet
+  host: 0.0.0.0
+  port: 3306
+  user_name: bionet_admin
+  password: bionet!123
   path: database/
   thread : False
 
 storage:
-  root: ./
+  root: ../
   local_root: data/
   max_file_size: 2000000000
   chunk_buffer_size: 1024
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd"]
   max_filename_length: 100
-  max_downloads_per_user: 10
-  max_files_per_user: 100
-  preflight_ttl_minutes: 60
+  max_file_type_length: 64
+  max_files_per_user: 20
+  max_downloads_per_user: 50
+  preflight_ttl_minutes: 30
   chunk_ttl_minutes: 30
+
+user:
+  max_username_length: 128
+  max_useremail_length: 128
+
+sample_info:
+  max_experiment_type_length: 128
+  max_organism_length: 128
+  max_organism_part_length: 128
+  max_condition_length: 128
+  max_sample_growth_conditions_length: 128
+  max_sample_stabilisation_length: 128
+  max_tissue_modification_length: 128
+  max_maldi_matrix_length: 128
+  max_maldi_matrix_application_length: 128
+  max_solvent_length: 128

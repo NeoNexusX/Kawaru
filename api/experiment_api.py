@@ -145,12 +145,12 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
     cleaned = 0
     
     try:
-        failed_experiments = session.exec(
+        failed_experiments = (await session.exec(
             select(ExperimentImzMLInDB).where(
                 ExperimentImzMLInDB.status == "failed",
                 ExperimentImzMLInDB.created_at < threshold
             )
-        ).all()
+        )).all()
         
         for exp in failed_experiments:
             try:
@@ -175,7 +175,7 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
             except Exception as e:
                 logger.error("failed to cleanup experiment exp_id=%s error=%s", exp.id, e)
         
-        session.commit()
+        await session.commit()
         logger.info("cleanup failed experiments completed count=%s", cleaned)
         
     except Exception as e:
@@ -200,10 +200,10 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
     try:
         logger.info("starting imzml experiment processing user=%s file=%s", user_id, source_file_id)
         
-        from database.db import engine
+        from database.db import sync_engine
         from sqlmodel import Session
         
-        with Session(engine) as session:
+        with Session(sync_engine) as session:
             source_file = session.exec(
                 select(FileInDB).where(FileInDB.file_id == source_file_id)
             ).first()
@@ -307,13 +307,13 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
 
 async def get_imzml_experiment(file_id: int, user_id: int, session: SessionDep) -> ExperimentImzMLPublic | None:
     """查询 imzML 类型实验（异步）"""
-    def _query():
-        return session.exec(
+    async def _query():
+        return (await session.exec(
             select(ExperimentImzMLInDB).where(
                 ExperimentImzMLInDB.source_file_id == file_id,
                 ExperimentImzMLInDB.user_id == user_id
             )
-        ).first()
+        )).first()
     return await asyncio.to_thread(_query)
 
 
@@ -349,10 +349,10 @@ async def get_experiment_by_file_id(
         pass
     
     # 1. 先查询文件记录是否存在（异步）
-    def _query_file():
-        return session.exec(
+    async def _query_file():
+        return (await session.exec(
             select(FileInDB).where(FileInDB.file_id == file_id)
-        ).first()
+        )).first()
     file_record = await asyncio.to_thread(_query_file)
     
     if not file_record:
