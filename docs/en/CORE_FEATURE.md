@@ -62,21 +62,34 @@ Email Verification Code Feature:
 
 Database module (`database/db.py`) features:
 - Uses SQLModel ORM (based on SQLAlchemy)
-- SQLite database (suitable for small and medium applications)
+- MariaDB with the asyncmy async driver (satisfies distributed requirements)
 - Automatic table creation
 - Dependency injection session management
 
 Database Session Usage Example:
+- Synchronous version
+```python
+from fastapi import Depends
+from sqlmodel import Session
+from database.db import get_sync_session
+
+@app.get("/example")
+def example_endpoint(session: Session = Depends(get_sync_session)):
+    # use session for database operations
+    pass
+```
+- Asynchronous version
 ```python
 from fastapi import Depends
 from sqlmodel import Session
 from database.db import get_session
 
 @app.get("/example")
-def example_endpoint(session: Session = Depends(get_session)):
-    # Use session for database operations
+async def example_endpoint(session: Session = Depends(get_session)):
+    # use await session for database operations
     pass
 ```
+
 
 ## API Endpoint Documentation
 
@@ -105,6 +118,7 @@ For detailed API documentation, please visit the `/docs` endpoint to view Swagge
 
 The project uses Pylint for code checking, configuration file is `.pylintrc`:
 - Max line length: 130 characters
+
 Run code check:
 ```bash
 uv run pylint api/ models/ database/ envset/
