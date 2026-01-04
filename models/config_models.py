@@ -12,13 +12,19 @@ class ServerSettings(BaseModel):
 
 # Database settings
 class DatabaseSettings(BaseModel):
-    name: str
-    host: str
-    port: int
-    user_name: str
-    password: str | int
     path: str
     thread: bool
+
+class EmailSettings(BaseModel):
+    # Support for MailGun
+    mailgun_domain: str
+
+    # Support for SMTP
+    last_smtp_port: int
+    last_smtp_username: str
+    last_smtp_password: str | int
+    last_smtp_from_email: str
+    last_smtp_server: str
 
 
 # file storage model
@@ -56,6 +62,7 @@ class SampleInfoSettings(BaseModel):
 
 class Config(BaseModel):
     server: ServerSettings
+    email: EmailSettings
     database: DatabaseSettings
     storage: StorageSettings
     user: UserSettings

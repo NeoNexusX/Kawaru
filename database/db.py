@@ -1,28 +1,30 @@
+import os
 from typing import Annotated, AsyncGenerator
 from fastapi import Depends
 from sqlmodel import SQLModel, create_engine, Session
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 from envset.config import get_config
+from envset.envset import EnvSet
 
 config = get_config()
-
-# read in settings
-sqlite_file_name = config.database.path + config.database.name + ".db"
+db_name = os.getenv('DATABASE_NAME')
+db_host = os.getenv('DATABASE_HOST')
+db_port = os.getenv('DATABASE_PORT')
+db_username = os.getenv('DATABASE_USERNAME')
+db_password = os.getenv('DATABASE_PASSWORD')
 
 # sync engine for startup building database and tables
 sync_engine = create_engine(
-    f"mariadb+pymysql://{config.database.user_name}:{config.database.password}"
-    f"@{config.database.host}:{config.database.port}/{config.database.name}"
+    f"mariadb+pymysql://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
     f"?charset=utf8mb4",
     pool_pre_ping=True
 )
 
 # async engine for query
 engine = create_async_engine(
-                        f"mariadb+asyncmy://{config.database.user_name}:{config.database.password}"
-                        f"@{config.database.host}:{config.database.port}/{config.database.name}"
-                        f"?charset=utf8mb4",          
+                        f"mariadb+asyncmy://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
+                        f"?charset=utf8mb4",
                         pool_pre_ping=True
                       )
 

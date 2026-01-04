@@ -6,12 +6,17 @@ server:
   log_dir: logs
   admin_email: examplr@example.com
 
+email:
+  # Support for MailGun
+  mailgun_domain: yourMAILGUN_DOMAIN
+  # Support for SMTP
+  last_smtp_port: 465 # or 587
+  last_smtp_username: example@qq.com
+  last_smtp_password: 123456  # For Gmail: 16-character app password (with spaces). For QQ Mail: no spaces.
+  last_smtp_from_email: example@qq.com
+  last_smtp_server: smtp.qq.com
+
 database:
-  name: bionet
-  host: 0.0.0.0
-  port: 3306
-  user_name: bionet_admin
-  password: bionet!123
   path: database/
   thread : False
 
