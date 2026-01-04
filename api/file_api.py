@@ -7,7 +7,7 @@ import asyncio#高并发IO操作
 import hashlib#提供hash算法 用于数据加密和校验
 from pathlib import Path#提供面向对象的文件系统路径操作
 from typing import Annotated, List
-
+import zipfile
 import aiofiles
 from sqlmodel import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,7 +21,8 @@ from logger import get_logger
 from models.file_models import FileInDB, FilePublic, FileDownloadMeta, PartInDB, ChunkedUploadStatus, now_local_timezone
 from models.user_models import UserInDB
 from api.experiment_api import process_imzml_experiment_background
-
+from models.experiment_models import ExperimentImzMLInDB
+    
 logger = get_logger("main.file_api")
 
 # 存储类型不在允许列表异常
@@ -233,6 +234,7 @@ MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 5
 PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))  # 预检记录清理阈值（分钟）
 CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))  # 分片记录清理阈值（分钟）
 TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"# 临时分片存储目录
+TEMPORARY_COMPRESSION_ROOT = STORAGE_ROOT / "temporary_compression"  # 【临时压缩目录】下载时生成的临时ZIP文件
 
 def ensure_storage_dirs():
     """确保存储目录存在"""
@@ -976,10 +978,8 @@ async def preflight_create_chunked_file(
         if (rec.file_id in user_file_ids) or (current_user.id in set(rec.owners or [])):
             logger.warning("chunked preflight rejected: user=%s already has file with name=%s", 
                           current_user.id, filename)
-            raise duplicate_file_exception  # 表示该用户已经上传过同名文件
+            raise duplicate_file_exception  # 该用户已经上传过同名文件
         
-        # 如果其他用户有同名文件但内容不同，允许当前用户上传（不复用）
-        # 继续执行创建新记录的逻辑
     
     # 创建新的分片预检记录（注意：此时不写入用户的 file_ids）
     # owners 字段记录预期归属，但用户表的 file_ids 只在分片上传完成并合并成功后才更新
@@ -1373,9 +1373,11 @@ async def delete_user_file(file_id: int,
     """
     删除当前用户的指定文件：
     - 校验所有权
-    - 根据 storage_type 调用对应删除实现
+    - 删除关联的实验记录和解压后的文件（imzML/ibd）
     - 移除数据库记录（仅当无其他用户持有时）
+    注意：原始 ZIP 文件在解压时已被删除，此处不再处理
     """
+    
     file_record = await get_file_record(file_id, session)
     await assert_file_owner(file_record, current_user)  # 权限校验（管理员或拥有索引者）
 
@@ -1395,7 +1397,6 @@ async def delete_user_file(file_id: int,
     session.flush()
 
     # 3) 检查是否还有其他用户持有该文件（以用户表的 file_ids 字段为准）
-    # 查询所有用户，检查是否有人的 file_ids 中包含该文件
     all_users = session.exec(select(UserInDB)).all()
     other_users_have_file = False
     
@@ -1416,12 +1417,49 @@ async def delete_user_file(file_id: int,
                    current_user.id, file_id)
         return {"file_id": file_id, "status": "unlinked"}
 
-    # 4) 确认无其他用户持有，删除物理文件与记录
-    await delete_file_by_storage(file_record)
+    # 4) 确认无其他用户持有，删除关联的实验记录和解压后的文件
+    # 【删除实验记录】根据 experiment_type 查找并删除对应实验表记录
+    experiment_type = file_record.experiment_type
+    if experiment_type == "imzML":
+        # 查找 imzML 实验记录
+        experiment = session.exec(
+            select(ExperimentImzMLInDB).where(
+                ExperimentImzMLInDB.source_file_id == file_id,
+                ExperimentImzMLInDB.user_id == current_user.id
+            )
+        ).first()
+        
+        if experiment:
+            # 删除解压后的 imzML 和 ibd 文件
+            if experiment.imzml_path:
+                await asyncio.to_thread(lambda: Path(experiment.imzml_path).unlink(missing_ok=True))
+                logger.info("deleted imzml file path=%s", experiment.imzml_path)
+            if experiment.ibd_path:
+                await asyncio.to_thread(lambda: Path(experiment.ibd_path).unlink(missing_ok=True))
+                logger.info("deleted ibd file path=%s", experiment.ibd_path)
+            
+            # 删除实验目录（如果为空）
+            if experiment.imzml_path:
+                experiment_dir = Path(experiment.imzml_path).parent
+                def _rmdir_if_empty(d: Path):
+                    if d.exists() and not any(d.iterdir()):
+                        d.rmdir()
+                await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
+            
+            # 删除实验数据库记录
+            session.delete(experiment)
+            logger.info("deleted experiment record exp_id=%s file_id=%s", experiment.id, file_id)
+    
+    # 【预留】其他实验类型的删除逻辑
+    # elif experiment_type == "raw":
+    #     # 删除 RAW 实验记录和文件
+    #     pass
+
+    # 5) 删除文件数据库记录（原始 ZIP 文件在解压时已删除，无需删除物理文件）
     session.delete(file_record)
     session.commit()
     session.refresh(current_user)
-    logger.info("deleted file content and record user=%s file_id=%s", current_user.id, file_id)
+    logger.info("deleted file record user=%s file_id=%s", current_user.id, file_id)
     return {"file_id": file_id, "status": "deleted"}
 
 #主下载函数
@@ -1433,32 +1471,87 @@ async def get_download_file_metadata(
     """
     返回文件元数据和路径，不处理文件流
     - 校验身份与所有权
-    - 仅支持 local 存储类型
+    - 如果文件路径存在，直接返回
+    - 如果文件路径为空（ZIP已删除），从实验表查找并压缩 imzML/ibd 文件
     - 更新下载计数
     """
+    
     file_record = await get_file_record(file_id, session)
     await assert_file_owner(file_record, current_user)
 
     logger.debug("download request user=%s file_id=%s", current_user.id, file_id)
+    
     # 用户下载次数限制（管理员豁免）
     if current_user.identity != "admin":
         used = current_user.download_used or 0
         if used >= MAX_DOWNLOADS_PER_USER:
             raise user_download_limit_exception
+    
     if file_record.storage_type != "local":
-        raise download_not_implemented_exception#当前存储类型下载未实现异常
+        raise download_not_implemented_exception
 
-    path = Path(file_record.path)
-    if not path.exists():
-        logger.warning("file content missing user=%s file_id=%s path=%s",
-                       current_user.id, file_id, path)
-        raise file_content_missing_exception#文件内容缺失异常
+    path = Path(file_record.path) if file_record.path else None
+    
+    # 【检查文件路径是否存在】
+    if path and path.exists():
+        # 文件存在，直接返回
+        pass
+    else:
+        # 文件路径为空或不存在，需要从实验表查找并压缩
+        experiment_type = file_record.experiment_type
+        
+        if experiment_type == "imzML":
+            # 查找 imzML 实验记录
+            experiment = session.exec(
+                select(ExperimentImzMLInDB).where(
+                    ExperimentImzMLInDB.source_file_id == file_id,
+                    ExperimentImzMLInDB.user_id == current_user.id
+                )
+            ).first()
+            
+            if not experiment or experiment.status != "completed":
+                logger.warning("experiment not found or not completed file_id=%s", file_id)
+                raise file_content_missing_exception
+            
+            # 检查 imzML 和 ibd 文件是否存在
+            imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
+            ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
+            
+            if not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists():
+                logger.warning("experiment files missing file_id=%s", file_id)
+                raise file_content_missing_exception
+            
+            # 【压缩文件】保存到临时压缩目录
+            zip_filename = f"{file_record.filename}"
+            TEMPORARY_COMPRESSION_ROOT.mkdir(parents=True, exist_ok=True)
+            zip_path = TEMPORARY_COMPRESSION_ROOT / zip_filename
+            
+            # 异步压缩
+            def _create_zip():
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(imzml_path, imzml_path.name)
+                    zf.write(ibd_path, ibd_path.name)
+            
+            await asyncio.to_thread(_create_zip)
+            
+            # 更新文件表中的路径和大小（压缩后大小可能与原始不同）
+            file_record.path = str(zip_path)
+            file_record.size = zip_path.stat().st_size  # 【更新文件大小】确保 Content-Length 正确  TODO
+            session.add(file_record)
+            
+            path = zip_path
+            logger.info("created download zip file_id=%s path=%s size=%s", file_id, zip_path, file_record.size)
+        
+        # 【预留】其他实验类型
+        # elif experiment_type == "raw":
+        #     pass
+        else:
+            raise file_content_missing_exception
 
-    # 更新下载计数
+    # 更新下载计数（管理员和普通用户一样）
     file_record.download_count += 1
-    if current_user.identity != "admin":
-        current_user.download_used = (current_user.download_used or 0) + 1
-        session.add(current_user)
+    current_user.download_used = (current_user.download_used or 0) + 1
+    session.add(current_user)
     session.add(file_record)
     session.commit()
     logger.info("download success user=%s file_id=%s filename=%s",
