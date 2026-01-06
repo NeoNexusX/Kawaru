@@ -118,7 +118,7 @@ def _extract_and_validate_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path
 #########################
 
 async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES) -> int:
-    """清理过期的失败实验记录，同时删除对应的文件表记录"""
+    """清理过期的失败实验记录，同时删除对应的文件表记录和更新用户表"""
     now = now_local_timezone()
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
@@ -146,10 +146,29 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
                             d.rmdir()
                     await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
                 
-                # 删除文件表中对应的记录
+                # 查找文件表中对应的记录
                 file_statement = select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
                 file_record = session.exec(file_statement).first()
+                
                 if file_record:
+                    file_size = file_record.size or 0
+                    
+                    # 更新用户表：移除 file_id，减少 file_count 和 total_file_size
+                    user_statement = select(UserInDB).where(UserInDB.id == exp.user_id)
+                    user_record = session.exec(user_statement).first()
+                    
+                    if user_record:
+                        # 从 file_ids 中移除该文件ID
+                        file_ids = list(user_record.file_ids or [])
+                        if exp.source_file_id in file_ids:
+                            file_ids.remove(exp.source_file_id)
+                            user_record.file_ids = file_ids
+                            user_record.file_count = max(0, (user_record.file_count or 0) - 1)
+                            user_record.total_file_size = max(0, (user_record.total_file_size or 0) - file_size)
+                            session.add(user_record)
+                            logger.debug("cleanup user record: user_id=%s file_id=%s", exp.user_id, exp.source_file_id)
+                    
+                    # 删除文件记录
                     session.delete(file_record)
                     logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
                 
