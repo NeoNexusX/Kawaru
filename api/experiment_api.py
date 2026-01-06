@@ -85,6 +85,14 @@ def _extract_and_validate_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path
     # 解压 ZIP 文件
     try:
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            # Validate ZIP entries to prevent path traversal (Zip Slip)
+            temp_dir_resolved = temp_dir.resolve()
+            for member in zip_ref.namelist():
+                member_path = (temp_dir / member).resolve()
+                try:
+                    member_path.relative_to(temp_dir_resolved)
+                except ValueError:
+                    raise Exception("unsafe file path in zip file")
             zip_ref.extractall(temp_dir)
     except zipfile.BadZipFile:
         raise Exception("invalid zip file format")
