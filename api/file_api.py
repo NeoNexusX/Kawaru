@@ -718,7 +718,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
         raise chunk_merge_failed_exception from exc
 
 
-#预检函数#TODO 检测到已有文件 1：已有文件，不用再上传真正文件，2：无文件，检测文件路径是否存在，告诉他 正在上传，等一会 注意：这里不能等，因为可能存在过期的预检记录还没清理
+#预检函数
 async def preflight_create_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: SessionDep,

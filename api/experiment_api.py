@@ -118,7 +118,7 @@ def _extract_and_validate_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path
 #########################
 
 async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES) -> int:
-    """清理过期的失败实验记录"""
+    """清理过期的失败实验记录，同时删除对应的文件表记录"""
     now = now_local_timezone()
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
@@ -146,6 +146,14 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
                             d.rmdir()
                     await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
                 
+                # 删除文件表中对应的记录
+                file_statement = select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
+                file_record = session.exec(file_statement).first()
+                if file_record:
+                    session.delete(file_record)
+                    logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
+                
+                # 删除实验记录
                 session.delete(exp)
                 cleaned += 1
                 logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
