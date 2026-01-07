@@ -1493,14 +1493,14 @@ async def get_download_file_metadata(
     
     # 【检查文件路径是否存在】
     if path and path.exists():
-        # 文件存在，更新数据库中的 size 为实际文件大小
-        file_record.size = path.stat().st_size
+        # 文件存在，直接返回
+        pass
     else:
         # 文件路径为空或不存在，需要从实验表查找并压缩
         experiment_type = file_record.experiment_type
         
         if experiment_type == "imzML":
-            # 查找 imzML 实验记录（通过 source_file_id 查询，不需要 user_id）
+            # 查找 imzML 实验记录（通过 source_file_id 查询，不需要 user_id 前面验证过了）
             experiment = session.exec(
                 select(ExperimentImzMLInDB).where(
                     ExperimentImzMLInDB.source_file_id == file_id
