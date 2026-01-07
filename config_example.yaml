@@ -12,7 +12,7 @@ email:
   # Support for SMTP
   last_smtp_port: 465 # or 587
   last_smtp_username: example@qq.com
-  last_smtp_password: 123456  # For Gmail: 16-character app password (with spaces). For QQ Mail: no spaces.
+  last_smtp_password: 123456!  # For Gmail: 16-character app password (with spaces). For QQ Mail: no spaces.
   last_smtp_from_email: example@qq.com
   last_smtp_server: smtp.qq.com
 
@@ -27,6 +27,7 @@ storage:
   chunk_buffer_size: 1024
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd"]
+  max_path_length: 255
   max_filename_length: 100
   max_file_type_length: 64
   max_files_per_user: 20
@@ -35,10 +36,12 @@ storage:
   chunk_ttl_minutes: 30
 
 user:
+  max_identity_length: 10
   max_username_length: 128
   max_useremail_length: 128
 
 sample_info:
+  max_experiment_name_length: 128
   max_experiment_type_length: 128
   max_organism_length: 128
   max_organism_part_length: 128

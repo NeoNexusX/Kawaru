@@ -66,26 +66,14 @@ Database module (`database/db.py`) features:
 - Automatic table creation
 - Dependency injection session management
 
-Database Session Usage Example:
-- Synchronous version
+Asynchronous Database Session Usage Example:
 ```python
 from fastapi import Depends
-from sqlmodel import Session
-from database.db import get_sync_session
-
-@app.get("/example")
-def example_endpoint(session: Session = Depends(get_sync_session)):
-    # use session for database operations
-    pass
-```
-- Asynchronous version
-```python
-from fastapi import Depends
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 from database.db import get_session
 
 @app.get("/example")
-async def example_endpoint(session: Session = Depends(get_session)):
+async def example_endpoint(session: AsyncSession = Depends(get_session)):
     # use await session for database operations
     pass
 ```

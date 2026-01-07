@@ -12,6 +12,7 @@ class ServerSettings(BaseModel):
 
 # Database settings
 class DatabaseSettings(BaseModel):
+    # Database connection settings has been moved to .env file.
     path: str
     thread: bool
 
@@ -22,7 +23,7 @@ class EmailSettings(BaseModel):
     # Support for SMTP
     last_smtp_port: int
     last_smtp_username: str
-    last_smtp_password: str | int
+    last_smtp_password: str
     last_smtp_from_email: str
     last_smtp_server: str
 
@@ -35,6 +36,7 @@ class StorageSettings(BaseModel):
     chunk_buffer_size: int
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
+    max_path_length: int
     max_filename_length: int
     max_file_type_length: int
     max_downloads_per_user: int
@@ -44,11 +46,13 @@ class StorageSettings(BaseModel):
 
 # user model 用户信息配置模型
 class UserSettings(BaseModel):
+    max_identity_length: int
     max_username_length: int
     max_useremail_length: int
 
 # sample information model 样品信息配置模型
 class SampleInfoSettings(BaseModel):
+    max_experiment_name_length: int
     max_experiment_type_length: int
     max_organism_length: int
     max_organism_part_length: int

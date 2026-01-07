@@ -9,11 +9,10 @@ from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select, Session
-from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette import status
 from api.auth_api import credentials_exception, create_access_token, hashed_password, \
     verify_password, token_invalid_exception, token_expired_exception
-from database.db import SessionDep, get_session, get_sync_session
+from database.db import SessionDep, get_sync_session
 from envset.config import get_config
 
 from logger import get_logger

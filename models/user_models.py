@@ -15,7 +15,7 @@ user_config = config.user
 class UserBase(SQLModel):
     username: str = Field(max_length=user_config.max_username_length)
     active: bool = Field(default=True)
-    identity: str = Field(default="user", max_length=128)
+    identity: str = Field(default="user", max_length=user_config.max_identity_length)
 
 # 存储于数据库中的用户信息模型
 class UserInDB(UserBase, table=True):

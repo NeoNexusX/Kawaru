@@ -12,7 +12,8 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import Depends, HTTPException
-from sqlmodel import select
+from sqlmodel import Session, select
+from database.db import sync_engine
 from starlette import status
 
 from api.user_api import token_authen
@@ -200,9 +201,6 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
     try:
         logger.info("starting imzml experiment processing user=%s file=%s", user_id, source_file_id)
         
-        from database.db import sync_engine
-        from sqlmodel import Session
-        
         with Session(sync_engine) as session:
             source_file = session.exec(
                 select(FileInDB).where(FileInDB.file_id == source_file_id)
@@ -265,11 +263,8 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
         logger.error("imzml experiment processing failed error=%s", e)
         
         if experiment_record:
-            try:
-                from database.db import engine
-                from sqlmodel import Session
-                
-                with Session(engine) as session:
+            try:    
+                with Session(sync_engine) as session:
                     exp_record = session.exec(
                         select(ExperimentImzMLInDB).where(ExperimentImzMLInDB.id == experiment_record.id)
                     ).first()
@@ -307,14 +302,13 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
 
 async def get_imzml_experiment(file_id: int, user_id: int, session: SessionDep) -> ExperimentImzMLPublic | None:
     """查询 imzML 类型实验（异步）"""
-    async def _query():
-        return (await session.exec(
-            select(ExperimentImzMLInDB).where(
-                ExperimentImzMLInDB.source_file_id == file_id,
-                ExperimentImzMLInDB.user_id == user_id
-            )
-        )).first()
-    return await asyncio.to_thread(_query)
+    result = await session.exec(
+        select(ExperimentImzMLInDB).where(
+            ExperimentImzMLInDB.source_file_id == file_id,
+            ExperimentImzMLInDB.user_id == user_id
+        )
+    )
+    return result.first()
 
 
 # 实验类型到查询函数的映射
@@ -350,10 +344,12 @@ async def get_experiment_by_file_id(
     
     # 1. 先查询文件记录是否存在（异步）
     async def _query_file():
-        return (await session.exec(
+        result = await session.exec(
             select(FileInDB).where(FileInDB.file_id == file_id)
-        )).first()
-    file_record = await asyncio.to_thread(_query_file)
+        )
+        return result.first()
+    
+    file_record = await _query_file()
     
     if not file_record:
         raise source_file_not_found_exception

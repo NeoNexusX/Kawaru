@@ -1,7 +1,6 @@
 import pytest
 import os, hashlib, aiofiles
-from typing import List, Tuple
-from _hashlib import HASH
+from typing import Tuple
 from pathlib import Path
 from httpx import AsyncClient
 from .conftest import logger
@@ -10,16 +9,9 @@ from .conftest import ALLOWED_FILE_TYPES
 
 '''
 To test this module, you should do: 
-1.Configurate in conftest.py.
-2.Run the code bellow in shell:
-  【Linux/MacOS】
-    export TEST_USER=your_username
-    export TEST_PWD=your_password
-  【Windows】
-    $Env:TEST_USER='your_username'
-    $Env:TEST_PWD='your_password'
+1.Copy .env.pytest.example as .env.pytest, configure your .env.pytest file.
 3.Run "uv run main.py" to start FastAPI app.
-4.Run "pytest -m upload" in shell with venv activated.
+4.Run "uv run pytest -m upload" in shell with venv activated.
 '''
 
 @pytest.fixture(scope="session")
@@ -56,7 +48,7 @@ async def login(async_client):
     assert rs.status_code == 200, rs.text
     current_username = rs.json()['username']
     if current_username != username:
-        pytest.fail(f"Currrent user is not the same as target user，"
+        pytest.fail(f"Current user is not the same as target user，"
                     f"username:{username}, current username:{current_username}")
     
     yield client, token, token_type

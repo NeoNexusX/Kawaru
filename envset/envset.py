@@ -19,7 +19,7 @@ class EnvSet:
                         f"last_smtp_passwd: {os.getenv('LAST_SMTP_PASSWORD')}\n"
                         f"last_smtp_server: {os.getenv('LAST_SMTP_SERVER')}\n"
                         f"database_name: {os.getenv('DATABASE_NAME')}, "
-                        f"host: {os.getenv('DATABASE_HOST')}:{os.getenv('DATABASE_PORT')}\n"
+                        f"database_host: {os.getenv('DATABASE_HOST')}:{os.getenv('DATABASE_PORT')}\n"
                         f"database_username: {os.getenv('DATABASE_USERNAME')}, password: {os.getenv('DATABASE_PASSWORD')}\n")
         else:
             logger.error("loading environment variables failed")

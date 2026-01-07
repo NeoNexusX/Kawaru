@@ -65,7 +65,7 @@ class FilePublic(FileBase):
 class FileInDB(FileBase, table=True):
     """数据库模型"""
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})#文件编号（自增主键）
-    path: str = Field(max_length=255)#存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
+    path: str = Field(max_length=getattr(storage_config, 'max_path_length', 255)) #存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
     owners: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件所属用户ID列表JSON格式
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)#上传时间
     download_count: int = Field(default=0)#下载次数
@@ -117,7 +117,7 @@ class PartInDB(SQLModel, table=True):
     part_number: int = Field()  # 分片编号（从1开始）
     part_hash: str = Field(max_length=256)  # 分片哈希值
     part_size: int = Field()  # 分片大小
-    temp_path: str = Field(max_length=255)  # 临时存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
+    temp_path: str = Field(max_length=getattr(storage_config, 'max_path_length', 255))  # 临时存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
     owner_id: int = Field(index=True)  # 分片所属用户ID
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)
     file_id: int = Field(index=True)  # 关联的文件记录ID

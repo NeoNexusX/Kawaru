@@ -5,7 +5,6 @@ from sqlmodel import SQLModel, create_engine, Session
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 from envset.config import get_config
-from envset.envset import EnvSet
 
 config = get_config()
 db_name = os.getenv('DATABASE_NAME')
@@ -43,5 +42,5 @@ def create_db_and_tables():
     SQLModel.metadata.create_all(sync_engine)
 
 # 直接将Session对get_session()的依赖写进SessionDep类型签名，方便后续调用
-SessionDep = Annotated[Session, Depends(get_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SyncSessionDep = Annotated[Session, Depends(get_sync_session)]
