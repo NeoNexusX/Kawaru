@@ -1,47 +1,99 @@
+'''
+Author: xiongqiurong 1513401658@qq.com
+Date: 2026-01-05 16:05:12
+LastEditors: xiongqiurong 1513401658@qq.com
+LastEditTime: 2026-01-07 13:29:59
+FilePath: \Kawaru\models\experiment_models.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
 """
-ImzML 实验数据模型
+实验数据模型
 """
 from datetime import datetime
+from enum import Enum
 from sqlmodel import Field, SQLModel
 from models.file_models import now_local_timezone
 
 
-class ExperimentImzMLBase(SQLModel):
-    """ImzML 实验基础模型"""
+#########################
+# 实验状态枚举
+#########################
+
+class ExperimentStatus(str, Enum):
+    """实验处理状态枚举"""
+    PROCESSING = "processing"  # 处理中
+    COMPLETED = "completed"    # 已完成
+    FAILED = "failed"          # 失败
+
+
+#########################
+# 实验基类（所有实验类型继承此类）
+#########################
+
+class ExperimentBase(SQLModel):
+    """
+    实验公共基类
+    所有实验类型（imzML、raw 等）都应继承此类
+    注意：实验通过 source_file_id 关联文件，多用户共享同一文件时共享同一实验记录
+    """
     experiment_name: str = Field(min_length=1, max_length=255, description="实验名称")
-    user_id: int = Field(gt=0, description="关联用户ID", index=True)
-    source_file_id: int = Field(gt=0, description="原始ZIP文件ID", index=True)
-
-
-class ExperimentImzMLInDB(ExperimentImzMLBase, table=True):
-    """ImzML 实验数据库模型"""
-    __tablename__ = "experiment_imzml"
-    
-    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    
-    # 核心文件信息
-    imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径")
-    imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
-    ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径")
-    ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小（字节）")
-    
-    # 元数据
+    source_file_id: int = Field(gt=0, description="原始ZIP文件ID", index=True, unique=True)
     created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
-    status: str = Field(default="processing", description="处理状态: processing, completed, failed")
+    status: str = Field(default=ExperimentStatus.PROCESSING, description="处理状态: processing, completed, failed")
     error_message: str = Field(default="", description="错误信息（失败时）")
 
 
-class ExperimentImzMLPublic(ExperimentImzMLBase):
-    """ImzML 实验公开模型"""
+class ExperimentPublic(SQLModel):
+    """
+    实验公共返回模型
+    用于 API 返回，包含所有实验类型的公共字段
+    """
     id: int
-    imzml_size: int
-    ibd_size: int
+    experiment_name: str
+    source_file_id: int
     created_at: datetime
     status: str
     error_message: str
 
 
-class ExperimentImzMLCreate(SQLModel):
-    """创建 ImzML 实验请求模型"""
-    experiment_name: str
-    source_file_id: int
+#########################
+# ImzML 实验模型
+#########################
+
+class ExperimentImzMLInDB(ExperimentBase, table=True):
+    """ImzML 实验数据库模型"""
+    __tablename__ = "experiment_imzml"
+    
+    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
+    
+    # ImzML 特有字段：核心文件信息
+    imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径")
+    imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
+    ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径")
+    ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小（字节）")
+
+
+class ExperimentImzMLPublic(ExperimentPublic):
+    """ImzML 实验公开模型（继承公共字段，添加 imzML 特有字段）"""
+    imzml_size: int
+    ibd_size: int
+
+
+#########################
+# 预留：RAW 实验模型（示例）
+#########################
+
+# class ExperimentRawInDB(ExperimentBase, table=True):
+#     """RAW 实验数据库模型"""
+#     __tablename__ = "experiment_raw"
+#     
+#     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
+#     
+#     # RAW 特有字段
+#     raw_path: str = Field(default="", description=".raw 文件的绝对存储路径")
+#     raw_size: int = Field(default=0, ge=0, description=".raw 文件大小（字节）")
+
+
+# class ExperimentRawPublic(ExperimentPublic):
+#     """RAW 实验公开模型"""
+#     raw_size: int

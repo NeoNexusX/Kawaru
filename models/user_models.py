@@ -15,12 +15,12 @@ class UserBase(SQLModel):
 # 存储于数据库中的用户信息模型
 class UserInDB(UserBase, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    email: str = Field()
-    hashed_password: str = Field()
-    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
-    file_count: int = Field(default=0)
-    total_file_size: int = Field(default=0)
-    download_used: int = Field(default=0)
+    email: str = Field(description="用户邮箱")
+    hashed_password: str = Field(description="加密后的密码")
+    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False), description="用户拥有的文件ID列表")
+    file_count: int = Field(default=0, description="用户文件数量")
+    total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
+    download_used: int = Field(default=0, description="用户已使用的下载次数")
 
 # 用于返回响应信息的用户模型
 class UserPublic(UserBase):
