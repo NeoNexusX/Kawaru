@@ -20,7 +20,7 @@ from envset.config import get_config
 from logger import get_logger
 from models.user_models import UserInDB
 from models.file_models import FileInDB, now_local_timezone
-from models.experiment_models import ExperimentImzMLInDB, ExperimentImzMLPublic
+from models.experiment_models import ExperimentImzMLInDB, ExperimentImzMLPublic, ExperimentStatus
 
 logger = get_logger("main.experiment_api")
 
@@ -29,8 +29,8 @@ config = get_config()
 storage_config = config.storage
 STORAGE_ROOT = Path(storage_config.root)
 EXPERIMENT_STORAGE_ROOT = STORAGE_ROOT / "experiments"
-EXPERIMENT_TEMP_ROOT = EXPERIMENT_STORAGE_ROOT / "temp"      # 【临时目录】experiments/temp/exp_{id}
-EXPERIMENT_REALLY_ROOT = EXPERIMENT_STORAGE_ROOT / "really"  # 【正式目录】experiments/really/exp_{id}
+EXPERIMENT_TEMP_ROOT = EXPERIMENT_STORAGE_ROOT / "temp"           # 【临时目录】experiments/temp/exp_{id}
+EXPERIMENT_PROCESSED_ROOT = EXPERIMENT_STORAGE_ROOT / "processed" # 【正式目录】experiments/processed/exp_{id}
 FAILED_EXPERIMENT_TTL_MINUTES = int(getattr(storage_config, "failed_experiment_ttl_minutes", 30))
 
 # 实验不存在异常
@@ -66,7 +66,7 @@ def _ensure_experiment_dirs():
     """确保实验存储目录存在"""
     EXPERIMENT_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
     EXPERIMENT_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-    EXPERIMENT_REALLY_ROOT.mkdir(parents=True, exist_ok=True)
+    EXPERIMENT_PROCESSED_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def _validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool:
@@ -81,10 +81,16 @@ def _extract_and_validate_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path
     """
     解压 ZIP 文件并验证内容
     ZIP 文件只包含两个文件：.imzML 和 .ibd
+    包含 Zip Slip 路径遍历攻击防护
     """
-    # 解压 ZIP 文件
     try:
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            # 【安全检查】防止 Zip Slip 路径遍历攻击
+            for member in zip_ref.namelist():
+                member_path = (temp_dir / member).resolve()
+                if not str(member_path).startswith(str(temp_dir.resolve())):
+                    raise Exception(f"zip file contains unsafe path: {member}")
+            
             zip_ref.extractall(temp_dir)
     except zipfile.BadZipFile:
         raise Exception("invalid zip file format")
@@ -125,7 +131,7 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
     
     try:
         statement = select(ExperimentImzMLInDB).where(
-            ExperimentImzMLInDB.status == "failed",
+            ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
             ExperimentImzMLInDB.created_at < threshold
         )
         failed_experiments = session.exec(statement).all()
@@ -152,21 +158,22 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
                 
                 if file_record:
                     file_size = file_record.size or 0
+                    owners = list(file_record.owners or [])
                     
-                    # 更新用户表：移除 file_id，减少 file_count 和 total_file_size
-                    user_statement = select(UserInDB).where(UserInDB.id == exp.user_id)
-                    user_record = session.exec(user_statement).first()
-                    
-                    if user_record:
-                        # 从 file_ids 中移除该文件ID
-                        file_ids = list(user_record.file_ids or [])
-                        if exp.source_file_id in file_ids:
-                            file_ids.remove(exp.source_file_id)
-                            user_record.file_ids = file_ids
-                            user_record.file_count = max(0, (user_record.file_count or 0) - 1)
-                            user_record.total_file_size = max(0, (user_record.total_file_size or 0) - file_size)
-                            session.add(user_record)
-                            logger.debug("cleanup user record: user_id=%s file_id=%s", exp.user_id, exp.source_file_id)
+                    # 更新所有拥有该文件的用户：移除 file_id，减少 file_count 和 total_file_size
+                    for owner_id in owners:
+                        user_statement = select(UserInDB).where(UserInDB.id == owner_id)
+                        user_record = session.exec(user_statement).first()
+                        
+                        if user_record:
+                            file_ids = list(user_record.file_ids or [])
+                            if exp.source_file_id in file_ids:
+                                file_ids.remove(exp.source_file_id)
+                                user_record.file_ids = file_ids
+                                user_record.file_count = max(0, (user_record.file_count or 0) - 1)
+                                user_record.total_file_size = max(0, (user_record.total_file_size or 0) - file_size)
+                                session.add(user_record)
+                                logger.debug("cleanup user record: user_id=%s file_id=%s", owner_id, exp.source_file_id)
                     
                     # 删除文件记录
                     session.delete(file_record)
@@ -198,7 +205,7 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
     
     存储路径：
     - 临时目录：experiments/temp/exp_{id}/
-    - 正式目录：experiments/really/exp_{id}/
+    - 正式目录：experiments/processed/exp_{id}/
     """
     temp_dir = None
     experiment_record = None
@@ -215,12 +222,11 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
                 logger.error("source file not found file_id=%s", source_file_id)
                 return
             
-            # 创建实验记录
+            # 创建实验记录（不包含 user_id，通过 source_file_id 关联）
             experiment_record = ExperimentImzMLInDB(
                 experiment_name=experiment_name,
-                user_id=user_id,
                 source_file_id=source_file_id,
-                status="processing"
+                status=ExperimentStatus.PROCESSING
             )
             session.add(experiment_record)
             session.commit()
@@ -235,8 +241,8 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
             source_path = Path(source_file.path)
             imzml_temp_path, ibd_temp_path = _extract_and_validate_zip(source_path, temp_dir)
             
-            # 准备正式存储路径：experiments/really/exp_{id}/
-            experiment_dir = EXPERIMENT_REALLY_ROOT / f"exp_{experiment_record.id}"
+            # 准备正式存储路径：experiments/processed/exp_{id}/
+            experiment_dir = EXPERIMENT_PROCESSED_ROOT / f"exp_{experiment_record.id}"
             experiment_dir.mkdir(parents=True, exist_ok=True)
             
             # 移动文件到正式位置
@@ -251,7 +257,7 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
             experiment_record.imzml_size = final_imzml_path.stat().st_size
             experiment_record.ibd_path = str(final_ibd_path)
             experiment_record.ibd_size = final_ibd_path.stat().st_size
-            experiment_record.status = "completed"
+            experiment_record.status = ExperimentStatus.COMPLETED
             session.add(experiment_record)
             
             # 删除原始ZIP文件并清空文件表中的path字段
@@ -279,7 +285,7 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
                     exp_record = session.exec(statement).first()
                     
                     if exp_record:
-                        exp_record.status = "failed"
+                        exp_record.status = ExperimentStatus.FAILED
                         exp_record.error_message = str(e)
                         session.add(exp_record)
                         
@@ -314,11 +320,10 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
 # 异步查询函数
 #########################
 
-async def get_imzml_experiment(file_id: int, user_id: int, session: SessionDep) -> ExperimentImzMLPublic | None:
-    """查询 imzML 类型实验"""
+async def get_imzml_experiment(file_id: int, session: SessionDep) -> ExperimentImzMLPublic | None:
+    """查询 imzML 类型实验（通过 source_file_id 查询，不需要 user_id）"""
     statement = select(ExperimentImzMLInDB).where(
-        ExperimentImzMLInDB.source_file_id == file_id,
-        ExperimentImzMLInDB.user_id == user_id
+        ExperimentImzMLInDB.source_file_id == file_id
     )
     experiment = session.exec(statement).first()
     return experiment
@@ -342,7 +347,11 @@ async def get_experiment_by_file_id(
     try:
         await cleanup_failed_experiments(session)
     except Exception:
-        pass
+        logger.exception(
+            "Failed to cleanup failed experiments for file_id=%s user_id=%s",
+            file_id,
+            getattr(current_user, "id", None),
+        )
     
     # 1. 查询文件记录
     file_statement = select(FileInDB).where(FileInDB.file_id == file_id)
@@ -365,8 +374,8 @@ async def get_experiment_by_file_id(
     if not query_func:
         raise unsupported_experiment_type_exception
     
-    # 4. 调用查询函数
-    experiment = await query_func(file_id, current_user.id, session)
+    # 4. 调用查询函数（只需要 file_id，不需要 user_id）
+    experiment = await query_func(file_id, session)
     
     if not experiment:
         raise experiment_not_found_exception

@@ -1,9 +1,29 @@
+'''
+Author: xiongqiurong 1513401658@qq.com
+Date: 2026-01-05 16:05:12
+LastEditors: xiongqiurong 1513401658@qq.com
+LastEditTime: 2026-01-07 13:29:59
+FilePath: \Kawaru\models\experiment_models.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
 """
 实验数据模型
 """
 from datetime import datetime
+from enum import Enum
 from sqlmodel import Field, SQLModel
 from models.file_models import now_local_timezone
+
+
+#########################
+# 实验状态枚举
+#########################
+
+class ExperimentStatus(str, Enum):
+    """实验处理状态枚举"""
+    PROCESSING = "processing"  # 处理中
+    COMPLETED = "completed"    # 已完成
+    FAILED = "failed"          # 失败
 
 
 #########################
@@ -14,12 +34,12 @@ class ExperimentBase(SQLModel):
     """
     实验公共基类
     所有实验类型（imzML、raw 等）都应继承此类
+    注意：实验通过 source_file_id 关联文件，多用户共享同一文件时共享同一实验记录
     """
     experiment_name: str = Field(min_length=1, max_length=255, description="实验名称")
-    user_id: int = Field(gt=0, description="关联用户ID", index=True)
-    source_file_id: int = Field(gt=0, description="原始ZIP文件ID", index=True)
+    source_file_id: int = Field(gt=0, description="原始ZIP文件ID", index=True, unique=True)
     created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
-    status: str = Field(default="processing", description="处理状态: processing, completed, failed")
+    status: str = Field(default=ExperimentStatus.PROCESSING, description="处理状态: processing, completed, failed")
     error_message: str = Field(default="", description="错误信息（失败时）")
 
 
@@ -30,7 +50,6 @@ class ExperimentPublic(SQLModel):
     """
     id: int
     experiment_name: str
-    user_id: int
     source_file_id: int
     created_at: datetime
     status: str

@@ -3,9 +3,9 @@
 #########################
 from __future__ import annotations
 
-import asyncio#高并发IO操作
-import hashlib#提供hash算法 用于数据加密和校验
-from pathlib import Path#提供面向对象的文件系统路径操作
+import asyncio  # 高并发IO操作
+import hashlib  # 提供hash算法 用于数据加密和校验
+from pathlib import Path  # 提供面向对象的文件系统路径操作
 from typing import Annotated, List
 import zipfile
 import aiofiles
@@ -21,7 +21,7 @@ from logger import get_logger
 from models.file_models import FileInDB, FilePublic, FileDownloadMeta, PartInDB, ChunkedUploadStatus, now_local_timezone
 from models.user_models import UserInDB
 from api.experiment_api import process_imzml_experiment_background
-from models.experiment_models import ExperimentImzMLInDB
+from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
     
 logger = get_logger("main.file_api")
 
@@ -233,8 +233,8 @@ MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
 MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
 PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))  # 预检记录清理阈值（分钟）
 CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))  # 分片记录清理阈值（分钟）
-TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"# 临时分片存储目录
-TEMPORARY_COMPRESSION_ROOT = STORAGE_ROOT / "temporary_compression"  # 【临时压缩目录】下载时生成的临时ZIP文件
+TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"  # 临时分片存储目录
+DOWNLOAD_TEMP_ROOT = STORAGE_ROOT / "download_temp"  # 【下载临时目录】下载时生成的临时ZIP文件
 
 def ensure_storage_dirs():
     """确保存储目录存在"""
@@ -1417,15 +1417,14 @@ async def delete_user_file(file_id: int,
                    current_user.id, file_id)
         return {"file_id": file_id, "status": "unlinked"}
 
-    # 4) 确认无其他用户持有，删除关联的实验记录和解压后的文件
+    # 4) 确认无其他用户持有，删除关联的实验记录和解压后的文件 
     # 【删除实验记录】根据 experiment_type 查找并删除对应实验表记录
     experiment_type = file_record.experiment_type
     if experiment_type == "imzML":
         # 查找 imzML 实验记录
         experiment = session.exec(
             select(ExperimentImzMLInDB).where(
-                ExperimentImzMLInDB.source_file_id == file_id,
-                ExperimentImzMLInDB.user_id == current_user.id
+                ExperimentImzMLInDB.source_file_id == file_id
             )
         ).first()
         
@@ -1462,8 +1461,8 @@ async def delete_user_file(file_id: int,
     logger.info("deleted file record user=%s file_id=%s", current_user.id, file_id)
     return {"file_id": file_id, "status": "deleted"}
 
-#主下载函数
-async def get_download_file_metadata(
+#主下载函数 
+async def get_download_file_metadata(  
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: SessionDep
@@ -1472,7 +1471,7 @@ async def get_download_file_metadata(
     返回文件元数据和路径，不处理文件流
     - 校验身份与所有权
     - 如果文件路径存在，直接返回
-    - 如果文件路径为空（ZIP已删除），从实验表查找并压缩 imzML/ibd 文件
+    - 如果文件路径为空（ZIP已删除），从实验表查找并压缩 imzML/ibd 文件  
     - 更新下载计数
     """
     
@@ -1494,22 +1493,21 @@ async def get_download_file_metadata(
     
     # 【检查文件路径是否存在】
     if path and path.exists():
-        # 文件存在，直接返回
-        pass
+        # 文件存在，更新数据库中的 size 为实际文件大小
+        file_record.size = path.stat().st_size
     else:
         # 文件路径为空或不存在，需要从实验表查找并压缩
         experiment_type = file_record.experiment_type
         
         if experiment_type == "imzML":
-            # 查找 imzML 实验记录
+            # 查找 imzML 实验记录（通过 source_file_id 查询，不需要 user_id）
             experiment = session.exec(
                 select(ExperimentImzMLInDB).where(
-                    ExperimentImzMLInDB.source_file_id == file_id,
-                    ExperimentImzMLInDB.user_id == current_user.id
+                    ExperimentImzMLInDB.source_file_id == file_id
                 )
             ).first()
             
-            if not experiment or experiment.status != "completed":
+            if not experiment or experiment.status != ExperimentStatus.COMPLETED:
                 logger.warning("experiment not found or not completed file_id=%s", file_id)
                 raise file_content_missing_exception
             
@@ -1521,10 +1519,10 @@ async def get_download_file_metadata(
                 logger.warning("experiment files missing file_id=%s", file_id)
                 raise file_content_missing_exception
             
-            # 【压缩文件】保存到临时压缩目录
-            zip_filename = f"{file_record.filename}"
-            TEMPORARY_COMPRESSION_ROOT.mkdir(parents=True, exist_ok=True)
-            zip_path = TEMPORARY_COMPRESSION_ROOT / zip_filename
+            # 【压缩文件】保存到下载临时目录
+            zip_filename = file_record.filename
+            DOWNLOAD_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+            zip_path = DOWNLOAD_TEMP_ROOT / zip_filename
             
             # 异步压缩
             def _create_zip():
@@ -1534,12 +1532,10 @@ async def get_download_file_metadata(
             
             await asyncio.to_thread(_create_zip)
             
-            # 更新文件表中的路径和大小（压缩后大小可能与原始不同）
+            # 更新文件表中的路径和大小（写回数据库）
             file_record.path = str(zip_path)
-            file_record.size = zip_path.stat().st_size  # 【更新文件大小】确保 Content-Length 正确  TODO
-            session.add(file_record)
+            file_record.size = zip_path.stat().st_size
             
-            path = zip_path
             logger.info("created download zip file_id=%s path=%s size=%s", file_id, zip_path, file_record.size)
         
         # 【预留】其他实验类型
@@ -1557,6 +1553,7 @@ async def get_download_file_metadata(
     logger.info("download success user=%s file_id=%s filename=%s",
                 current_user.id, file_id, file_record.filename)
 
+    # 构造返回的文件元数据
     return FileDownloadMeta.from_record(file_record)
 
 
