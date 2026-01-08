@@ -2,7 +2,7 @@
 Author: xiongqiurong 1513401658@qq.com
 Date: 2025-12-02 16:44:24
 LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-26 22:01:32
+LastEditTime: 2026-01-07 13:41:41
 FilePath: \Kawaru\models\file_models.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -143,7 +143,8 @@ class FileDownloadMeta(FileBase):
     download_count: int
 
     @classmethod
-    def from_record(cls, record: FileInDB) -> "FileDownloadMeta":#利用该函数将文件记录创建文件元数据
+    def from_record(cls, record: FileInDB) -> "FileDownloadMeta":
+        """从文件记录创建下载元数据"""
         return cls(
             file_id=record.file_id,
             filename=record.filename,
