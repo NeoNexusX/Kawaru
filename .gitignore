@@ -214,3 +214,4 @@ config.yaml
 .DS_Store
 .vscode
 storage/
+.env.pytest

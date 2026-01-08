@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException
 from sqlmodel import Session, select
+from database.db import sync_engine
 from starlette import status
 
 from api.user_api import token_authen
@@ -132,11 +133,12 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
     cleaned = 0
     
     try:
-        statement = select(ExperimentImzMLInDB).where(
-            ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
-            ExperimentImzMLInDB.created_at < threshold
-        )
-        failed_experiments = session.exec(statement).all()
+        failed_experiments = (await session.exec(
+            select(ExperimentImzMLInDB).where(
+                ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
+                ExperimentImzMLInDB.created_at < threshold
+            )
+        )).all()
         
         for exp in failed_experiments:
             try:
@@ -188,7 +190,7 @@ async def cleanup_failed_experiments(session: SessionDep, ttl_minutes: int = FAI
             except Exception as e:
                 logger.error("failed to cleanup experiment exp_id=%s error=%s", exp.id, e)
         
-        session.commit()
+        await session.commit()
         logger.info("cleanup failed experiments completed count=%s", cleaned)
         
     except Exception as e:
@@ -323,11 +325,11 @@ def process_imzml_experiment_background(user_id: int, source_file_id: int, exper
 #########################
 
 async def get_imzml_experiment(file_id: int, session: SessionDep) -> ExperimentImzMLPublic | None:
-    """查询 imzML 类型实验（通过 source_file_id 查询，不需要 user_id）"""
+    """查询 imzML 类型实验（异步）"""
     statement = select(ExperimentImzMLInDB).where(
-        ExperimentImzMLInDB.source_file_id == file_id
+        ExperimentImzMLInDB.source_file_id == file_id,
     )
-    experiment = session.exec(statement).first()
+    experiment = await session.exec(statement).first()
     return experiment
 
 
@@ -357,7 +359,7 @@ async def get_experiment_by_file_id(
     
     # 1. 查询文件记录
     file_statement = select(FileInDB).where(FileInDB.file_id == file_id)
-    file_record = session.exec(file_statement).first()
+    file_record = await session.exec(file_statement).first()
     
     if not file_record:
         raise source_file_not_found_exception

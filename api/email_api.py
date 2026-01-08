@@ -9,9 +9,12 @@ from fastapi import HTTPException, Depends
 from starlette import status
 
 from logger import get_logger
+from envset.config import get_config
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
 
 logger = get_logger("api.email-api")
+config = get_config()
+email_config = config.email
 
 email_send_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
@@ -21,8 +24,8 @@ email_send_exception = HTTPException(
 # Using MailGun to send an email verify code message
 async def send_mailgun_message(email_info: EmailConfirmResponseBase):
     # MailGun environment settings
-    MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
-    MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN") 
+    MAILGUN_API_KEY = os.getenv('MAILGUN_API_KEY')
+    MAILGUN_DOMAIN = email_config.mailgun_domain
     MAILGUN_API_URL = f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages"
     ##############################
 
@@ -69,11 +72,11 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
     """smtp server"""
     request_data = EmailSMTPRequest.model_validate({
         **email_info.model_dump(),
-        "last_smtp_username": os.getenv('LAST_SMTP_USERNAME'),
-        "last_smtp_passwd": os.getenv('LAST_SMTP_PASSWORD'),
-        "last_smtp_from_email": os.getenv('LAST_SMTP_FROM_EMAIL'),
-        "last_smtp_server": os.getenv('LAST_SMTP_SERVER'),
-        "last_smtp_port": int(os.getenv('LAST_SMTP_PORT')),
+        "last_smtp_username": email_config.last_smtp_username,
+        "last_smtp_passwd": email_config.last_smtp_password,
+        "last_smtp_from_email": email_config.last_smtp_from_email,
+        "last_smtp_server": email_config.last_smtp_server,
+        "last_smtp_port": int(email_config.last_smtp_port),
         "text_content": f"Welcome\r\n Your code is {code}"
     }
     )

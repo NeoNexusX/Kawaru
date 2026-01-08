@@ -2,22 +2,27 @@ from sqlalchemy import Column
 from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
 from logger import get_logger
+from envset.config import get_config
 
 # 获取服务器状态模块的日志器
 logger = get_logger("main.user_control")
 
+# 模型字段配置来自 config
+config = get_config()
+user_config = config.user
+
 # 基本用户信息模型
 class UserBase(SQLModel):
-    username: str = Field()
+    username: str = Field(max_length=user_config.max_username_length)
     active: bool = Field(default=True)
-    identity: str = Field(default="user")
+    identity: str = Field(default="user", max_length=user_config.max_identity_length)
 
 # 存储于数据库中的用户信息模型
 class UserInDB(UserBase, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    email: str = Field(description="用户邮箱")
-    hashed_password: str = Field(description="加密后的密码")
-    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False), description="用户拥有的文件ID列表")
+    email: str = Field(max_length=user_config.max_useremail_length,description="用户邮箱")
+    hashed_password: str = Field(max_length=256,description="加密后的密码")
+    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False), description="用户拥有的文件ID列表")#文件ID列表JSON格式
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")

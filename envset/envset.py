@@ -17,6 +17,9 @@ class EnvSet:
                         f"MAILGUN_DOMAIN :{os.getenv('MAILGUN_DOMAIN')}\n"
                         f"last_smtp_username: {os.getenv('LAST_SMTP_USERNAME')}\n"
                         f"last_smtp_passwd: {os.getenv('LAST_SMTP_PASSWORD')}\n"
-                        f"last_smtp_server: {os.getenv('LAST_SMTP_SERVER')}")
+                        f"last_smtp_server: {os.getenv('LAST_SMTP_SERVER')}\n"
+                        f"database_name: {os.getenv('DATABASE_NAME')}, "
+                        f"database_host: {os.getenv('DATABASE_HOST')}:{os.getenv('DATABASE_PORT')}\n"
+                        f"database_username: {os.getenv('DATABASE_USERNAME')}, password: {os.getenv('DATABASE_PASSWORD')}\n")
         else:
             logger.error("loading environment variables failed")

@@ -13,6 +13,10 @@ from datetime import datetime
 from enum import Enum
 from sqlmodel import Field, SQLModel
 from models.file_models import now_local_timezone
+from envset.config import get_config
+
+config = get_config()
+storage_config = config.storage
 
 
 #########################
@@ -66,11 +70,16 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
     
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     
-    # ImzML 特有字段：核心文件信息
-    imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径")
+    # 核心文件信息
+    imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
-    ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径")
+    ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小（字节）")
+    
+    # 元数据
+    created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
+    status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)
+    error_message: str = Field(default="", description="错误信息（失败时）", max_length=255)
 
 
 class ExperimentImzMLPublic(ExperimentPublic):

@@ -16,7 +16,7 @@ from starlette import status
 
 from api.user_api import token_authen
 from envset.config import get_config
-from database.db import SessionDep
+from database.db import SessionDep, SyncSessionDep
 from logger import get_logger
 from models.file_models import FileInDB, FilePublic, FileDownloadMeta, PartInDB, ChunkedUploadStatus, now_local_timezone
 from models.user_models import UserInDB
@@ -226,8 +226,8 @@ ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
 CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
-# 从配置读取（带默认值）
-MAX_FILES_PER_USER = int(getattr(storage_config, "max_files_per_user", 20))  # 用户上传最多文件数量
+# 从配置读取（默认值须由config_example.yaml提供，不要在代码中直接提供）
+MAX_FILES_PER_USER = int(storage_config.max_files_per_user)  # 用户上传最多文件数量
 MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
 # 若 storage.max_downloads_per_user 未配置，提供安全默认
 MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
@@ -312,7 +312,7 @@ def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
     final_path = LOCAL_STORAGE_ROOT / filename
     return final_path
 
-def cleanup_stale_preflights(
+async def cleanup_stale_preflights(
     session: SessionDep,
     current_user: UserInDB,
     ttl_minutes: int = PREFLIGHT_TTL_MINUTES
@@ -332,9 +332,9 @@ def cleanup_stale_preflights(
 
     try:
         # 只查询 owners 包含当前用户的记录（避免全表扫描）
-        records = session.exec(
+        records =(await session.exec(
             select(FileInDB).where(FileInDB.owners.contains([current_user.id]))
-        ).all()
+        )).all()
 
         for rec in records:
             owners = set(rec.owners or [])
@@ -367,7 +367,7 @@ def cleanup_stale_preflights(
             cleaned += 1
 
         if cleaned:
-            session.commit()
+            await session.commit()
 
     except Exception as exc:
         logger.error(
@@ -416,7 +416,7 @@ async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
     """根据 file_id 获取文件记录，若不存在抛出 404"""
     try:
         statement = select(FileInDB).where(FileInDB.file_id == file_id)
-        file_record = session.exec(statement).first()
+        file_record = (await session.exec(statement)).first()
     except SQLAlchemyError as exc:
         logger.error("database error when querying file_id=%s error=%s", file_id, exc)
         raise file_query_failed_exception from exc
@@ -480,7 +480,7 @@ async def delete_file_by_storage(file_record: FileInDB):
     else:
         raise storage_type_delete_unsupported_exception#不支持的存储类型删除异常
 
-def safe_cleanup_preflight_record(session: SessionDep, current_user: UserInDB, pre_record: FileInDB):
+async def safe_cleanup_preflight_record(session: SessionDep, current_user: UserInDB, pre_record: FileInDB):
     """
     安全清理预检记录：
     - 如果文件只属于当前用户，则删除整条记录
@@ -501,7 +501,7 @@ def safe_cleanup_preflight_record(session: SessionDep, current_user: UserInDB, p
         return
     
     # owners 为空，进一步检查其他用户的 file_ids
-    all_users = session.exec(select(UserInDB)).all()
+    all_users = (await session.exec(select(UserInDB))).all()
     for user in all_users:
         if user.id == current_user.id:
             continue
@@ -513,10 +513,10 @@ def safe_cleanup_preflight_record(session: SessionDep, current_user: UserInDB, p
             return
     
     # 确认无其他用户持有，安全删除记录
-    session.delete(pre_record)
+    await session.delete(pre_record)
     logger.debug("preflight cleanup: deleted file_id=%s completely", pre_record.file_id)
 
-def cleanup_stale_chunks(session: SessionDep, current_user: UserInDB, ttl_minutes: int = CHUNK_TTL_MINUTES) -> int:
+async def cleanup_stale_chunks(session: SessionDep, current_user: UserInDB, ttl_minutes: int = CHUNK_TTL_MINUTES) -> int:
     """
     清理当前用户过期的分片记录
     """
@@ -524,11 +524,11 @@ def cleanup_stale_chunks(session: SessionDep, current_user: UserInDB, ttl_minute
     cleaned = 0
     try:
         # 查询当前用户的过期分片
-        chunks = session.exec(
+        chunks = (await session.exec(
             select(PartInDB).where(
                 PartInDB.owner_id == current_user.id
             )
-        ).all()
+        )).all()
         
         for chunk in chunks:
             too_old = (now - chunk.uploaded_at).total_seconds() >= ttl_minutes * 60
@@ -543,7 +543,7 @@ def cleanup_stale_chunks(session: SessionDep, current_user: UserInDB, ttl_minute
                 cleaned += 1
         
         if cleaned:
-            session.commit()
+            await session.commit()
             
     except HTTPException:
         # 验证或合并失败，重新抛出异常
@@ -569,12 +569,12 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
     """
     try:
         # 获取该文件的所有分片记录
-        chunks = session.exec(
+        chunks = (await session.exec(
             select(PartInDB).where(
                 PartInDB.file_id == file_record.file_id,
                 PartInDB.owner_id == current_user.id
             ).order_by(PartInDB.part_number)
-        ).all()
+        )).all()
         
         if not chunks:
             logger.warning("no chunks found for file_id=%s user=%s", 
@@ -598,7 +598,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                 except Exception:
                     pass
                 session.delete(chunk)
-                session.commit()
+                await session.commit()
                 raise part_number_out_of_range_exception
         
         # 检查分片完整性
@@ -629,12 +629,12 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
 
                                     #这种情况概率比较小，就是在两个用户同时上传同一个文件的时候出现这种问题。
         # 检查是否可以复用现有文件  #这个地方是用来检测有一种情况， 分片都已上传完，但在真正写最终文件之前，再次检查是否已经存在完全相同内容的文件，如果存在，就直接复用那个文件，而不生成新的物理文件，然后把分片记录全部删除
-        existing_files = session.exec(
+        existing_files = (await session.exec(
             select(FileInDB).where(
                 FileInDB.hash_sha256 == file_record.hash_sha256,
                 FileInDB.file_id != file_record.file_id
             )
-        ).all()
+        )).all()
         
         for existing_file in existing_files:
             if Path(existing_file.path).exists():
@@ -652,7 +652,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                 # 更新当前文件记录的路径为已存在文件的路径
                 file_record.path = existing_file.path
                 session.add(file_record)
-                session.commit()
+                await session.commit()
                 
                 logger.info("chunks reused existing file file_id=%s user=%s reused_path=%s", 
                            file_record.file_id, current_user.id, existing_file.path)
@@ -696,7 +696,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                 session.delete(chunk)
             # 删除文件记录
             session.delete(file_record)
-            session.commit()
+            await session.commit()
             raise merged_file_hash_mismatch_exception
         
         # 合并成功，清理分片记录和临时文件
@@ -707,7 +707,7 @@ async def validate_and_merge_chunks(session: SessionDep, file_record: FileInDB, 
                 pass
             session.delete(chunk)
         
-        session.commit()
+        await session.commit()
         logger.info("chunks merged successfully file_id=%s user=%s final_path=%s", 
                    file_record.file_id, current_user.id, final_path)
         return True
@@ -779,7 +779,7 @@ async def preflight_create_file(
     user_file_ids = set(current_user.file_ids or [])
     if user_file_ids:
         # 查询用户已拥有的所有文件
-        user_files = session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))).all()
+        user_files = (await session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids)))).all()
         for user_file in user_files:
             # 检查文件名是否重复
             if user_file.filename == filename:
@@ -788,7 +788,7 @@ async def preflight_create_file(
                 raise duplicate_file_exception#表示该用户已经上传过相同的文件
     
     # 检查 2：是否存在相同内容的文件（通过 hash 检查）
-    same_hash_records = session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256)).all() or []
+    same_hash_records = (await session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256))).all() or []
     for rec in same_hash_records:
         # 检查用户是否已拥有该文件
         if (rec.file_id in user_file_ids) or (current_user.id in set(rec.owners or [])):
@@ -811,16 +811,16 @@ async def preflight_create_file(
             current_user.file_count = (current_user.file_count or 0) + 1
             current_user.total_file_size = (current_user.total_file_size or 0) + (rec.size or 0)
             session.add(current_user)
-            session.commit()
-            session.refresh(rec)
-            session.refresh(current_user)
+            await session.commit()
+            await session.refresh(rec)
+            await session.refresh(current_user)
             logger.info("preflight reused existing completed file user=%s file_id=%s filename=%s (file already uploaded by others, no need to upload again)",
                        current_user.id, rec.file_id, rec.filename)
             return rec
         else:
             # 文件路径不存在，说明是预检记录，返回该记录供后续上传使用
-            session.commit()
-            session.refresh(rec)
+            await session.commit()
+            await session.refresh(rec)
             logger.info("preflight found existing record user=%s file_id=%s filename=%s (added to owners, file not yet completed)",
                        current_user.id, rec.file_id, rec.filename)
             return rec
@@ -849,8 +849,8 @@ async def preflight_create_file(
         solvent=solvent,
     )
     session.add(file_record)
-    session.commit()
-    session.refresh(file_record)
+    await session.commit()
+    await session.refresh(file_record)
     logger.info(
         "preflight created new file record user=%s file_id=%s filename=%s size=%s (not yet in user file_ids)",
         current_user.id, file_record.file_id, file_record.filename, file_record.size,
@@ -922,7 +922,7 @@ async def preflight_create_chunked_file(
     user_file_ids = set(current_user.file_ids or [])
     if user_file_ids:
         # 查询用户已拥有的所有文件
-        user_files = session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))).all()
+        user_files = (await session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids)))).all()
         for user_file in user_files:
             # 检查文件名是否重复
             if user_file.filename == filename:
@@ -931,7 +931,7 @@ async def preflight_create_chunked_file(
                 raise duplicate_file_exception  # 表示该用户已经上传过同名文件
     
     # 检查 2：是否存在相同内容的文件（通过 hash 检查）
-    same_hash_records = session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256)).all() or []
+    same_hash_records = (await session.exec(select(FileInDB).where(FileInDB.hash_sha256 == hash_sha256))).all() or []
     for rec in same_hash_records:
         # 检查用户是否已拥有该文件
         if (rec.file_id in user_file_ids) or (current_user.id in set(rec.owners or [])):
@@ -957,22 +957,22 @@ async def preflight_create_chunked_file(
             current_user.file_count = (current_user.file_count or 0) + 1
             current_user.total_file_size = (current_user.total_file_size or 0) + (rec.size or 0)
             session.add(current_user)
-            session.commit()
-            session.refresh(rec)
-            session.refresh(current_user)
+            await session.commit()
+            await session.refresh(rec)
+            await session.refresh(current_user)
             logger.info("chunked preflight reused existing completed file user=%s file_id=%s filename=%s (file already uploaded by others, no need to upload again)",
                        current_user.id, rec.file_id, rec.filename)
             return rec
         else:
             # 文件路径不存在，说明是预检记录，返回该记录供后续分片上传使用
-            session.commit()
-            session.refresh(rec)
+            await session.commit()
+            await session.refresh(rec)
             logger.info("chunked preflight found existing record user=%s file_id=%s filename=%s (added to owners, updated total_parts=%s, file not yet completed)",
                        current_user.id, rec.file_id, rec.filename, total_parts)
             return rec
     
     # 检查相同文件名的文件（不同内容但同名）
-    same_name_records = session.exec(select(FileInDB).where(FileInDB.filename == filename)).all() or []
+    same_name_records = (await session.exec(select(FileInDB).where(FileInDB.filename == filename))).all() or []
     for rec in same_name_records:
         # 检查用户是否已拥有同名文件
         if (rec.file_id in user_file_ids) or (current_user.id in set(rec.owners or [])):
@@ -1007,8 +1007,8 @@ async def preflight_create_chunked_file(
         solvent=solvent,
     )
     session.add(file_record)
-    session.commit()
-    session.refresh(file_record)
+    await session.commit()
+    await session.refresh(file_record)
     
     logger.info(
         "chunked preflight created new file record user=%s file_id=%s filename=%s size=%s parts=%s (not yet in user file_ids)",
@@ -1037,9 +1037,9 @@ async def upload_file_chunk(
         raise invalid_part_number_exception
     
     # 验证对应的文件记录存在
-    file_record = session.exec(
+    file_record = (await session.exec(
         select(FileInDB).where(FileInDB.hash_sha256 == file_hash)
-    ).first()
+    )).first()
     if not file_record:
         raise file_not_found_exception
     
@@ -1053,13 +1053,13 @@ async def upload_file_chunk(
         raise part_number_out_of_range_exception
     
     # 检查分片是否已存在
-    existing_chunk = session.exec(
+    existing_chunk = (await session.exec(
         select(PartInDB).where(
             PartInDB.file_id == file_record.file_id,
             PartInDB.part_number == part_number,
             PartInDB.owner_id == current_user.id
         )
-    ).first()
+    )).first()
     if existing_chunk:
         logger.warning("chunk already exists user=%s file_id=%s part=%s", 
                       current_user.id, file_record.file_id, part_number)
@@ -1093,7 +1093,7 @@ async def upload_file_chunk(
         total_parts=file_record.total_parts or 0,
     )
     session.add(part_record)
-    session.commit()
+    await session.commit()
     
     logger.info("chunk saved user=%s file_id=%s part=%s size=%s", 
                 current_user.id, file_record.file_id, part_number, chunk_size)
@@ -1107,8 +1107,8 @@ async def upload_file_chunk(
             current_user.file_count = (current_user.file_count or 0) + 1
             current_user.total_file_size = (current_user.total_file_size or 0) + file_record.size
             session.add(current_user)
-            session.commit()
-            session.refresh(current_user)
+            await session.commit()
+            await session.refresh(current_user)
             
             logger.info("chunked upload completed user=%s file_id=%s", 
                        current_user.id, file_record.file_id)
@@ -1176,12 +1176,12 @@ async def get_chunked_upload_status(
         )
     
     # 查询已上传的分片（使用 file_id 索引，更高效）
-    uploaded_chunks = session.exec(
+    uploaded_chunks = (await session.exec(
         select(PartInDB).where(
             PartInDB.file_id == file_id,
             PartInDB.owner_id == current_user.id
         ).order_by(PartInDB.part_number)
-    ).all()
+    )).all()
     
     uploaded_parts = [chunk.part_number for chunk in uploaded_chunks]
     
@@ -1224,11 +1224,11 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     # 再次检查用户是否已上传过该文件（防止预检后到上传前的状态变化）
     user_file_ids = set(current_user.file_ids or [])
     if user_file_ids:
-        user_files = session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))).all()
+        user_files = (await session.exec(select(FileInDB).where(FileInDB.file_id.in_(user_file_ids)))).all()
         for user_file in user_files:
             if user_file.filename == file.filename:
                 #safe_cleanup_preflight_record(session, current_user, pre_record)
-                session.commit()
+                await session.commit()
                 logger.warning("upload rejected: user=%s already has file with name=%s", 
                               current_user.id, file.filename)
                 raise duplicate_file_exception #信息为该用户已经上传该文件
@@ -1236,7 +1236,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     # 存储类型与文件名一致性校验
     if storage_type != pre_record.storage_type:
         safe_cleanup_preflight_record(session, current_user, pre_record)  # 安全清理预检记录
-        session.commit()
+        await session.commit()
         raise storage_type_not_allowed_exception
     if not file.filename:
         raise filename_invalid_exception
@@ -1244,18 +1244,18 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     validate_file_type(file.filename)
     if file.filename != pre_record.filename:
         safe_cleanup_preflight_record(session, current_user, pre_record)  # 安全清理预检记录
-        session.commit()
+        await session.commit()
         raise preflight_filename_mismatch_exception  # 文件名不匹配
 
     # 计算实际文件hash与大小并与预检记录比对
     hash_sha256, size = await compute_upload_file_metadata(file)
     if size != pre_record.size:
         safe_cleanup_preflight_record(session, current_user, pre_record)
-        session.commit()
+        await session.commit()
         raise preflight_size_mismatch_exception
     if hash_sha256 != (pre_record.hash_sha256 or ""):
         safe_cleanup_preflight_record(session, current_user, pre_record)
-        session.commit()
+        await session.commit()
         logger.error("preflight hash mismatch user=%s expected=%s actual=%s",
                      current_user.id, pre_record.hash_sha256, hash_sha256)
         raise preflight_hash_mismatch_exception
@@ -1271,10 +1271,10 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     # 检查预检记录是否已经建立了文件复用关系
     # 如果当前用户已经在预检记录的 owners 中，且存在其他相同 hash 的文件，说明预检阶段已经复用了
     if current_user.id in set(pre_record.owners or []):
-        same_hash_records = session.exec(select(FileInDB).where(
+        same_hash_records = (await session.exec(select(FileInDB).where(
             FileInDB.hash_sha256 == hash_sha256,
             FileInDB.file_id != pre_record.file_id  # 排除当前预检记录
-        )).all() or []
+        ))).all() or []
         
         for rec in same_hash_records:
             try:
@@ -1302,8 +1302,8 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
             
             # 使用安全清理函数处理预检记录（因为我们复用了已存在的文件）
             #safe_cleanup_preflight_record(session, current_user, pre_record)
-            session.commit()
-            session.refresh(rec)
+            await session.commit()
+            await session.refresh(rec)
             logger.info("simple upload reused existing file user=%s file_id=%s filename=%s (no file write to storage)",
                         current_user.id, rec.file_id, rec.filename)
             return rec  # 复用成功，直接返回已存在的文件记录
@@ -1315,7 +1315,7 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
                      current_user.id, file.filename, exc)
         final_path.unlink(missing_ok=True)
         safe_cleanup_preflight_record(session, current_user, pre_record)
-        session.commit()
+        await session.commit()
         raise file_persist_failed_exception from exc
     # 刷新 file表
     # 使用预检创建的记录作为最终记录
@@ -1325,9 +1325,9 @@ async def upload_simple_file(current_user: Annotated[UserInDB, Depends(token_aut
     append_file_id(session, current_user, file_record.file_id)
     current_user.file_count = (current_user.file_count or 0) + 1
     current_user.total_file_size = (current_user.total_file_size or 0) + size
-    session.commit() # 提交事务
-    session.refresh(file_record)
-    session.refresh(current_user)
+    await session.commit() # 提交事务
+    await session.refresh(file_record)
+    await session.refresh(current_user)
     logger.info("simple upload completed user=%s file_id=%s filename=%s size=%s",
                 current_user.id, file_record.file_id, file_record.filename, file_record.size)
     
@@ -1358,7 +1358,7 @@ async def list_user_files(current_user: Annotated[UserInDB, Depends(token_authen
         return []
 
     statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))
-    results = session.exec(statement).all()
+    results = (await session.exec(statement)).all()
     files = [record for record in results]
     
     logger.debug("list user files user=%s count=%s", 
@@ -1397,7 +1397,8 @@ async def delete_user_file(file_id: int,
     session.flush()
 
     # 3) 检查是否还有其他用户持有该文件（以用户表的 file_ids 字段为准）
-    all_users = session.exec(select(UserInDB)).all()
+    # 查询所有用户，检查是否有人的 file_ids 中包含该文件
+    all_users = (await session.exec(select(UserInDB))).all()
     other_users_have_file = False
     
     for user in all_users:
@@ -1411,8 +1412,8 @@ async def delete_user_file(file_id: int,
     
     if other_users_have_file:
         # 其他用户仍持有该文件，仅解除当前用户关联，不删除文件
-        session.commit()
-        session.refresh(current_user)
+        await session.commit()
+        await session.refresh(current_user)
         logger.info("unlinked file reference only user=%s file_id=%s (other users still have this file)", 
                    current_user.id, file_id)
         return {"file_id": file_id, "status": "unlinked"}
@@ -1456,9 +1457,9 @@ async def delete_user_file(file_id: int,
 
     # 5) 删除文件数据库记录（原始 ZIP 文件在解压时已删除，无需删除物理文件）
     session.delete(file_record)
-    session.commit()
-    session.refresh(current_user)
-    logger.info("deleted file record user=%s file_id=%s", current_user.id, file_id)
+    await session.commit()
+    await session.refresh(current_user)
+    logger.info("deleted file content and record user=%s file_id=%s", current_user.id, file_id)
     return {"file_id": file_id, "status": "deleted"}
 
 #主下载函数 
@@ -1549,7 +1550,7 @@ async def get_download_file_metadata(
     current_user.download_used = (current_user.download_used or 0) + 1
     session.add(current_user)
     session.add(file_record)
-    session.commit()
+    await session.commit()
     logger.info("download success user=%s file_id=%s filename=%s",
                 current_user.id, file_id, file_record.filename)
 

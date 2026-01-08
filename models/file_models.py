@@ -15,10 +15,15 @@ from fastapi.responses import StreamingResponse
 from logger import get_logger
 from sqlalchemy import Column
 from sqlalchemy.types import JSON
+from envset.config import get_config
 
 # 获取服务器状态模块的日志器
 logger = get_logger("main.file_control")
 
+# 模型字段配置来自 config
+config = get_config()
+storage_config = config.storage
+sample_config = config.sample_info
 
 LOCAL_TIME_OFFSET = timedelta(hours=8)
 
@@ -30,24 +35,24 @@ def now_local_timezone() -> datetime:
 
 class FileBase(SQLModel):
     """公共字段，供数据库与返回模型复用"""
-    filename: str = Field()
-    file_type: str = Field(default="")
+    filename: str = Field(max_length=storage_config.max_filename_length)
+    file_type: str = Field(default="", max_length=storage_config.max_file_type_length)
     # 【实验类型字段】用于定位对应的实验表（如 imzML/raw 等），由前端上传时指定
-    experiment_type: str = Field(default="", description="实验类型（imzml/raw等），用于定位实验表")
+    experiment_type: str = Field(default="", description="实验类型（imzml/raw等），用于定位实验表", max_length=sample_config.max_experiment_type_length)
     size: int = Field(default=0)
-    storage_type: str = Field(default="local")
-    hash_sha256: str | None = Field(default=None)
+    storage_type: str = Field(default="local", max_length=64)
+    hash_sha256: str | None = Field(default=None, max_length=256)
     
     # 样本信息字段
-    organism: str = Field(default="", description="样本所属物种")
-    organism_part: str = Field(default="", description="样本来源组织")
-    condition: str = Field(default="", description="样本状态")
-    sample_growth_conditions: str = Field(default="", description="样本生长或处理条件（选填）")
-    sample_stabilisation: str = Field(default="", description="样本稳定方式")
-    tissue_modification: str = Field(default="", description="组织修饰方式")
-    maldi_matrix: str = Field(default="", description="MALDI 基质")
-    maldi_matrix_application: str = Field(default="", description="基质施加方式")
-    solvent: str = Field(default="", description="使用溶剂（选填）")
+    organism: str = Field(default="", description="样本所属物种", max_length=sample_config.max_organism_length)
+    organism_part: str = Field(default="", description="样本来源组织", max_length=sample_config.max_organism_part_length)
+    condition: str = Field(default="", description="样本状态", max_length=sample_config.max_condition_length)
+    sample_growth_conditions: str = Field(default="", description="样本生长或处理条件（选填）", max_length=sample_config.max_sample_growth_conditions_length)
+    sample_stabilisation: str = Field(default="", description="样本稳定方式", max_length=sample_config.max_sample_stabilisation_length)
+    tissue_modification: str = Field(default="", description="组织修饰方式", max_length=sample_config.max_tissue_modification_length)
+    maldi_matrix: str = Field(default="", description="MALDI 基质", max_length=sample_config.max_maldi_matrix_length)
+    maldi_matrix_application: str = Field(default="", description="基质施加方式", max_length=sample_config.max_maldi_matrix_application_length)
+    solvent: str = Field(default="", description="使用溶剂（选填）", max_length=sample_config.max_solvent_length)
 
 
 class FilePublic(FileBase):
@@ -60,7 +65,7 @@ class FilePublic(FileBase):
 class FileInDB(FileBase, table=True):
     """数据库模型"""
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})#文件编号（自增主键）
-    path: str = Field()#存储路径
+    path: str = Field(max_length=getattr(storage_config, 'max_path_length', 255)) #存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
     owners: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件所属用户ID列表JSON格式
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)#上传时间
     download_count: int = Field(default=0)#下载次数
@@ -108,11 +113,11 @@ class FileStreamingResponse(StreamingResponse):#是响应类模型 不能使用�
 class PartInDB(SQLModel, table=True):
     """分片记录数据库模型"""
     part_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    file_hash: str = Field(index=True)  # 关联的文件总哈希值
+    file_hash: str = Field(index=True, max_length=256)  # 关联的文件总哈希值
     part_number: int = Field()  # 分片编号（从1开始）
-    part_hash: str = Field()  # 分片哈希值
+    part_hash: str = Field(max_length=256)  # 分片哈希值
     part_size: int = Field()  # 分片大小
-    temp_path: str = Field()  # 临时存储路径
+    temp_path: str = Field(max_length=getattr(storage_config, 'max_path_length', 255))  # 临时存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
     owner_id: int = Field(index=True)  # 分片所属用户ID
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)
     file_id: int = Field(index=True)  # 关联的文件记录ID

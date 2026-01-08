@@ -8,11 +8,11 @@ import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
-from sqlmodel import select
+from sqlmodel import select, Session
 from starlette import status
 from api.auth_api import credentials_exception, create_access_token, hashed_password, \
     verify_password, token_invalid_exception, token_expired_exception
-from database.db import SessionDep, get_session
+from database.db import SessionDep, get_sync_session
 from envset.config import get_config
 
 from logger import get_logger
@@ -60,7 +60,7 @@ async def get_user(username: str, db: SessionDep):
     """通过 Session 查询指定用户名的用户（可返回未激活用户）"""
     # 通过 Session 查询用户
     statement = select(UserInDB).where(UserInDB.username == username)
-    return db.exec(statement).first()
+    return (await db.exec(statement)).first()
 
 
 # 检查用户是否激活的函数
@@ -144,8 +144,8 @@ async def create_user(user: UserCreate, session: SessionDep):
             user_data['identity']="user" #由API设置为普通用户
             user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
             session.add(user)
-            session.commit()
-            session.refresh(user)
+            await session.commit()
+            await session.refresh(user)
         else:
             logger.error("cannot create user")
             raise user_already_exists_exception
@@ -176,8 +176,8 @@ async def create_admin_user_api(user: UserCreate, current_admin: Annotated[UserI
             user_data['identity'] = "admin"  # 由API设置身份为管理员
             user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
             session.add(user)
-            session.commit()
-            session.refresh(user)
+            await session.commit()
+            await session.refresh(user)
             logger.info(f"Admin user {current_admin.username} created new admin user {user.username}")
             return user
         else:
@@ -201,18 +201,18 @@ async def update_user(user: UserUpdate, user_past: Annotated[UserInDB, Depends(t
     
     user_past.sqlmodel_update(user_data) # 再更新除密码外剩下的用户信息
     session.add(user_past)
-    session.commit()
-    session.refresh(user_past)
+    await session.commit()
+    await session.refresh(user_past)
     return user
 
 async def del_user(user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep):
     """删除当前登录用户"""
     session.delete(user) # 删除当前用户
-    session.commit() # 提交数据库操作
+    await session.commit() # 提交数据库操作
     return user
 
 
-async def create_admin_user():#此函数只是服务器启动时调用一次创建一个管理员账户，然后其他的没啥用了
+async def create_admin_user():#此函数只是服务器启动时调用一次创建一个管理员账户，然后其他的没啥用了 (此处感觉用同步应该不影响)
     """应用启动时检查并创建初始管理员用户"""
     config = get_config()
     random_serc = str(random.randint(10 ** 7, 10 ** 8 - 1)) # 随机创建8位初始密码
@@ -221,8 +221,8 @@ async def create_admin_user():#此函数只是服务器启动时调用一次创�
                     active=True,
                     hashed_password=hashed_password(random_serc),
                     email=config.server.admin_email)
-    session = next(get_session())
-    user_past = await has_admin_user(session, user.username)
+    session = next(get_sync_session())
+    user_past = has_admin_user(session, user.username)
     if not user_past:
         session.add(user)
         session.commit()
@@ -232,7 +232,7 @@ async def create_admin_user():#此函数只是服务器启动时调用一次创�
         logger.warning(f"cannot create user,user already exists, username:{user.username}") 
 
 
-async def has_admin_user(session, username: str) -> UserInDB | None:
+def has_admin_user(session: Session, username: str) -> UserInDB | None:
     """检查指定用户名的管理员是否已存在"""
     statement = select(UserInDB).where((UserInDB.identity == "admin") & (UserInDB.username == username))
     result = session.exec(statement).first()
