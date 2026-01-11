@@ -23,11 +23,11 @@ class EmailConfirmRequest(EmailConfirmResponseBase):
 class EmailSMTPRequest(EmailConfirmResponseBase):
     subject: str = "Account Confirmation By Server"
     text_content: str
-    last_smtp_port: int
-    last_smtp_username: str
-    last_smtp_passwd: str
-    last_smtp_from_email: str
-    last_smtp_server: str
+    smtp_port: int
+    smtp_username: str
+    smtp_passwd: str
+    smtp_from_email: str
+    smtp_server: str
 
 
 class EmailVerificationCodeTotp:
@@ -38,7 +38,7 @@ class EmailVerificationCodeTotp:
         logger.debug(f"Totp init finish secret : {self.secret}")
         self.totp = pyotp.TOTP(self.secret, interval=300, digits=6) # 5mins interval, 6digits verification code
 
-    def get_totp(self) -> pyotp.TOTP:
+    def get_totp(self):
         return self.totp
 
 

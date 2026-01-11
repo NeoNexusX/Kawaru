@@ -24,9 +24,9 @@ email_send_exception = HTTPException(
 # Using MailGun to send an email verify code message
 async def send_mailgun_message(email_info: EmailConfirmResponseBase):
     # MailGun environment settings
-    MAILGUN_API_KEY = os.getenv('MAILGUN_API_KEY')
-    MAILGUN_DOMAIN = email_config.mailgun_domain
-    MAILGUN_API_URL = f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages"
+    maigun_api_key = os.getenv('MAILGUN_API_KEY')
+    mailgun_domain = email_config.mailgun_domain
+    mailgun_api_url = f"https://api.mailgun.net/v3/{mailgun_domain}/messages"
     ##############################
 
     code = TOTP.now() # generate one-time code
@@ -40,11 +40,11 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
-                MAILGUN_API_URL,
-                auth=("api", MAILGUN_API_KEY),
+                mailgun_api_url,
+                auth=("api", maigun_api_key),
                 # Contents of email
                 data={
-                    "from": f"Mailgun Sandbox <postmaster@{MAILGUN_DOMAIN}>", # sender(server)'s info
+                    "from": f"Mailgun Sandbox <postmaster@{mailgun_domain}>", # sender(server)'s info
                     "to": request_data.email, # email address of receiver(user)
                     "subject": request_data.subject, # subject of the email
                     "text": request_data.text_content # text content of the email
@@ -69,21 +69,21 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
     """generate code"""
     code = TOTP.now()
 
-    """smtp server"""
+    # smtp server
     request_data = EmailSMTPRequest.model_validate({
         **email_info.model_dump(),
-        "last_smtp_username": email_config.last_smtp_username,
-        "last_smtp_passwd": email_config.last_smtp_password,
-        "last_smtp_from_email": email_config.last_smtp_from_email,
-        "last_smtp_server": email_config.last_smtp_server,
-        "last_smtp_port": int(email_config.last_smtp_port),
+        "smtp_username": email_config.smtp_username,
+        "smtp_passwd": os.getenv('SMTP_PASSWORD'),
+        "smtp_from_email": email_config.smtp_from_email,
+        "smtp_server": email_config.smtp_server,
+        "smtp_port": int(email_config.smtp_port),
         "text_content": f"Welcome\r\n Your code is {code}"
     }
     )
     logger.info(f'request_data is {request_data}')
     # 构造邮件内容
     msg = EmailMessage()
-    msg["From"] = request_data.last_smtp_from_email # sender(server)'s email
+    msg["From"] = request_data.smtp_from_email # sender(server)'s email
     msg["To"] = request_data.email # user(receiver)'s email
     msg["Subject"] = request_data.subject # the subject of the email
     msg.set_content(request_data.text_content) # the content of the emai(verify code here)
@@ -92,28 +92,28 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
     try:
 
         # SMTP+STARTTLS protocol:
-        if request_data.last_smtp_port == 587:
+        if request_data.smtp_port == 587:
             # asny step use thread pool
-            with smtplib.SMTP(request_data.last_smtp_server, request_data.last_smtp_port, timeout=10) as server:
-                logger.info(f'smtp port {request_data.last_smtp_port}')
+            with smtplib.SMTP(request_data.smtp_server, request_data.smtp_port, timeout=10) as server:
+                logger.info(f'smtp port {request_data.smtp_port}')
                 server.starttls(context=context)
-                server.login(request_data.last_smtp_username, request_data.last_smtp_passwd)
+                server.login(request_data.smtp_username, request_data.smtp_passwd)
                 server.send_message(msg)
             return request_data
-        
+
         # SMTPS protocol:
         else:
-            with smtplib.SMTP_SSL(request_data.last_smtp_server,
-                                  request_data.last_smtp_port,
+            with smtplib.SMTP_SSL(request_data.smtp_server,
+                                  request_data.smtp_port,
                                   timeout=10,
                                   context=context) as server:
-                logger.info(f'smtp port {request_data.last_smtp_port}')
-                server.login(request_data.last_smtp_username, request_data.last_smtp_passwd)
+                logger.info(f'smtp port {request_data.smtp_port}')
+                server.login(request_data.smtp_username, request_data.smtp_passwd)
                 server.send_message(msg)
             return request_data
 
     except smtplib.SMTPResponseException as e:
-        if 'qq.com' in request_data.last_smtp_from_email and e.smtp_code == -1:
+        if 'qq.com' in request_data.smtp_from_email and e.smtp_code == -1:
             ######################################################################
             # Workaround for QQ Mail: occasionally their SMTP server returns a
             # non-RFC5321 response after QUIT (e.g. empty line, missing 221 code).

@@ -1,9 +1,10 @@
 from typing import Union
+from datetime import timedelta, datetime, timezone
 import jwt
 from starlette import status
-from models.auth import PWD_CONTEXT, SECRET_KEY, ALGORITHM
 from fastapi import HTTPException
-from datetime import timedelta, datetime, timezone
+from models.auth import PWD_CONTEXT, SECRET_KEY
+from envset.config import get_config
 
 #########################
 # http 异常声明
@@ -28,21 +29,24 @@ token_invalid_exception = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 #########################
-# 明文密码转换成哈希后的密码
+
 def hashed_password(password: str) -> str:
+    """将明文密码加密为哈希值。"""
     return PWD_CONTEXT.hash(password)
 
-# 验证明文密码是否匹配哈希后的密码
+
 def verify_password(plain_pwd: str, hashed_pwd: str) -> bool:
+    """校验密码与哈希密码是否匹配。"""
     return PWD_CONTEXT.verify(plain_pwd, hashed_pwd)
 
-# 根据设定的加密算法，将用户数据生成具有指定有效期（默认15分钟）的 jwt token
+
 def create_access_token(data: dict, expires_delta: Union[timedelta, None] = None):
+    """生成带有过期时间的 JWT 访问令牌。"""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=get_config().token.algorithm)
     return encoded_jwt

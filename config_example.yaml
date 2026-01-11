@@ -6,19 +6,29 @@ server:
   log_dir: logs
   admin_email: examplr@example.com
 
+token:
+  token_expire_minutes: 30
+  algorithm: HS256
+
 email:
   # Support for MailGun
-  mailgun_domain: yourMAILGUN_DOMAIN
+  mailgun_domain: YOUR_MAILGUN_DOMAIN
   # Support for SMTP
-  last_smtp_port: 465 # or 587
-  last_smtp_username: example@qq.com
-  last_smtp_password: 123456!  # For Gmail: 16-character app password (with spaces). For QQ Mail: no spaces.
-  last_smtp_from_email: example@qq.com
-  last_smtp_server: smtp.qq.com
+  smtp_port: 465 # or 587
+  smtp_username: jszszzy@qq.com
+  smtp_from_email: jszszzy@qq.com
+  smtp_server: smtp.qq.com
+  #support for totp
+  totp_window: 30
 
 database:
-  path: database/
-  thread : False
+  path: database/ #need to delete
+  thread : False #need to delete
+  host: kawaru-test.cpes2okukxkj.ap-southeast-1.rds.amazonaws.com
+  db_name: kawaru_test_1
+  db_type: mariadb
+  db_username: kawaru
+  port: 3306
 
 storage:
   root: ../

@@ -4,42 +4,142 @@ from fastapi import Depends
 from sqlmodel import SQLModel, create_engine, Session
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from envset.config import get_config
+from logger import get_logger
 
-config = get_config()
-db_name = os.getenv('DATABASE_NAME')
-db_host = os.getenv('DATABASE_HOST')
-db_port = os.getenv('DATABASE_PORT')
-db_username = os.getenv('DATABASE_USERNAME')
-db_password = os.getenv('DATABASE_PASSWORD')
+logger = get_logger("main.database")
 
-# sync engine for startup building database and tables
-sync_engine = create_engine(
-    f"mariadb+pymysql://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
-    f"?charset=utf8mb4",
-    pool_pre_ping=True
-)
+_SYNC_ENGINE = None
+_ASYNC_ENGINE = None
 
-# async engine for query
-engine = create_async_engine(
-                        f"mariadb+asyncmy://{db_username}:{db_password}@{db_host}:{db_port}/{db_name}"
-                        f"?charset=utf8mb4",
-                        pool_pre_ping=True
-                      )
+
+def _check_database_env():
+    """检查数据库相关环境变量是否存在"""
+    db_password = os.getenv('DATABASE_PASSWORD')
+    if not db_password:
+        logger.error("DATABASE_PASSWORD environment variable is not set")
+        raise ValueError("DATABASE_PASSWORD environment variable is required")
+    return db_password
+
+
+def get_sync_engine():
+    """懒加载同步引擎"""
+    global _SYNC_ENGINE # pylint: disable=global-statement
+
+    if _SYNC_ENGINE is None:
+        config = get_config()
+        db_password = _check_database_env()
+        db_url = (
+            f"{config.database.db_type}+pymysql://{config.database.db_username}:{db_password}"
+            f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
+            f"?charset=utf8mb4"
+        )
+        _SYNC_ENGINE = create_engine(db_url, pool_pre_ping=True)
+        logger.info("Sync database engine initialized")
+
+    return _SYNC_ENGINE
+
+
+def get_async_engine():
+    """懒加载异步引擎"""
+    global _ASYNC_ENGINE # pylint: disable=global-statement
+
+    if _ASYNC_ENGINE is None:
+        config = get_config()
+        db_password = _check_database_env()
+        # DigitalOcean 等云数据库通常需要 SSL 连接，添加 ssl 参数
+        # 注意：这里假设服务器证书是可信的，或者不验证证书，视具体安全需求而定
+        _ASYNC_ENGINE = create_async_engine(
+            f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
+            f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
+            f"?charset=utf8mb4",
+            pool_pre_ping=True,
+            # connect_args={"ssl": True}  # 暂时禁用 SSL 以解决连接中断问题
+        )
+        logger.info("Async database engine initialized")
+
+    return _ASYNC_ENGINE
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSession(engine) as session:
-        yield session
+    """
+    获取异步数据库会话
+    """
+    try:
+        engine = get_async_engine()
+        async with AsyncSession(engine) as session:
+            yield session
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database connection error: {e}")
+        raise e
 
 def get_sync_session():
-    with Session(sync_engine) as session:
-        yield session
+    """
+    获取同步数据库会话
+    """
+    try:
+        sync_engine = get_sync_engine()
+        with Session(sync_engine) as session:
+            yield session
+    except SQLAlchemyError as e:
+        logger.error(f"Database connection error: {e}")
+        raise e
+
+
+async def ensure_database_exists():
+    """
+    检查并创建数据库
+    """
+    config = get_config()
+    db_password = _check_database_env()
+    db_name = config.database.db_name
+
+    # 连接到 mysql 系统数据库，用于创建目标数据库
+    sys_db_url = (
+        f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
+        f"@{config.database.host}:{config.database.port}/mysql?charset=utf8mb4"
+    )
+
+    # DDL 语句推荐在 AUTOCOMMIT 模式下执行
+    # 暂时禁用 SSL 以解决连接中断问题
+    temp_engine = create_async_engine(
+        sys_db_url,
+        isolation_level="AUTOCOMMIT",
+        # connect_args={"ssl": True}
+    )
+    try:
+        async with temp_engine.connect() as conn:
+            await conn.execute(
+                text(f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                )
+            logger.info(f"Database '{db_name}' ensured")
+
+    except Exception as e:
+        # 如果连接 mysql 库失败，可能是权限问题，记录警告但尝试继续（也许库已经存在）
+        logger.error(f"Failed to check/create database via 'mysql' db: {e}")
+        raise
+
+    finally:
+        await temp_engine.dispose()
 
 # automatically create database and tables for the first time
-def create_db_and_tables():
-    '''应用启动时自动根据模型建立数据库和数据表'''
-    SQLModel.metadata.create_all(sync_engine)
+async def create_db_and_tables():
+    '''
+    应用启动时自动根据模型建立数据库和数据表
+    '''
+    try:
+        await ensure_database_exists()
+        engine = get_async_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        logger.info("Database tables created successfully")
+
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to create database tables: {e}")
+        raise
 
 # 直接将Session对get_session()的依赖写进SessionDep类型签名，方便后续调用
 SessionDep = Annotated[AsyncSession, Depends(get_session)]

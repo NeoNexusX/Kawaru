@@ -1,43 +1,34 @@
-'''
-Author: xiongqiurong 1513401658@qq.com
-Date: 2025-12-21 22:43:01
-LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-28 14:33:15
-FilePath: /Kawaru/main.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
-import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, FastAPI
+import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.user_api import  create_admin_user
-from database.db import create_db_and_tables, SessionDep
 from envset.config import get_config
 from envset.envset import EnvSet
+from database.db import create_db_and_tables
+from api.user_api import create_admin_user
 from logger import get_logger
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
 
+# get the main logger
+logger = get_logger("main")
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # start run
-    create_db_and_tables()
+async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
+    """
+    FastAPI lifespan context manager.
+    initialize resources before the application starts
+    """
     EnvSet()
+    # start run
+    await create_db_and_tables()
     # admin create
     await create_admin_user()
     yield
 
 
 app = FastAPI(lifespan=lifespan)
-
-# get the main logger
-logger = get_logger("main")
-
-# get config
-config = get_config()
-# get .env
-EnvSet()
 
 # CORSMiddleware跨域请求
 origins = ["*", ] # 接受所有来源请求
@@ -56,6 +47,8 @@ app.include_router(experiment_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":
+    # get config
+    config = get_config()
     uvicorn.run(
         "main:app",  # 模块名:FastAPI 实例名
         host=config.server.host,  # 监听所有网络接口

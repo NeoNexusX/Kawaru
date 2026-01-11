@@ -2,6 +2,7 @@ from pydantic import BaseModel
 
 
 class ServerSettings(BaseModel):
+    """服务器配置模型"""
     name: str
     port: int
     host: str
@@ -9,27 +10,35 @@ class ServerSettings(BaseModel):
     log_dir: str
     admin_email: str
 
+class TokenSettings(BaseModel):
+    """令牌配置模型"""
+    token_expire_minutes: int
+    algorithm: str
 
-# Database settings
 class DatabaseSettings(BaseModel):
-    # Database connection settings has been moved to .env file.
+    """数据库配置模型"""
     path: str
     thread: bool
+    db_username: str
+    db_name: str
+    db_type: str
+    host: str
+    port: int
 
 class EmailSettings(BaseModel):
+    """邮件配置模型"""
     # Support for MailGun
     mailgun_domain: str
-
     # Support for SMTP
-    last_smtp_port: int
-    last_smtp_username: str
-    last_smtp_password: str
-    last_smtp_from_email: str
-    last_smtp_server: str
+    smtp_port: int
+    smtp_username: str
+    smtp_from_email: str
+    smtp_server: str
+    totp_window: int
 
 
-# file storage model
 class StorageSettings(BaseModel):
+    """文件存储配置模型"""
     root: str
     local_root: str
     max_file_size: int
@@ -44,14 +53,16 @@ class StorageSettings(BaseModel):
     preflight_ttl_minutes: int
     chunk_ttl_minutes: int
 
-# user model 用户信息配置模型
+
 class UserSettings(BaseModel):
+    """用户信息配置模型"""
     max_identity_length: int
     max_username_length: int
     max_useremail_length: int
 
-# sample information model 样品信息配置模型
+
 class SampleInfoSettings(BaseModel):
+    """样品信息配置模型"""
     max_experiment_name_length: int
     max_experiment_type_length: int
     max_organism_length: int
@@ -64,10 +75,13 @@ class SampleInfoSettings(BaseModel):
     max_maldi_matrix_application_length: int
     max_solvent_length: int
 
+
 class Config(BaseModel):
+    """全局配置模型"""
     server: ServerSettings
     email: EmailSettings
     database: DatabaseSettings
     storage: StorageSettings
     user: UserSettings
     sample_info: SampleInfoSettings
+    token: TokenSettings

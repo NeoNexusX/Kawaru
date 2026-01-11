@@ -1,25 +1,26 @@
 import os
-#这个模块负责从 .env 文件加载邮件环境变量
-#之后在代码中通过 os.getenv(ENV_VAL_NAME) 即可加载环境变量
 from dotenv import load_dotenv
-
 from logger import get_logger
 
 logger = get_logger("env logger")
-
-
-
+stander_envs=[
+    'MAILGUN_API_KEY',
+    'SMTP_PASSWORD',
+    'DATABASE_PASSWORD',
+]
 class EnvSet:
+    """
+    这个类负责从 .env 文件加载环境变量之后在代码中通过 os.getenv(ENV_VAL_NAME) 即可加载环境变量
+    """
     def __init__(self):
         self.env = load_dotenv(".env")
         if self.env:
-            logger.info(f"loading environment variables sucessfully\n"
-                        f"MAILGUN_DOMAIN :{os.getenv('MAILGUN_DOMAIN')}\n"
-                        f"last_smtp_username: {os.getenv('LAST_SMTP_USERNAME')}\n"
-                        f"last_smtp_passwd: {os.getenv('LAST_SMTP_PASSWORD')}\n"
-                        f"last_smtp_server: {os.getenv('LAST_SMTP_SERVER')}\n"
-                        f"database_name: {os.getenv('DATABASE_NAME')}, "
-                        f"database_host: {os.getenv('DATABASE_HOST')}:{os.getenv('DATABASE_PORT')}\n"
-                        f"database_username: {os.getenv('DATABASE_USERNAME')}, password: {os.getenv('DATABASE_PASSWORD')}\n")
+            for env_name in stander_envs:
+                env_temp = os.getenv(env_name)
+                if env_temp is not None:
+                    logger.info(f"{env_name}: {env_temp}\r\n")
+                else:
+                    logger.error(f"{env_name} is not set\r\n")
+                    raise ValueError(f"{env_name} environment variable is required")
         else:
             logger.error("loading environment variables failed")
