@@ -913,8 +913,8 @@ async def preflight_create_file(
             current_owners.append(current_user.id)
             rec.owners = current_owners
             session.add(rec)
-            session.flush()  # 立即写入数据库但不提交
-
+            await session.flush()  # 立即写入数据库但不提交
+        
         # 检查该文件路径是否存在（文件是否已完成上传）
         if Path(rec.path).exists():
             # 文件已存在，直接将文件ID添加到用户的 file_ids 中，并更新用户统计

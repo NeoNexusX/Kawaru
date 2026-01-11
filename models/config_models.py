@@ -56,9 +56,16 @@ class StorageSettings(BaseModel):
 
 class UserSettings(BaseModel):
     """用户信息配置模型"""
+    allowed_position_types: list[str]
     max_identity_length: int
     max_username_length: int
     max_useremail_length: int
+    max_institution_length: int
+    max_position_length: int
+    max_research_field_length: int
+    max_region_length: int
+    max_orcid_length: int
+    max_homepage_length: int
 
 
 class SampleInfoSettings(BaseModel):
@@ -75,6 +82,16 @@ class SampleInfoSettings(BaseModel):
     max_maldi_matrix_application_length: int
     max_solvent_length: int
 
+# Initial admin user's information 初始管理员信息
+class AdminInfo(BaseModel):
+    """初始管理员信息配置模型"""
+    institution: str
+    position: str
+    research_field: str
+    region: str
+    orcid: str
+    homepage: str
+    email: str
 
 class Config(BaseModel):
     """全局配置模型"""
@@ -83,5 +100,6 @@ class Config(BaseModel):
     database: DatabaseSettings
     storage: StorageSettings
     user: UserSettings
-    sample_info: SampleInfoSettings
     token: TokenSettings
+    admin_info: AdminInfo
+    sample_info: SampleInfoSettings

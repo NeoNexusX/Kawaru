@@ -266,21 +266,29 @@ async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep
 ):
     """删除当前登录用户"""
-    session.delete(user)  # 删除当前用户
-    await session.commit()  # 提交数据库操作
+    await session.delete(user) # 删除当前用户
+    await session.commit() # 提交数据库操作
     return user
 
 
 async def create_admin_user():
     """应用启动时检查并创建初始管理员用户，异步函数"""
     config = get_config()
+    admin_info = config.admin_info
     random_serc = str(random.randint(10**7, 10**8 - 1))  # 随机创建8位初始密码
     user = UserInDB(
-        username=config.server.name,
+        username=admin_info.username,
+                    institution=admin_info.institution,
+                    position=admin_info.position,
+                    research_field=admin_info.research_field,
+                    region=admin_info.region,
+                    orcid=admin_info.orcid,
+                    homepage=admin_info.homepage,
+                    email=admin_info.email,
         identity="admin",
         active=True,
-        hashed_password=hashed_password(random_serc),
-        email=config.server.admin_email,
+        hashed_password=hashed_password(random_serc)
+        ,
     )
     session_gen = get_session()
     session = await anext(session_gen)
