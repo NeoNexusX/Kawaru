@@ -36,7 +36,7 @@ storage:
   max_file_size: 2000000000
   chunk_buffer_size: 1024
   allowed_storage_types: ["local"]
-  allowed_file_types: ["imzML","ibd"]
+  allowed_file_types: ["imzML","ibd","IBD"]
   max_path_length: 255
   max_filename_length: 100
   max_file_type_length: 64
