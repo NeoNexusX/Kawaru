@@ -290,12 +290,12 @@ async def delete_local_file(path: str):
             if (parent_dir.exists()
                 and parent_dir != LOCAL_STORAGE_ROOT
                 and not any(parent_dir.iterdir())
-                ):
+                ):#TODO:没看懂啊，为什么要删除空目录？
                 parent_dir.rmdir()
         except OSError:
             logger.error("failed to remove empty directory %s", parent_dir)
 
-    await asyncio.to_thread(_unlink)
+    await asyncio.to_thread(_unlink)#TODO：不该调用线程池
 
 
 async def delete_file_by_storage(file_record: FileInDB):
@@ -308,7 +308,7 @@ async def delete_file_by_storage(file_record: FileInDB):
     else:
         raise storage_type_delete_unsupported_exception  # 不支持的存储类型删除异常
 
-
+# TODO：层级不确定，需要审查，返回值不确定，需要审查
 async def safe_cleanup_preflight_record(
     session: SessionDep, current_user: UserInDB, pre_record: FileInDB
 ):
@@ -327,14 +327,11 @@ async def safe_cleanup_preflight_record(
     if pre_record.owners:
         # 还有其他用户，只更新 owners，不删除记录
         session.add(pre_record)
-        logger.debug(
-            "preflight cleanup: removed user=%s from file_id=%s owners",
-            current_user.id,
-            pre_record.file_id,
-        )
+        logger.debug(f"preflight cleanup: removed user={current_user.id} from file_id={pre_record.file_id} owners")
         return
 
     # owners 为空，进一步检查其他用户的 file_ids
+    #TODO：这他吗在干嘛？
     all_users = (await session.exec(select(UserInDB))).all()
     for user in all_users:
         if user.id == current_user.id:
@@ -348,48 +345,43 @@ async def safe_cleanup_preflight_record(
             )
             return
 
+    ##
+    # owners 为空，检查是否有其他用户持有该文件（利用数据库索引查询，不再全表扫描）
+    # stmt = select(UserInDB).where(
+    #     UserInDB.file_ids.contains([pre_record.file_id]), # 检查 file_ids 包含该文件ID
+    #     UserInDB.id != current_user.id                     # 且不是当前用户
+    # )
+    # 如果检查了还有其他用户持有该文件，则不删除记录
+
     # 确认无其他用户持有，安全删除记录
     await session.delete(pre_record)
     logger.debug("preflight cleanup: deleted file_id=%s completely", pre_record.file_id)
 
-
-async def cleanup_stale_chunks(
-    session: SessionDep, current_user: UserInDB, ttl_minutes: int = CHUNK_TTL_MINUTES
-) -> int:
+# TODO： 层级不确定，如果有返回值可以判断，不需要catch，查看下调用时机。
+# TODO：数据库层级级联一下
+async def cleanup_stale_chunks(session: SessionDep,
+                               current_user: UserInDB,
+                               ttl_minutes: int = CHUNK_TTL_MINUTES) -> int:
     """
     清理当前用户过期的分片记录
     """
     now = now_local_timezone()
     cleaned = 0
-    try:
-        # 查询当前用户的过期分片
-        chunks = (
-            await session.exec(
-                select(PartInDB).where(PartInDB.owner_id == current_user.id)
-            )
-        ).all()
+    # 查询当前用户的过期分片
+    chunks = (await session.exec(select(PartInDB).where(PartInDB.owner_id == current_user.id))).all()
 
-        for chunk in chunks:
-            too_old = (now - chunk.uploaded_at).total_seconds() >= ttl_minutes * 60
-            if too_old:
-                # 删除临时文件
-                try:
-                    Path(chunk.temp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-                # 删除数据库记录
-                session.delete(chunk)
-                cleaned += 1
+    for chunk in chunks:
+        too_old = (now - chunk.uploaded_at).total_seconds() >= ttl_minutes * 60
+        if too_old:
+            # 删除临时文件
+            Path(chunk.temp_path).unlink(missing_ok=True)
+            # 删除数据库记录
+            await session.delete(chunk)
+            cleaned += 1
 
         if cleaned:
             await session.commit()
 
-    except HTTPException:
-        # 验证或合并失败，重新抛出异常
-        raise
-
-    except Exception as exc:
-        logger.error("cleanup chunks failed user=%s error=%s", current_user.id, exc)
     return cleaned
 
 
