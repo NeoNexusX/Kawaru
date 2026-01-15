@@ -5,7 +5,7 @@ import pprint
 from pydantic import ValidationError, BaseModel
 import yaml
 from logger import get_logger
-from models.config_models import Config  # 在models.config_models中导入了config函数，是基于Pydantic库的数据验证正确
+from models.config_models import Config
 logger = get_logger("main.settings")
 
 CONFIG_PATH = Path(
@@ -45,7 +45,7 @@ class ConfigCreate:
             if not CONFIG_PATH.exists():
                 logger.error(f"config file not found: {CONFIG_PATH.resolve()}")
                 self.config = None
-                return
+                raise FileNotFoundError(f"config file not found: {CONFIG_PATH.resolve()}")
 
             with CONFIG_PATH.open("r", encoding="utf-8") as file:
                 data = yaml.safe_load(file) or {}
@@ -64,10 +64,12 @@ class ConfigCreate:
             self.config = None
             raise e
 
-    def get_config(self):
+    def get_config(self) -> Config:
         """ "Get the configuration object."""
         if self.config is None:
             logger.error("config file not found")
+            raise FileNotFoundError("config file not found")
+
         return self.config
 
 

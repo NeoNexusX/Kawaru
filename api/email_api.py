@@ -21,10 +21,24 @@ email_send_exception = HTTPException(
     detail="Send Failed error by server reason",
 )
 
+email_server_exception = HTTPException(
+                status_code=502,
+                detail="Upstream service error"
+)
+
 # Using MailGun to send an email verify code message
 async def send_mailgun_message(email_info: EmailConfirmResponseBase):
+    """
+    use MailGun API to send email, which is more reliable and faster than SMTP, but may have some limitations 
+    """
+
     # MailGun environment settings
-    maigun_api_key = os.getenv('MAILGUN_API_KEY')
+    mailgun_api_key = os.getenv('MAILGUN_API_KEY')
+
+    if not mailgun_api_key:
+        logger.error("MAILGUN_API_KEY environment variable not set")
+        raise email_send_exception
+
     mailgun_domain = email_config.mailgun_domain
     mailgun_api_url = f"https://api.mailgun.net/v3/{mailgun_domain}/messages"
     ##############################
@@ -36,12 +50,11 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
          "text_content": f"Welcome\r\n Your code is {code}"}
     )
 
-    logger.info(f"Request data: {request_data}")
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
                 mailgun_api_url,
-                auth=("api", maigun_api_key),
+                auth=("api", mailgun_api_key),
                 # Contents of email
                 data={
                     "from": f"Mailgun Sandbox <postmaster@{mailgun_domain}>", # sender(server)'s info
@@ -55,10 +68,7 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
 
         except httpx.HTTPStatusError as e:
             logger.error(e)
-            raise HTTPException(
-                status_code=502,
-                detail="Upstream service error"
-            ) from e
+            raise email_server_exception from e
 
         except Exception as e:
             logger.error(e)
@@ -78,9 +88,10 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
         "smtp_server": email_config.smtp_server,
         "smtp_port": int(email_config.smtp_port),
         "text_content": f"Welcome\r\n Your code is {code}"
-    }
-    )
+    })
+
     logger.info(f'request_data is {request_data}')
+
     # 构造邮件内容
     msg = EmailMessage()
     msg["From"] = request_data.smtp_from_email # sender(server)'s email

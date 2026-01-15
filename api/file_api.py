@@ -12,12 +12,12 @@ import aiofiles
 from sqlmodel import select
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import Depends, File, Form, HTTPException, UploadFile, BackgroundTasks
-from starlette import status
-
 from api.user_api import token_authen
-from envset.config import get_config
-from database.db import SessionDep, SyncSessionDep
+from api.experiment_api import process_imzml_experiment_background
+from database.db import SessionDep
 from logger import get_logger
+from constants import *  # noqa: F403
+from exceptions.file_exceptions import *  # noqa: F403
 from models.file_models import (
     FileInDB,
     FilePublic,
@@ -27,221 +27,11 @@ from models.file_models import (
     now_local_timezone,
 )
 from models.user_models import UserInDB
-from api.experiment_api import process_imzml_experiment_background
 from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 
 logger = get_logger("main.file_api")
 
-# 存储类型不在允许列表异常
-storage_type_not_allowed_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="storage type is not allowed",
-)
-
-# 用户文件列表同步异常
-invalid_user_for_file_list_sync_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="invalid user for file id list sync"
-)
-
-# 存储类型尚未实现异常
-storage_type_not_supported_exception = HTTPException(
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    detail="storage type is not supported yet",
-)
-
-# 文件超出大小限制异常
-file_size_limit_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="file size exceeds limit",
-)
-
-# 文件不存在异常
-file_not_found_exception = HTTPException(
-    status_code=status.HTTP_404_NOT_FOUND,
-    detail="file not found",
-)
-
-# 无权限访问文件异常
-permission_denied_exception = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail="permission denied",
-)
-
-# 分布式存储删除未实现异常
-distributed_storage_delete_not_implemented_exception = HTTPException(
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    detail="distributed storage delete not implemented",
-)
-
-# 不支持的存储类型删除异常
-storage_type_delete_unsupported_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="unsupported storage type",
-)
-
-# 当前存储类型下载未实现异常
-download_not_implemented_exception = HTTPException(
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    detail="download for this storage type not implemented",
-)
-
-# 文件内容缺失异常
-file_content_missing_exception = HTTPException(
-    status_code=status.HTTP_404_NOT_FOUND,
-    detail="file content missing",
-)
-
-# 文件查询失败异常
-file_query_failed_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail="failed to query file record",
-)
-
-# 数据库会话异常
-invalid_db_session_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail="database session not available",
-)
-
-# 文件写入失败异常
-file_persist_failed_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail="failed to persist file content",
-)
-
-# 文件名不安全异常
-filename_invalid_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="filename is invalid or contains unsafe characters",
-)
-
-# 文件类型不允许异常
-file_type_not_allowed_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="file type is not allowed",
-)
-
-# 用户文件数量限制异常
-user_file_limit_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="user file count limit reached",
-)
-
-# 用户存储空间限制异常
-user_storage_limit_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="user storage limit exceeded",
-)
-
-# 文件重复异常
-duplicate_file_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="duplicate filename or hash detected",
-)
-
-# 用户下载次数达到上限异常
-user_download_limit_exception = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail="user download limit reached",
-)
-
-# 预检与上传不一致异常
-preflight_size_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded file size does not match preflight size",
-)
-# 上传的文件hash没有匹配上预检文件hash
-preflight_hash_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded file hash does not match preflight hash",
-)
-# 上传的文件名没有匹配上预检文件名
-preflight_filename_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded filename does not match preflight filename",
-)
-# 分片相关异常定义
-
-# 分片数要大于0
-total_parts_must_greater_than_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="total_parts must be greater than 0"
-)
-
-# 分片数量太多了
-total_part_too_much_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="too many parts for chunked upload"
-)
-
-# 分片编号无效异常
-invalid_part_number_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="invalid part number"
-)
-
-# 分片编号超出范围异常
-part_number_out_of_range_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="part number exceeds total parts"
-)
-
-# 分片已存在异常
-part_already_exists_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="part already uploaded"
-)
-
-# 分片序列不完整异常
-incomplete_part_sequence_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="incomplete part sequence for merge"
-)
-
-# 合并后文件hash不匹配异常
-merged_file_hash_mismatch_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail="merged file hash does not match expected hash",
-)
-
-# 分片文件缺失异常
-chunk_file_missing_exception = HTTPException(
-    status_code=status.HTTP_404_NOT_FOUND, detail="chunk file missing from storage"
-)
-
-# 分片合并失败异常
-chunk_merge_failed_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to merge chunks"
-)
-
-# 基础存储配置来自 config
-config = get_config()
-if not config:
-    logger.error("application configuration is not loaded")
-    raise RuntimeError("Application configuration is not loaded")
-storage_config = config.storage
-
-STORAGE_ROOT = Path(storage_config.root)
-LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
-BYTES_IN_GB = 1024**3
-BYTES_IN_MB = 1024**2
-# 注意：YAML 不支持 Python 表达式，所以配置文件中写数字（如 10 表示 10GB），然后在代码中转换为字节
-MAX_FILE_SIZE = int(storage_config.max_file_size) * BYTES_IN_GB
-ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
-CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
-ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
-MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
-# 从配置读取（默认值须由config_example.yaml提供，不要在代码中直接提供）
-MAX_FILES_PER_USER = int(storage_config.max_files_per_user)  # 用户上传最多文件数量
-MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
-# 若 storage.max_downloads_per_user 未配置，提供安全默认
-MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
-PREFLIGHT_TTL_MINUTES = int(
-    getattr(storage_config, "preflight_ttl_minutes", 30)
-)  # 预检记录清理阈值（分钟）
-CHUNK_TTL_MINUTES = int(
-    getattr(storage_config, "chunk_ttl_minutes", 30)
-)  # 分片记录清理阈值（分钟）
-TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"  # 临时分片存储目录
-DOWNLOAD_TEMP_ROOT = (
-    STORAGE_ROOT / "download_temp"
-)  # 【下载临时目录】下载时生成的临时ZIP文件
-
-
+# 数据库操作层 ，不会触发任何依赖
 def ensure_storage_dirs():
     """确保存储目录存在"""
     for path in (STORAGE_ROOT, LOCAL_STORAGE_ROOT, TEMP_CHUNKS_ROOT):
@@ -272,6 +62,7 @@ def validate_filename(filename: str):
 
 def validate_file_type(filename: str):
     """校验文件类型"""
+
     if not filename:
         raise file_type_not_allowed_exception
 
@@ -286,16 +77,20 @@ def validate_file_type(filename: str):
         raise file_type_not_allowed_exception
 
 
-def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
-    """上传成功后，将文件 ID 记录到用户的文件列表中"""
+def append_file_id(session, user: UserInDB, file_id: int) -> None:
+    """
+    上传成功后，将文件 ID 记录到用户的文件列表中
+    注意:这里只有add没有commit
+    """
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
-    file_ids = list(
-        dict.fromkeys(user.file_ids or [])
-    )  # using fromkeys() to deduplicate file_ids
+    # 同一份文件不会被多个用户所拥有
+    file_ids = list(user.file_ids or [])
+
     # If file_id has been in user's file list, do nothing but return.
     if file_id in file_ids:
         return
+
     # Check if exceed the MAX_FILE_PER_USER limit
     if len(file_ids) >= MAX_FILES_PER_USER:
         raise user_file_limit_exception
@@ -303,24 +98,27 @@ def append_file_id(session: SessionDep, user: UserInDB, file_id: int):
     # append new file id to user
     file_ids.append(file_id)
     user.file_ids = file_ids
-    session.add(
-        user
-    )  # 是否只要查询出来的对象，改过数据就会被标记，是否直接commit即可，无需额外session.add()？  有时候是冗余的  属于安全性冗余
+    session.add(user)
 
 
-def remove_file_id(session: SessionDep, user: UserInDB, file_id: int):
+def remove_file_id(session , user: UserInDB, file_id: int) -> None:
     """删除文件后，从用户文件列表里移除对应 ID"""
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
+
     file_ids = list(user.file_ids or [])
+
     if file_id in file_ids:
         file_ids.remove(file_id)
         user.file_ids = file_ids
         session.add(user)
 
 
-def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
-    """为简单上传准备最终保存路径，直接保存在 local 文件夹下，不按用户ID分文件夹"""
+def prepare_local_storage_path(filename: str) -> Path:
+    """
+    为简单上传准备最终保存路径，直接保存在 local 文件夹下,不按用户ID分文件夹
+    """
+
     # 确保 local 存储目录存在
     LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
     # 直接将文件保存在 local 文件夹下
@@ -328,6 +126,7 @@ def prepare_local_storage_path(owner_id: int, filename: str) -> Path:
     return final_path
 
 
+# TODO:未审查
 async def cleanup_stale_preflights(
     session: SessionDep,
     current_user: UserInDB,
@@ -393,22 +192,23 @@ async def cleanup_stale_preflights(
     return cleaned
 
 
-# 计算hash和size
 async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, int]:
     """
     分片读取 UploadFile 的内容来计算 (sha256, size)，避免一次性将文件加载到内存。
+    此操作无法异步，需要使用线程池来执行，但由于是轻量级的计算，直接在事件循环中执行应该也不会有太大问题。
+    后期应改为任务队列异步执行，避免在上传接口中计算导致响应变慢。
     """
     sha256 = hashlib.sha256()
     size = 0
     await upload_file.seek(0)
     while True:
-        chunk = await upload_file.read(
-            CHUNK_BUFFER_SIZE
-        )  # 这里一定要分片来计算hash值，不分片会消耗很大的内存
+        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
+        # 这里一定要分片来计算hash值，不分片会消耗很大的内存
         if not chunk:
             break
         sha256.update(chunk)  # 同步操作 但是轻量级 应该没啥问题
         size += len(chunk)
+    # 重置到文件开头？为什么要这样？ TODO:需要审查
     await upload_file.seek(0)
     return sha256.hexdigest(), size
 
@@ -418,6 +218,7 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     使用 aiofiles 将 UploadFile 内容写到指定路径。
     """
+    #内存缓存很小，如果全部落盘应该直接move就可以，不需要重新读取再写入
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
         while True:
@@ -429,44 +230,50 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
 
 
 # 查找文件记录
-async def get_file_record(file_id: int, session: SessionDep) -> FileInDB:
-    """根据 file_id 获取文件记录，若不存在抛出 404"""
-    try:
-        statement = select(FileInDB).where(FileInDB.file_id == file_id)
-        file_record = (await session.exec(statement)).first()
-    except SQLAlchemyError as exc:
-        logger.error("database error when querying file_id=%s error=%s", file_id, exc)
-        raise file_query_failed_exception from exc
-    except AttributeError as exc:
-        logger.error("invalid session when querying file_id=%s error=%s", file_id, exc)
-        raise invalid_db_session_exception from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("unexpected error when querying file_id=%s", file_id)
-        raise file_query_failed_exception from exc
-    if not file_record:
-        logger.warning("file record missing file_id=%s", file_id)
-        raise file_not_found_exception  # 404  文件不存在
+async def get_file_record(file_id: int, session) -> FileInDB|None:
+    """
+    根据 file_id 获取文件记录
+    """
+
+    # try:
+    statement = select(FileInDB).where(FileInDB.file_id == file_id)
+    file_record = (await session.exec(statement)).first()
+
+    # except SQLAlchemyError as exc:
+    #     logger.error("database error when querying file_id=%s error=%s", file_id, exc)
+    #     raise file_query_failed_exception from exc
+    # except AttributeError as exc:
+    #     logger.error("invalid session when querying file_id=%s error=%s", file_id, exc)
+    #     raise invalid_db_session_exception from exc
+    # except Exception as exc:
+    #     logger.exception("unexpected error when querying file_id=%s", file_id)
+    #     raise file_query_failed_exception from exc
+
+    # if not file_record:
+    #     logger.warning("file record missing file_id=%s", file_id)
+    #     raise file_not_found_exception  # 404  文件不存在
+
     return file_record
 
 
-# 检查权限（管理员直接return）
-async def assert_file_owner(file_record: FileInDB, current_user: UserInDB):
+# 检查文件权限
+async def assert_file_owner(file_record: FileInDB, current_user: UserInDB)-> bool:
     """校验文件归属（支持多归属 owners 或用户 file_ids 索引）"""
 
     if current_user.identity == "admin":
-        return
+        return True
+
+    # 双向检查正确了才返回True
     owners = set(file_record.owners or [])
-    if current_user.id in owners:
-        return
     user_file_ids = set(current_user.file_ids or [])
-    if file_record.file_id in user_file_ids:
-        return
-    logger.warning(
-        "permission denied user=%s file_id=%s", current_user.id, file_record.file_id
-    )
-    raise permission_denied_exception  # 没有权限
+    if current_user.id in owners:
+        if file_record.file_id in user_file_ids:
+            return True
+
+    logger.warning("permission denied user=%s file_id=%s", current_user.id, file_record.file_id)
+
+    return False
+    # raise permission_denied_exception  # 没有权限
 
 
 # 删除函数
@@ -480,16 +287,15 @@ async def delete_local_file(path: str):
         # 只有当父目录不是 LOCAL_STORAGE_ROOT 且为空时才删除
         parent_dir = file_path.parent
         try:
-            if (
-                parent_dir.exists()
+            if (parent_dir.exists()
                 and parent_dir != LOCAL_STORAGE_ROOT
                 and not any(parent_dir.iterdir())
-            ):
+                ):#TODO:没看懂啊，为什么要删除空目录？
                 parent_dir.rmdir()
         except OSError:
             logger.error("failed to remove empty directory %s", parent_dir)
 
-    await asyncio.to_thread(_unlink)
+    await asyncio.to_thread(_unlink)#TODO：不该调用线程池
 
 
 async def delete_file_by_storage(file_record: FileInDB):
@@ -502,7 +308,7 @@ async def delete_file_by_storage(file_record: FileInDB):
     else:
         raise storage_type_delete_unsupported_exception  # 不支持的存储类型删除异常
 
-
+# TODO：层级不确定，需要审查，返回值不确定，需要审查
 async def safe_cleanup_preflight_record(
     session: SessionDep, current_user: UserInDB, pre_record: FileInDB
 ):
@@ -521,14 +327,11 @@ async def safe_cleanup_preflight_record(
     if pre_record.owners:
         # 还有其他用户，只更新 owners，不删除记录
         session.add(pre_record)
-        logger.debug(
-            "preflight cleanup: removed user=%s from file_id=%s owners",
-            current_user.id,
-            pre_record.file_id,
-        )
+        logger.debug(f"preflight cleanup: removed user={current_user.id} from file_id={pre_record.file_id} owners")
         return
 
     # owners 为空，进一步检查其他用户的 file_ids
+    #TODO：这他吗在干嘛？
     all_users = (await session.exec(select(UserInDB))).all()
     for user in all_users:
         if user.id == current_user.id:
@@ -542,48 +345,43 @@ async def safe_cleanup_preflight_record(
             )
             return
 
+    ##
+    # owners 为空，检查是否有其他用户持有该文件（利用数据库索引查询，不再全表扫描）
+    # stmt = select(UserInDB).where(
+    #     UserInDB.file_ids.contains([pre_record.file_id]), # 检查 file_ids 包含该文件ID
+    #     UserInDB.id != current_user.id                     # 且不是当前用户
+    # )
+    # 如果检查了还有其他用户持有该文件，则不删除记录
+
     # 确认无其他用户持有，安全删除记录
     await session.delete(pre_record)
     logger.debug("preflight cleanup: deleted file_id=%s completely", pre_record.file_id)
 
-
-async def cleanup_stale_chunks(
-    session: SessionDep, current_user: UserInDB, ttl_minutes: int = CHUNK_TTL_MINUTES
-) -> int:
+# TODO： 层级不确定，如果有返回值可以判断，不需要catch，查看下调用时机。
+# TODO：数据库层级级联一下
+async def cleanup_stale_chunks(session: SessionDep,
+                               current_user: UserInDB,
+                               ttl_minutes: int = CHUNK_TTL_MINUTES) -> int:
     """
     清理当前用户过期的分片记录
     """
     now = now_local_timezone()
     cleaned = 0
-    try:
-        # 查询当前用户的过期分片
-        chunks = (
-            await session.exec(
-                select(PartInDB).where(PartInDB.owner_id == current_user.id)
-            )
-        ).all()
+    # 查询当前用户的过期分片
+    chunks = (await session.exec(select(PartInDB).where(PartInDB.owner_id == current_user.id))).all()
 
-        for chunk in chunks:
-            too_old = (now - chunk.uploaded_at).total_seconds() >= ttl_minutes * 60
-            if too_old:
-                # 删除临时文件
-                try:
-                    Path(chunk.temp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-                # 删除数据库记录
-                session.delete(chunk)
-                cleaned += 1
+    for chunk in chunks:
+        too_old = (now - chunk.uploaded_at).total_seconds() >= ttl_minutes * 60
+        if too_old:
+            # 删除临时文件
+            Path(chunk.temp_path).unlink(missing_ok=True)
+            # 删除数据库记录
+            await session.delete(chunk)
+            cleaned += 1
 
         if cleaned:
             await session.commit()
 
-    except HTTPException:
-        # 验证或合并失败，重新抛出异常
-        raise
-
-    except Exception as exc:
-        logger.error("cleanup chunks failed user=%s error=%s", current_user.id, exc)
     return cleaned
 
 
