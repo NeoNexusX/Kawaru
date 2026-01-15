@@ -13,6 +13,9 @@ Welcome to contribute to MassFlow-Kawaru! This document provides a unified proce
   ```bash
   # Ensure uv is installed
   uv sync
+
+  # Ensure submodule is installed and updated
+  bash setup_submodule.sh
   ```
 
 - Follow naming conventions and code style (`../zh/命名规范.md`, `.pylintrc`).

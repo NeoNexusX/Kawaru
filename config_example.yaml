@@ -22,6 +22,7 @@ email:
   totp_window: 30
 
 database:
+# TODO：need to delete
   path: database/ #need to delete
   thread : False #need to delete
   host: kawaru-test.cpes2okukxkj.ap-southeast-1.rds.amazonaws.com
@@ -44,6 +45,15 @@ storage:
   max_downloads_per_user: 50
   preflight_ttl_minutes: 30
   chunk_ttl_minutes: 30
+
+admin_info:
+  institution: Xiamen University
+  position: Researcher
+  research_field: Massflow
+  region: China
+  orcid: admin
+  homepage: admin
+  email: examplr@example.com
 
 user:
   max_identity_length: 10
