@@ -1,11 +1,3 @@
-'''
-Author: xiongqiurong 1513401658@qq.com
-Date: 2025-12-26 23:03:35
-LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-27 14:24:55
-FilePath: \Kawaru\routers\experiment.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
 """
 实验管理路由
 """
