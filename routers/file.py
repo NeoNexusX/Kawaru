@@ -1,11 +1,12 @@
+from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
 from models.file_models import FilePublic, ChunkedUploadStatus
 from api.file_api import (
-    DeleteFileDep, ListFilesDep, SimpleUploadDep, 
-    CHUNK_BUFFER_SIZE, DownloadFileDep, PreflightDep,
+    DeleteFileDep, ListFilesDep, SimpleUploadDep,
+    DownloadFileDep, PreflightDep,
     ChunkedPreflightDep, ChunkUploadDep, ChunkedStatusDep
 )
-from fastapi import APIRouter
+from constants import CHUNK_BUFFER_SIZE
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -16,7 +17,7 @@ file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文�
 @file_router.post("/preflight", response_model=FilePublic)  # 上传预检
 async def preflight_file(file_record: PreflightDep):
     return file_record
-    
+
 @file_router.post("/upload_simple", response_model=FilePublic)#简单上传
 async def upload_simple_file(file_record: SimpleUploadDep):
     return file_record

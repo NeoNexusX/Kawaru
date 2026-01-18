@@ -31,15 +31,9 @@ config = get_config()
 storage_config = config.storage
 STORAGE_ROOT = Path(storage_config.root)
 EXPERIMENT_STORAGE_ROOT = STORAGE_ROOT / "experiments"
-EXPERIMENT_TEMP_ROOT = (
-    EXPERIMENT_STORAGE_ROOT / "temp"
-)  # 【临时目录】experiments/temp/exp_{id}
-EXPERIMENT_PROCESSED_ROOT = (
-    EXPERIMENT_STORAGE_ROOT / "processed"
-)  # 【正式目录】experiments/processed/exp_{id}
-FAILED_EXPERIMENT_TTL_MINUTES = int(
-    getattr(storage_config, "failed_experiment_ttl_minutes", 30)
-)
+EXPERIMENT_TEMP_ROOT = EXPERIMENT_STORAGE_ROOT / "temp"  # 【临时目录】experiments/temp/exp_{id}
+EXPERIMENT_PROCESSED_ROOT = EXPERIMENT_STORAGE_ROOT / "processed"  # 【正式目录】experiments/processed/exp_{id}
+FAILED_EXPERIMENT_TTL_MINUTES = int(getattr(storage_config, "failed_experiment_ttl_minutes", 30))
 
 # 实验不存在异常
 experiment_not_found_exception = HTTPException(
@@ -209,7 +203,7 @@ async def cleanup_failed_experiments(
                                 )
 
                     # 删除文件记录
-                    session.delete(file_record)
+                    session.delete(file_record)#todo1
                     logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
 
                 # 删除实验记录
@@ -416,9 +410,9 @@ async def get_experiment_by_file_id(
         )
 
     # 1. 查询文件记录
-    file_statement = select(FileInDB).where(FileInDB.file_id == file_id)
-    file_record = await session.exec(file_statement).first()
-
+    file_record = (
+        await session.exec(select(FileInDB).where(FileInDB.file_id == file_id))
+    )
     if not file_record:
         raise source_file_not_found_exception
 
