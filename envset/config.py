@@ -5,7 +5,7 @@ import pprint
 from pydantic import ValidationError, BaseModel
 import yaml
 from logger import get_logger
-from models.config_models import Config  # 在models.config_models中导入了config函数，是基于Pydantic库的数据验证正确
+from models.config_models import Config
 logger = get_logger("main.settings")
 
 CONFIG_PATH = Path(
@@ -15,11 +15,6 @@ CONFIG_PATH = Path(
 REGION_PATH = Path(
     "external/countries-states-cities-database/json/countries.json"
 )  # 引入 REGION_PATH，存放世界所有国家或地区的信息，用于校验用户地区合法性。
-
-ALLOWED_REGIONS = {
-    item['name'] for item in
-    json.loads(REGION_PATH.read_text(encoding="utf-8"))
-}  # 获取tools/countries.json里允许的国家和地区
 
 def format_value(v):
     """格式化输出值，支持类、字典、列表等"""
@@ -52,7 +47,12 @@ class ConfigCreate:
             if not CONFIG_PATH.exists():
                 logger.error(f"config file not found: {CONFIG_PATH.resolve()}")
                 self.config = None
-                return
+                raise FileNotFoundError(f"config file not found: {CONFIG_PATH.resolve()}")
+            
+            if not REGION_PATH.exists():
+                logger.error(f"region data file not found: {REGION_PATH.resolve()}")
+                self.config = None
+                raise FileNotFoundError(f"region data file not found: {REGION_PATH.resolve()}")
 
             with CONFIG_PATH.open("r", encoding="utf-8") as file:
                 data = yaml.safe_load(file) or {}
@@ -71,10 +71,12 @@ class ConfigCreate:
             self.config = None
             raise e
 
-    def get_config(self):
+    def get_config(self) -> Config:
         """ "Get the configuration object."""
         if self.config is None:
             logger.error("config file not found")
+            raise FileNotFoundError("config file not found")
+
         return self.config
 
 

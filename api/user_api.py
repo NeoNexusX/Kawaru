@@ -21,19 +21,10 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
-from exceptions.user_exceptions import (
-    identity_not_allowed_exception,
-    user_already_exists_exception,
-    user_homepage_invalid_exception,
-    user_name_bad_exception,
-    user_not_active_exception,
-    user_orcid_not_exist_exception,
-    user_position_not_allowed_exception,
-    user_region_not_exist_exception,
-    user_verification_bad_exception,
-)
+from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
+from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import SessionDep, get_session
-from envset.config import get_config, ALLOWED_REGIONS
+from envset.config import get_config
 
 from logger import get_logger
 from models.auth import Token, oauth2_scheme, SECRET_KEY
@@ -105,17 +96,13 @@ async def validate_signup_info(user: UserCreate):
     """
     校验用户注册信息是否合法（总校验逻辑）
     """
-
-    config = get_config()
-    user_config = config.user
     
     # 1. 验证identity必须为None或空字符串（包括仅空白字符）
     if user.identity and user.identity.strip():
         raise identity_not_allowed_exception
     
     # 2. 验证用户职位必须在职位允许列表内
-    allowed_position_types = set(user_config.allowed_position_types)
-    if user.position not in allowed_position_types:
+    if user.position not in ALLOWED_POSITION_TYPES:
         raise user_position_not_allowed_exception
     
     # 3. 验证用户地区是否存在

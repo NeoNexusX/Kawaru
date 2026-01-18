@@ -17,8 +17,6 @@ class TokenSettings(BaseModel):
 
 class DatabaseSettings(BaseModel):
     """数据库配置模型"""
-    path: str
-    thread: bool
     db_username: str
     db_name: str
     db_type: str

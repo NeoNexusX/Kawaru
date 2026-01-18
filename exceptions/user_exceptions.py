@@ -52,3 +52,16 @@ admin_create_not_allowed_exception = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN,
     detail="Only admin users can create admin accounts",
 )
+
+__all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
+    "user_already_exists_exception",
+    "user_not_active_exception",
+    "user_verification_bad_exception",
+    "user_name_bad_exception",
+    "user_position_not_allowed_exception",
+    "user_region_not_exist_exception",
+    "user_orcid_not_exist_exception",
+    "user_homepage_invalid_exception",
+    "identity_not_allowed_exception",
+    "admin_create_not_allowed_exception",
+]

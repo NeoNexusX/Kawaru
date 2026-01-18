@@ -119,16 +119,19 @@ preflight_size_mismatch_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
     detail="uploaded file size does not match preflight size",
 )
+
 # 上传的文件hash没有匹配上预检文件hash
 preflight_hash_mismatch_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
     detail="uploaded file hash does not match preflight hash",
 )
+
 # 上传的文件名没有匹配上预检文件名
 preflight_filename_mismatch_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
     detail="uploaded filename does not match preflight filename",
 )
+
 # 分片相关异常定义
 
 # 分片数要大于0
@@ -176,3 +179,37 @@ chunk_file_missing_exception = HTTPException(
 chunk_merge_failed_exception = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to merge chunks"
 )
+
+__all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
+    "storage_type_not_allowed_exception",
+    "invalid_user_for_file_list_sync_exception",
+    "storage_type_not_supported_exception",
+    "file_size_limit_exception",
+    "file_not_found_exception",
+    "permission_denied_exception",
+    "distributed_storage_delete_not_implemented_exception",
+    "storage_type_delete_unsupported_exception",
+    "download_not_implemented_exception",
+    "file_content_missing_exception",
+    "file_query_failed_exception",
+    "invalid_db_session_exception",
+    "file_persist_failed_exception",
+    "filename_invalid_exception",
+    "file_type_not_allowed_exception",
+    "user_file_limit_exception",
+    "user_storage_limit_exception",
+    "duplicate_file_exception",
+    "user_download_limit_exception",
+    "preflight_size_mismatch_exception",
+    "preflight_hash_mismatch_exception",
+    "preflight_filename_mismatch_exception",
+    "total_parts_must_greater_than_exception",
+    "total_part_too_much_exception",
+    "invalid_part_number_exception",
+    "part_number_out_of_range_exception",
+    "part_already_exists_exception",
+    "incomplete_part_sequence_exception",
+    "merged_file_hash_mismatch_exception",
+    "chunk_file_missing_exception",
+    "chunk_merge_failed_exception",
+]
