@@ -1,26 +1,29 @@
-import pytest
-import os, hashlib, aiofiles
+
+"""
+# To test this module, you should do: 
+# 1.Copy .env.pytest.example as .env.pytest, configure your .env.pytest file.
+3.Run "uv run main.py" to start FastAPI app.
+4.Run "uv run pytest -m upload" in shell with venv activated.
+"""
+import os
+import hashlib
 from typing import Tuple
-from pathlib import Path
+import pytest
+import aiofiles
 from httpx import AsyncClient
 from .conftest import logger
 from .conftest import BASE_URL, UPLOAD_FILE_DIR, CHUNK_BUFFER_SIZE
-from .conftest import ALLOWED_FILE_TYPES
 
-'''
-To test this module, you should do: 
-1.Copy .env.pytest.example as .env.pytest, configure your .env.pytest file.
-3.Run "uv run main.py" to start FastAPI app.
-4.Run "uv run pytest -m upload" in shell with venv activated.
-'''
 
-@pytest.fixture(scope="session")
-async def async_client():
+@pytest.fixture(scope="session", name="async_client")
+async def _async_client():
+    if not BASE_URL:
+        pytest.fail("Environment variable BASE_URL is required")
     async with AsyncClient(base_url=BASE_URL) as client:
         yield client
 
-@pytest.fixture(scope="session")
-async def login(async_client):
+@pytest.fixture(scope="session", name="admin_login")
+async def _admin_login(async_client):
     client = async_client
     # ASGI login, and get the access token.
     username = os.getenv("TEST_USER")
@@ -56,14 +59,19 @@ async def login(async_client):
 @pytest.mark.upload
 @pytest.mark.asyncio
 async def test_upload_file_chunks(login: Tuple[AsyncClient, str, str]):
+    """
+    test_upload_file_chunks
+    """
     client, token, token_type = login # Get the token of current user.
-    logger.info(f"Start testing upload_file_chunks...")
+    logger.info("Start testing upload_file_chunks...")
+    if not UPLOAD_FILE_DIR:
+        pytest.fail("Environment variable UPLOAD_FILE_DIR is required")
     for file_name in os.listdir(UPLOAD_FILE_DIR):
         file_path = os.path.join(UPLOAD_FILE_DIR, file_name)
         logger.info(f"Now testing: file_path:{file_path}")
         async with aiofiles.open(file=file_path, mode='rb') as upload_file:
             total_hash = hashlib.sha256()
-            part_hashes:str = []
+            part_hashes = []
             total_parts = 0
             size = 0
             await upload_file.seek(0)

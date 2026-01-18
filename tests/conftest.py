@@ -1,8 +1,7 @@
-import pytest, os, sys
+from pathlib import Path
+import os
 from dotenv import load_dotenv
 from envset.config import get_config
-from pathlib import Path
-from urllib.parse import urlparse
 from logger import get_logger
 
 # 此处同时加载项目环境变量.env和pytest环境变量.env.pytest
@@ -18,7 +17,7 @@ UPLOAD_FILE_DIR = os.getenv("UPLOAD_FILE_DIR")
 TEST_USER = os.getenv("TEST_USER")
 TEST_PWD = os.getenv("TEST_PWD")
 
-logger = get_logger("pytest")
+logger = get_logger("test")
 # 基础存储配置来自 config
 config = get_config()
 if not config:
