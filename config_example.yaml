@@ -75,7 +75,7 @@ sample_info:
   max_organism_part_length: 128
   max_condition_length: 128
   max_sample_growth_conditions_length: 128
-  max_sample_stabilisation_length: 128
+  max_sample_stabilization_length: 128
   max_tissue_modification_length: 128
   max_maldi_matrix_length: 128
   max_maldi_matrix_application_length: 128

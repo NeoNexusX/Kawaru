@@ -70,10 +70,10 @@ class FileBase(SQLModel):
         description="样本生长或处理条件（选填）",
         max_length=sample_config.max_sample_growth_conditions_length,
     )
-    sample_stabilisation: str = Field(
+    sample_stabilization: str = Field(
         default="",
         description="样本稳定方式",
-        max_length=sample_config.max_sample_stabilisation_length,
+        max_length=sample_config.max_sample_stabilization_length,
     )
     tissue_modification: str = Field(
         default="",

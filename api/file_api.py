@@ -180,7 +180,7 @@ async def cleanup_stale_preflights(
                 continue
 
             # 满足所有条件 → 清理预检记录
-            safe_cleanup_preflight_record(session, current_user, rec)
+            await safe_cleanup_preflight_record(session, current_user, rec)
             cleaned += 1
 
         if cleaned:
@@ -444,7 +444,7 @@ async def validate_and_merge_chunks(
                     Path(chunk.temp_path).unlink(missing_ok=True)
                 except Exception:
                     pass
-                session.delete(chunk)
+                await session.delete(chunk)
                 await session.commit()
                 raise part_number_out_of_range_exception
 
@@ -521,7 +521,7 @@ async def validate_and_merge_chunks(
                         Path(chunk.temp_path).unlink(missing_ok=True)
                     except Exception:
                         pass
-                    session.delete(chunk)
+                    await session.delete(chunk)
 
                 # 更新当前文件记录的路径为已存在文件的路径
                 file_record.path = existing_file.path
@@ -578,9 +578,9 @@ async def validate_and_merge_chunks(
                     Path(chunk.temp_path).unlink(missing_ok=True)
                 except Exception:
                     pass
-                session.delete(chunk)
+                await session.delete(chunk)
             # 删除文件记录
-            session.delete(file_record)
+            await session.delete(file_record)
             await session.commit()
             raise merged_file_hash_mismatch_exception
 
@@ -590,7 +590,7 @@ async def validate_and_merge_chunks(
                 Path(chunk.temp_path).unlink(missing_ok=True)
             except Exception:
                 pass
-            session.delete(chunk)
+            await session.delete(chunk)
 
         await session.commit()
         logger.info(
@@ -626,7 +626,7 @@ async def preflight_create_file(
     organism_part: str = Form(..., description="样本来源组织"),
     condition: str = Form(..., description="样本状态"),
     sample_growth_conditions: str = Form("", description="样本生长或处理条件（选填）"),
-    sample_stabilisation: str = Form(..., description="样本稳定方式"),
+    sample_stabilization: str = Form(..., description="样本稳定方式"),
     tissue_modification: str = Form(..., description="组织修饰方式"),
     maldi_matrix: str = Form(..., description="MALDI 基质"),
     maldi_matrix_application: str = Form(..., description="基质施加方式"),
@@ -640,7 +640,7 @@ async def preflight_create_file(
     # 清理过期预检记录
     try:
         # safe_cleanup_preflight_record(session, current_user, pre_record)  # 安全清理预检记录
-        cleanup_stale_preflights(
+        await cleanup_stale_preflights(
             session, current_user
         )  # 清理过期预检记录，只在预检的时候调用一次
     except Exception:
@@ -760,7 +760,7 @@ async def preflight_create_file(
         organism_part=organism_part,
         condition=condition,
         sample_growth_conditions=sample_growth_conditions,
-        sample_stabilisation=sample_stabilisation,
+        sample_stabilization=sample_stabilization,
         tissue_modification=tissue_modification,
         maldi_matrix=maldi_matrix,
         maldi_matrix_application=maldi_matrix_application,
@@ -795,7 +795,7 @@ async def preflight_create_chunked_file(
     organism_part: str = Form(..., description="样本来源组织"),
     condition: str = Form(..., description="样本状态"),
     sample_growth_conditions: str = Form("", description="样本生长或处理条件（选填）"),
-    sample_stabilisation: str = Form(..., description="样本稳定方式"),
+    sample_stabilization: str = Form(..., description="样本稳定方式"),
     tissue_modification: str = Form(..., description="组织修饰方式"),
     maldi_matrix: str = Form(..., description="MALDI 基质"),
     maldi_matrix_application: str = Form(..., description="基质施加方式"),
@@ -807,10 +807,10 @@ async def preflight_create_chunked_file(
     ensure_storage_dirs()
     # 清理过期记录
     try:
-        cleanup_stale_preflights(
+        await cleanup_stale_preflights(
             session, current_user
         )  # 清理过期预检记录，只在预检的时候调用一次
-        cleanup_stale_chunks(
+        await cleanup_stale_chunks(
             session, current_user
         )  # 清理过期分片记录，只在分片预检的时候调用一次
     except Exception:
@@ -891,7 +891,7 @@ async def preflight_create_chunked_file(
         # 分片复用时需要修改 total_parts 字段
         rec.total_parts = total_parts
         session.add(rec)
-        session.flush()  # 立即写入数据库但不提交
+        await session.flush()  # 立即写入数据库但不提交
 
         # 检查该文件路径是否存在（文件是否已完成上传）
         if Path(rec.path).exists():
@@ -941,7 +941,7 @@ async def preflight_create_chunked_file(
 
     # 创建新的分片预检记录（注意：此时不写入用户的 file_ids）
     # owners 字段记录预期归属，但用户表的 file_ids 只在分片上传完成并合并成功后才更新
-    final_path = prepare_local_storage_path(current_user.id, filename)
+    final_path = prepare_local_storage_path(filename)
     file_type = final_path.suffix.lstrip(".")
     file_record = FileInDB(
         filename=filename,
@@ -958,7 +958,7 @@ async def preflight_create_chunked_file(
         organism_part=organism_part,
         condition=condition,
         sample_growth_conditions=sample_growth_conditions,
-        sample_stabilisation=sample_stabilisation,
+        sample_stabilization=sample_stabilization,
         tissue_modification=tissue_modification,
         maldi_matrix=maldi_matrix,
         maldi_matrix_application=maldi_matrix_application,
@@ -967,6 +967,7 @@ async def preflight_create_chunked_file(
     session.add(file_record)
     await session.commit()
     await session.refresh(file_record)
+    await session.refresh(current_user)
 
     logger.info(
         "chunked preflight created new file record user=%s file_id=%s filename=%s size=%s parts=%s (not yet in user file_ids)",

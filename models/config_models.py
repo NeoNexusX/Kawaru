@@ -74,7 +74,7 @@ class SampleInfoSettings(BaseModel):
     max_organism_part_length: int
     max_condition_length: int
     max_sample_growth_conditions_length: int
-    max_sample_stabilisation_length: int
+    max_sample_stabilization_length: int
     max_tissue_modification_length: int
     max_maldi_matrix_length: int
     max_maldi_matrix_application_length: int
