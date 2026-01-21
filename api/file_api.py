@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
-import zipfile
 from pathlib import Path
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -17,52 +15,43 @@ from api.file_api_business import (
     delete_file_and_parts,
     get_file_record,
     link_file_to_user,
-    remove_file_id,
+    prepare_download_file,
     safe_cleanup_preflight_record,
+    unlink_user_from_file,
+    update_download_stats,
     validate_and_merge_chunks,
     validate_and_try_reuse_file,
-    check_duplicate_filename,
+    validate_chunk_metadata,
+    validate_simple_upload,
+    validate_upload_request,
 )
 from api.file_api_helper import (
     assert_file_owner,
-    check_user_quota,
     compute_upload_file_metadata,
     delete_local_file,
     ensure_storage_dirs,
     prepare_local_storage_path,
     prepare_temp_chunk_path,
     save_upload_file,
-    validate_file_type,
-    validate_filename,
-    validate_total_parts,
 )
 from api.user_api import token_authen
 from constants import (
     MAX_DOWNLOADS_PER_USER,
-    ALLOWED_STORAGE_TYPES,
-    DOWNLOAD_TEMP_ROOT,
 )
 from database.db import SessionDep
 from exceptions import (
     chunk_merge_failed_exception,
     download_not_implemented_exception,
-    duplicate_file_exception,
-    file_content_missing_exception,
     file_not_found_exception,
     file_persist_failed_exception,
+    file_reused_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
     part_already_exists_exception,
     part_number_out_of_range_exception,
     part_validation_failed_exception,
     permission_denied_exception,
-    preflight_filename_mismatch_exception,
-    preflight_hash_mismatch_exception,
-    preflight_size_mismatch_exception,
-    storage_type_not_allowed_exception,
-    storage_type_not_supported_exception,
     user_download_limit_exception,
-    user_file_limit_exception,
 )
 
 from logger import get_logger
@@ -71,13 +60,13 @@ from models.file_models import (
     FileCreate,
     FileDownloadMeta,
     FileInDB,
+    FileListResponse,
     FilePublic,
     PartCreate,
     PartInDB,
     PartPublic,
 )
 from models.user_models import UserInDB
-from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 logger = get_logger("main.file_api")
 
 
@@ -127,11 +116,7 @@ async def preflight_create_file(
     )
 
     # 参数验证
-    if (file_data.storage_type not in ALLOWED_STORAGE_TYPES 
-        or file_data.storage_type != "local"
-        or not validate_filename(file_data.filename)
-        or not validate_file_type(file_data.filename)):
-        
+    if not validate_upload_request(file_data.storage_type, file_data.filename):
         logger.warning(
             "validation failed user=%s filename=%s storage=%s size=%s",
             current_user.id,
@@ -144,21 +129,33 @@ async def preflight_create_file(
     # 验证文件并尝试复用（配额检查、重复检查、哈希复用）
     reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
     if reused_file:
-        await session.commit()
-        await session.refresh(reused_file)
-        await session.refresh(current_user)
-        logger.info(
-            "preflight reused existing file user=%s file_id=%s",
-            current_user.id,
-            reused_file.file_id,
-        )
-        return reused_file
+        # 检查文件是否真实存在（物理文件）
+        if Path(reused_file.path).exists():
+            # 文件存在，提交事务后抛出复用异常
+            await session.commit()
+            await session.refresh(reused_file)
+            await session.refresh(current_user)
+            logger.info(
+                "preflight reused existing file user=%s file_id=%s",
+                current_user.id,
+                reused_file.file_id,
+            )
+            raise file_reused_exception
+        else:
+            # 文件不存在，返回记录等待上传
+            await session.commit()
+            await session.refresh(reused_file)
+            await session.refresh(current_user)
+            logger.info(
+                "preflight reused record but file missing user=%s file_id=%s",
+                current_user.id,
+                reused_file.file_id,
+            )
+            return reused_file
 
     # 创建新的文件记录
     final_path = prepare_local_storage_path(file_data.filename)
-    file_data.file_type = final_path.suffix.lstrip(".")
-    
-    # 将 FileCreate 转换为 FileInDB
+
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
         **file_data_dict,
@@ -228,12 +225,7 @@ async def preflight_create_chunked_file(
     )
 
     # 参数验证
-    if (file_data.storage_type not in ALLOWED_STORAGE_TYPES 
-        or file_data.storage_type != "local"
-        or not validate_total_parts(file_data.total_parts)
-        or not validate_filename(file_data.filename)
-        or not validate_file_type(file_data.filename)):
-        
+    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.total_parts):
         logger.warning(
             "validation failed user=%s filename=%s storage=%s size=%s parts=%s",
             current_user.id,
@@ -250,21 +242,36 @@ async def preflight_create_chunked_file(
         # 更新 total_parts（分片上传特有）
         reused_file.total_parts = file_data.total_parts
         session.add(reused_file)
-        await session.commit()
-        await session.refresh(reused_file)
-        await session.refresh(current_user)
-        logger.info(
-            "chunked preflight reused existing file user=%s file_id=%s parts=%s",
-            current_user.id,
-            reused_file.file_id,
-            file_data.total_parts,
-        )
-        return reused_file
+        
+        # 检查文件是否真实存在（物理文件）
+        if Path(reused_file.path).exists():
+            # 文件存在，提交事务后抛出复用异常
+            await session.commit()
+            await session.refresh(reused_file)
+            await session.refresh(current_user)
+            logger.info(
+                "chunked preflight reused existing file user=%s file_id=%s parts=%s",
+                current_user.id,
+                reused_file.file_id,
+                file_data.total_parts,
+            )
+            raise file_reused_exception
+        else:
+            # 文件不存在，返回记录等待上传
+            await session.commit()
+            await session.refresh(reused_file)
+            await session.refresh(current_user)
+            logger.info(
+                "chunked preflight reused record but file missing user=%s file_id=%s parts=%s",
+                current_user.id,
+                reused_file.file_id,
+                file_data.total_parts,
+            )
+            return reused_file
 
     # 创建新的文件记录
     final_path = prepare_local_storage_path(file_data.filename)
-    file_data.file_type = final_path.suffix.lstrip(".")
-    
+
     # 将 FileCreate 转换为 FileInDB
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
@@ -287,7 +294,7 @@ async def preflight_create_chunked_file(
 
 
 async def upload_file_chunk(
-    part_data_json: Annotated[str, Form(alias="part_data")],#todo 
+    part_data_json: Annotated[str, Form(alias="part_data_json")],
     chunk: Annotated[UploadFile, File()],
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: SessionDep,
@@ -305,13 +312,14 @@ async def upload_file_chunk(
     
     流程：
     1. 解析分片元数据（从 JSON 字符串）
-    2. 参数验证（分片编号、文件记录存在性、权限）
-    3. 检查分片是否已上传（防止重复）
-    4. 验证分片哈希（确保数据完整性）
-    5. 保存分片到临时目录
-    6. 创建分片记录
-    7. 尝试合并分片（如果所有分片都已上传）
-    8. 如果合并成功，更新用户统计信息并触发后台任务
+    2. 根据 file_id 查询文件记录
+    3. 验证分片编号范围
+    4. 检查分片是否已上传（防止重复）
+    5. 验证分片哈希和大小
+    6. 保存分片到临时目录
+    7. 创建分片记录
+    8. 尝试合并分片（如果所有分片都已上传）
+    9. 如果合并成功，更新用户统计信息并触发后台任务
     
     合并时机：
     - 每次上传分片后都会检查是否所有分片都已上传
@@ -325,9 +333,9 @@ async def upload_file_chunk(
     - 合并失败时会清理所有分片和文件记录
     - part_data 必须是有效的 JSON 字符串
     """
-    
+
     ensure_storage_dirs()
-    
+
     # 1. 解析 JSON 字符串为 PartCreate 对象
     try:
         part_data_dict = json.loads(part_data_json)
@@ -339,7 +347,7 @@ async def upload_file_chunk(
             exc,
         )
         raise invalid_part_data_exception from exc
-    
+
     logger.info(
         "chunk upload start user=%s file_hash=%s part=%s",
         current_user.id,
@@ -347,9 +355,11 @@ async def upload_file_chunk(
         part_data.part_number,
     )
 
-    # 2. 查询文件记录
+    # 2. 根据 file_hash 查询文件记录
     file_record = (
-        await session.exec(select(FileInDB).where(FileInDB.hash_sha256 == part_data.file_hash))
+        await session.exec(
+            select(FileInDB).where(FileInDB.hash_sha256 == part_data.file_hash)
+        )
     ).first()
     if not file_record:
         raise file_not_found_exception
@@ -365,18 +375,8 @@ async def upload_file_chunk(
         )
         raise part_number_out_of_range_exception
 
-    # 4. 检查分片是否已上传（防止重复）
-
-    existing_chunk = (
-        await session.exec(
-            select(PartInDB).where(
-                PartInDB.file_id == file_record.file_id,
-                PartInDB.part_number == part_data.part_number,
-                PartInDB.owner_id == current_user.id,
-            )
-        )
-    ).first()
-    if existing_chunk:
+    # 4. 检查分片是否已上传（防止重复）- 调用业务层
+    if await validate_chunk_metadata(session, file_record.file_id, part_data.part_number, current_user.id):
         logger.warning(
             "chunk already exists user=%s file_id=%s part=%s",
             current_user.id,
@@ -401,7 +401,7 @@ async def upload_file_chunk(
         raise part_validation_failed_exception
 
     # 6. 保存分片到临时目录
-    temp_path = prepare_temp_chunk_path(current_user.id, part_data.file_hash, part_data.part_number)
+    temp_path = prepare_temp_chunk_path(current_user.id, file_record.hash_sha256, part_data.part_number)
     try:
         await save_upload_file(chunk, temp_path)
     except Exception as exc:
@@ -436,13 +436,6 @@ async def upload_file_chunk(
         chunk_size,
     )
 
-    # 将 PartInDB 转换为 PartPublic
-    part_record_dict = part_record.model_dump(include={
-        'part_id', 'file_id', 'file_hash', 'part_number', 
-        'part_hash', 'part_size', 'uploaded_at'
-    })
-    part_public = PartPublic(**part_record_dict)
-
     try:
         merge_success = await validate_and_merge_chunks(
             session, file_record, current_user
@@ -473,7 +466,7 @@ async def upload_file_chunk(
                 )
 
             # 合并成功，返回分片信息
-            return part_public
+            return part_record 
     except HTTPException:
         raise
     except Exception as exc:
@@ -487,7 +480,7 @@ async def upload_file_chunk(
         raise chunk_merge_failed_exception from exc
 
     # 上传成功但未合并，返回分片信息
-    return part_public
+    return part_record 
 
 
 async def get_chunked_upload_status(
@@ -563,17 +556,11 @@ async def upload_simple_file(
     适用场景：小文件上传（< 100MB）
     
     流程：
-    1. 参数验证（存储类型、文件名、文件类型）
-    2. 验证预检记录（pre_file_id）
-    3. 验证文件元数据（哈希、大小）与预检记录是否匹配
-    4. 尝试复用已存在的相同哈希文件（秒传）
-    5. 如果无法复用，保存文件到存储目录
-    6. 更新用户统计信息（file_ids、file_count、total_file_size）
-    7. 如果是 ZIP 文件，触发后台任务提取实验文件
-    
-    秒传逻辑：
-    - 如果其他用户已上传过相同哈希的文件，直接复用
-    - 不需要实际传输文件内容，节省带宽和时间
+    1. 查询预检记录
+    2. 统一验证（存储类型、文件名、元数据、配额）
+    3. 保存文件到存储目录
+    4. 更新用户统计信息（file_ids、file_count、total_file_size）
+    5. 如果是 ZIP 文件，触发后台任务提取实验文件
     
     后台任务：
     - 如果是 ZIP 文件，上传成功后会自动触发实验文件提取
@@ -591,100 +578,17 @@ async def upload_simple_file(
         storage_type,
     )
 
-    if storage_type not in ALLOWED_STORAGE_TYPES:
-        raise storage_type_not_allowed_exception
-    if storage_type != "local":
-        raise storage_type_not_supported_exception
-
+    # 查询预检记录
     pre_record = await get_file_record(pre_file_id, session)
     if not pre_record:
         raise file_not_found_exception
-    if not assert_file_owner(pre_record, current_user):
-        raise permission_denied_exception
 
-    # 重复文件名检查（业务层）
-    if file.filename:
-        if await check_duplicate_filename(session, current_user, file.filename):
-            raise duplicate_file_exception#优化  把很多逻辑可以写一起  一起报异常
+    # 统一验证（业务层）
+    _, size = await validate_simple_upload(
+        session, current_user, file, storage_type, pre_record
+    )
 
-    if storage_type != pre_record.storage_type:
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
-        await session.commit()
-        raise storage_type_not_allowed_exception
-
-    # 参数验证
-    if (not file.filename
-        or not validate_filename(file.filename)
-        or not validate_file_type(file.filename)):
-        
-        logger.warning(
-            "validation failed user=%s filename=%s",
-            current_user.id,
-            file.filename if file.filename else "None"
-        )
-        raise invalid_request_parameters_exception
-    if file.filename != pre_record.filename:
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
-        await session.commit()
-        raise preflight_filename_mismatch_exception
-
-    hash_sha256, size = await compute_upload_file_metadata(file)
-    if size != pre_record.size:
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
-        await session.commit()
-        raise preflight_size_mismatch_exception
-    if hash_sha256 != (pre_record.hash_sha256 or ""):
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
-        await session.commit()
-        logger.error(
-            "preflight hash mismatch user=%s expected=%s actual=%s",
-            current_user.id,
-            pre_record.hash_sha256,
-            hash_sha256,
-        )
-        raise preflight_hash_mismatch_exception
-
-    # 用户配额检查（工具层）
-    if not check_user_quota(current_user, size):
-        raise user_file_limit_exception
-
-    # 检查预检记录是否已经建立了文件复用关系
-    if current_user.id in set(pre_record.owners or []):
-        same_hash_records = (
-            await session.exec(
-                select(FileInDB).where(
-                    FileInDB.hash_sha256 == hash_sha256,
-                    FileInDB.file_id != pre_record.file_id,
-                )
-            )
-        ).all() or []
-
-        for rec in same_hash_records:
-            try:
-                if not Path(rec.path).exists():
-                    continue
-
-                link_file_to_user(session, current_user, rec.file_id, rec.size or 0)
-
-                if current_user.id not in set(rec.owners or []):
-                    rec.owners = list(dict.fromkeys((rec.owners or []) + [current_user.id]))
-                    session.add(rec)
-
-                await file.close()
-                
-            except (OSError, IOError, AttributeError):
-                # 文件路径无效、无法访问或文件关闭失败，跳过此记录
-                continue
-
-            await session.commit()
-            await session.refresh(rec)
-            logger.info(
-                "simple upload reused existing file user=%s file_id=%s",
-                current_user.id,
-                rec.file_id,
-            )
-            return rec
-
+    # 保存文件
     final_path = prepare_local_storage_path(file.filename)
     try:
         await save_upload_file(file, final_path)
@@ -734,12 +638,12 @@ async def upload_simple_file(
 
 async def list_user_files(
     current_user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep
-) -> list[FilePublic]:
+) -> FileListResponse:
     """
     【文件列表查询接口】
     
     功能：查询当前用户的全部文件记录
-    返回：用户拥有的所有文件列表
+    返回：包含文件总数、文件列表和用户ID的JSON对象
     
     查询逻辑：
     - 从用户的 file_ids 列表中获取文件ID
@@ -749,18 +653,34 @@ async def list_user_files(
     - 只返回用户拥有的文件（file_id 在 user.file_ids 中）
     - 不包括预检记录（未完成上传的文件）
     """
+    # 1. 快速返回：用户没有任何文件
     if not current_user.file_ids:
-        return []
+        return FileListResponse(
+            total=0,
+            files=[],
+            user_id=current_user.id
+        )
 
+    # 2. 获取用户的文件ID列表（转换为list以便后续操作）
     seen_ids = list(current_user.file_ids or [])
     if not seen_ids:
-        return []
+        return FileListResponse(
+            total=0,
+            files=[],
+            user_id=current_user.id
+        )
 
+    # 3. 批量查询文件记录（使用 IN 查询，效率高）
     statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))  # pylint: disable=no-member
     results = (await session.exec(statement)).all()
 
     logger.debug("list user files user=%s count=%s", current_user.id, len(results))
-    return list(results)
+
+    return FileListResponse(
+        total=len(results),
+        files=list(results),
+        user_id=current_user.id
+    )
 
 
 async def delete_user_file(
@@ -800,39 +720,28 @@ async def delete_user_file(
     if not assert_file_owner(file_record, current_user):
         raise permission_denied_exception
 
-    # 1. 更新当前用户的文件关联和统计信息
-    remove_file_id(session, current_user, file_id)
-    current_user.file_count = max(0, (current_user.file_count or 0) - 1)
-    current_user.total_file_size = max(
-        0, (current_user.total_file_size or 0) - file_record.size
-    )
-    session.add(current_user)
+    # 解除用户与文件的关联（业务层）
+    has_other_owners = await unlink_user_from_file(session, current_user, file_record)
 
-    # 2. 从文件的 owners 列表中移除当前用户
-    current_owners = list(file_record.owners or [])
-    if current_user.id in current_owners:
-        current_owners.remove(current_user.id)
-    file_record.owners = current_owners
-    session.add(file_record)
-    await session.flush()
-
-    # 3. 检查是否还有其他用户持有该文件（通过 owners 判断）
-    if file_record.owners:
+    if has_other_owners:
+        # 还有其他用户持有，只解除关联
         await session.commit()
         await session.refresh(current_user)
+        await session.refresh(file_record)
         logger.info(
             "unlinked file reference only user=%s file_id=%s remaining_owners=%s",
             current_user.id,
             file_id,
+            file_record.owners,
         )
         return {"file_id": file_id, "status": "unlinked"}
 
-    # 4. 没有其他用户持有该文件，执行完全删除
-    # 4.1 删除实验相关文件（如果有）
+    # 没有其他用户持有该文件，执行完全删除
+    # 删除实验相关文件（如果有）
     if file_record.experiment_type == "imzML":
         await delete_experiment_files(session, file_id)
 
-    # 4.2 删除文件、分片和数据库记录
+    # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
 
     await session.commit()
@@ -856,9 +765,8 @@ async def get_download_file_metadata(
     流程：
     1. 权限验证（用户是否拥有该文件）
     2. 下载次数限制检查（非管理员用户）
-    3. 文件存在性检查
-    4. 特殊处理：如果是实验文件（imzML），动态生成 ZIP 包
-    5. 更新下载统计（文件下载次数、用户下载次数）
+    3. 准备下载文件（处理实验文件ZIP打包）
+    4. 更新下载统计（文件下载次数、用户下载次数）
     
     实验文件处理：
     - 如果原始文件不存在，但实验文件（imzML、ibd）存在
@@ -883,78 +791,25 @@ async def get_download_file_metadata(
 
     logger.debug("download request user=%s file_id=%s", current_user.id, file_id)
 
+    # 下载次数限制检查
     if current_user.identity != "admin":
         used = current_user.download_used or 0
         if used >= MAX_DOWNLOADS_PER_USER:
             raise user_download_limit_exception
 
+    # 存储类型检查
     if file_record.storage_type != "local":
         raise download_not_implemented_exception
 
-    path = Path(file_record.path) if file_record.path else None
+    # 准备下载文件（业务层处理）
+    await prepare_download_file(session, file_record)
 
-    if path and path.exists():
-        pass
-    else:
-        experiment_type = file_record.experiment_type
-
-        if experiment_type == "imzML":
-            experiment = (
-                await session.exec(
-                    select(ExperimentImzMLInDB).where(
-                        ExperimentImzMLInDB.source_file_id == file_id
-                    )
-                )
-            ).first()
-
-            if not experiment or experiment.status != ExperimentStatus.COMPLETED:
-                logger.warning(
-                    "experiment not found or not completed file_id=%s", file_id
-                )
-                raise file_content_missing_exception
-
-            imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
-            ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
-
-            if (
-                not imzml_path
-                or not ibd_path
-                or not imzml_path.exists()
-                or not ibd_path.exists()
-            ):
-                logger.warning("experiment files missing file_id=%s", file_id)
-                raise file_content_missing_exception
-
-            zip_filename = file_record.filename
-            DOWNLOAD_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-            zip_path = DOWNLOAD_TEMP_ROOT / zip_filename
-
-            def _create_zip() -> None:
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(imzml_path, imzml_path.name)
-                    zf.write(ibd_path, ibd_path.name)
-
-            await asyncio.to_thread(_create_zip)
-
-            file_record.path = str(zip_path)
-            file_record.size = zip_path.stat().st_size
-
-            logger.info(
-                "created download zip file_id=%s path=%s size=%s",
-                file_id,
-                zip_path,
-                file_record.size,
-            )
-        else:
-            raise file_content_missing_exception
-
-    file_record.download_count += 1
-    current_user.download_used = (current_user.download_used or 0) + 1
-    session.add(current_user)
-    session.add(file_record)
+    # 更新下载统计（业务层处理）
+    await update_download_stats(session, file_record, current_user)
     await session.commit()
     await session.refresh(current_user)
     await session.refresh(file_record)
+
     logger.info(
         "download success user=%s file_id=%s filename=%s",
         current_user.id,
@@ -967,9 +822,9 @@ async def get_download_file_metadata(
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
-ListFilesDep = Annotated[list[FilePublic], Depends(list_user_files)]
+ListFilesDep = Annotated[FileListResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ChunkedPreflightDep = Annotated[FilePublic, Depends(preflight_create_chunked_file)]
-ChunkUploadDep = Annotated[dict[str, Any], Depends(upload_file_chunk)]
+ChunkUploadDep = Annotated[PartPublic, Depends(upload_file_chunk)]
 ChunkedStatusDep = Annotated[ChunkedUploadStatus, Depends(get_chunked_upload_status)]

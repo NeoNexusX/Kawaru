@@ -1,21 +1,9 @@
 from fastapi import HTTPException
 from starlette import status
 
-# 存储类型不在允许列表异常
-storage_type_not_allowed_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="storage type is not allowed",
-)
-
 # 用户文件列表同步异常
 invalid_user_for_file_list_sync_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST, detail="invalid user for file id list sync"
-)
-
-# 存储类型尚未实现异常
-storage_type_not_supported_exception = HTTPException(
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    detail="storage type is not supported yet",
 )
 
 # 文件不存在异常
@@ -66,23 +54,6 @@ user_download_limit_exception = HTTPException(
     detail="user download limit reached",
 )
 
-# 预检与上传不一致异常
-preflight_size_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded file size does not match preflight size",
-)
-
-# 上传的文件hash没有匹配上预检文件hash
-preflight_hash_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded file hash does not match preflight hash",
-)
-
-# 上传的文件名没有匹配上预检文件名
-preflight_filename_mismatch_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail="uploaded filename does not match preflight filename",
-)
 # 分片相关异常定义
 
 # 分片验证失败异常（哈希或大小不匹配）
@@ -107,11 +78,6 @@ part_already_exists_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST, detail="part already uploaded"
 )
 
-# 分片序列不完整异常
-incomplete_part_sequence_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST, detail="incomplete part sequence for merge"
-)
-
 # 合并后文件hash不匹配异常
 merged_file_hash_mismatch_exception = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -134,10 +100,17 @@ invalid_request_parameters_exception = HTTPException(
     detail="invalid request parameters"
 )
 
+# 文件已复用异常（其他用户已上传相同文件）
+file_reused_exception = HTTPException(
+    status_code=status.HTTP_200_OK,
+    detail={
+        "code": "FILE_REUSED",
+        "message": "其他用户已经上传该文件，已自动复用，无需重复上传"
+    }
+)
+
 __all__ = [
-    "storage_type_not_allowed_exception",
     "invalid_user_for_file_list_sync_exception",
-    "storage_type_not_supported_exception",
     "file_not_found_exception",
     "permission_denied_exception",
     "download_not_implemented_exception",
@@ -146,16 +119,13 @@ __all__ = [
     "user_file_limit_exception",
     "duplicate_file_exception",
     "user_download_limit_exception",
-    "preflight_size_mismatch_exception",
-    "preflight_hash_mismatch_exception",
-    "preflight_filename_mismatch_exception",
     "part_validation_failed_exception",
     "invalid_part_data_exception",
     "part_number_out_of_range_exception",
     "part_already_exists_exception",
-    "incomplete_part_sequence_exception",
     "merged_file_hash_mismatch_exception",
     "chunk_file_missing_exception",
     "chunk_merge_failed_exception",
     "invalid_request_parameters_exception",
+    "file_reused_exception",
 ]

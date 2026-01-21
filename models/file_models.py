@@ -55,21 +55,20 @@ class FileCreate(FileBase):
 
 class PartBase(SQLModel):
     """分片信息基类"""
-    file_hash: str = Field(index=True, max_length=256, description="关联的文件总哈希值")
+    file_hash: str = Field(max_length=256, description="关联的文件哈希")
     part_number: int = Field(..., description="分片编号（从1开始）")
     part_hash: str = Field(max_length=256, description="分片哈希值")
     part_size: int = Field(..., description="分片大小")
 
 
-class PartCreate(PartBase):#直接继承子类，暂时不需要增加其他字段
-    """上传单个分片时的请求模型"""
+class PartCreate(PartBase):
+    """上传单个分片时的请求模型，所有字段都从 PartBase 继承"""
     pass # pylint: disable=unnecessary-pass
 
 
 class PartPublic(PartBase):
     """对外返回的分片信息"""
     part_id: int
-    file_id: int
     uploaded_at: datetime
 
 
@@ -79,6 +78,13 @@ class FilePublic(FileBase):
     file_id: int
     uploaded_at: datetime
     download_count: int
+
+
+class FileListResponse(SQLModel):
+    """文件列表响应模型"""
+    total: int = Field(description="文件总数")
+    files: list[FilePublic] = Field(description="文件列表")
+    user_id: int = Field(description="用户ID")
 
 
 class FileInDB(FileBase, table=True):
@@ -95,7 +101,7 @@ class FileInDB(FileBase, table=True):
     parts: List["PartInDB"] = Relationship(
         back_populates="file",
         sa_relationship_kwargs={
-            #"cascade": "all, delete-orphan",  # ORM层：删除父记录时自动删除子记录 这个可以不需要
+            "cascade": "all, delete-orphan",  # ORM层：删除父记录时自动删除子记录 这个可以不需要
             "passive_deletes": True  # ORM层：让数据库处理级联删除，避免ORM额外查询
         }
     )
@@ -162,7 +168,8 @@ class PartInDB(PartBase, table=True):
             ForeignKey("fileindb.file_id", ondelete="CASCADE"),  # 数据库层：级联删除
             nullable=False,
             index=True
-        )
+        ),
+        description="关联的文件ID（外键）"
     )
     total_file_size: int = Field(..., description="总文件大小")
     total_parts: int = Field(..., description="分片总数")

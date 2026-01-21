@@ -5,6 +5,8 @@
 #########################
 from __future__ import annotations
 
+import zipfile
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -21,11 +23,168 @@ from constants import (
     MAX_TOTAL_STORAGE_PER_USER,
     CHUNK_BUFFER_SIZE,
     MAX_FILE_SIZE,
+    ALLOWED_STORAGE_TYPES,
 )
 
 from logger import get_logger
 
 logger = get_logger("main.file_api_helper")
+
+
+def validate_file_metadata(filename: str) -> bool:
+    """
+    验证文件元数据（文件名和类型）
+    
+    Args:
+        filename: 文件名
+        
+    Returns:
+        True 表示验证通过，False 表示验证失败
+    """
+    return validate_filename(filename) and validate_file_type(filename)
+
+
+def validate_upload_params(
+    storage_type: str,
+    filename: str,
+    expected_storage_type: str | None = None,
+    expected_filename: str | None = None,
+) -> bool:
+    """
+    验证上传参数
+    
+    Args:
+        storage_type: 存储类型
+        filename: 文件名
+        expected_storage_type: 期望的存储类型
+        expected_filename: 期望的文件名
+        
+    Returns:
+        True 表示验证通过，False 表示验证失败
+    """
+    # 1. 存储类型验证
+    if storage_type not in ALLOWED_STORAGE_TYPES:
+        return False
+    
+    # 2. 提供了预检的存储类型，进行比较
+    if expected_storage_type and storage_type != expected_storage_type:
+        return False
+    
+    # 3. 文件名验证
+    if not filename:
+        return False
+    
+    # 4. 提供了预检的文件名，进行比较
+    if expected_filename and filename != expected_filename:
+        return False
+    
+    # 5. 文件名和类型验证
+    if not validate_file_metadata(filename):
+        return False
+    
+    return True
+
+
+async def build_zip_file(#todotodo
+    files: list[tuple[Path, str]],
+    output_path: Path,
+    compression: int = None,
+) -> Path:
+    """
+    创建ZIP文件（通用工具函数）
+    
+    Args:
+        files: 文件列表，每个元素是 (文件路径, ZIP中的文件名) 元组
+        output_path: 输出ZIP文件路径
+        compression: 压缩级别，默认为 ZIP_DEFLATED
+        
+    Returns:
+        创建的ZIP文件路径
+        
+    Raises:
+        FileNotFoundError: 源文件不存在
+    """
+    
+    if compression is None:
+        compression = zipfile.ZIP_DEFLATED
+    
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    def _create_zip() -> None:
+        with zipfile.ZipFile(output_path, "w", compression) as zf:
+            for file_path, arc_name in files:
+                if not file_path.exists():
+                    raise FileNotFoundError(f"Source file not found: {file_path}")
+                zf.write(file_path, arc_name)
+    
+    await asyncio.to_thread(_create_zip)
+    return output_path
+
+
+async def merge_files_with_hash(
+    source_files: list[Path],
+    destination: Path,
+    expected_hash: str | None = None,
+    buffer_size: int = CHUNK_BUFFER_SIZE,
+) -> str:
+    """
+    合并多个文件并计算哈希
+    
+    Args:
+        source_files: 源文件列表（按顺序）
+        destination: 目标文件路径
+        expected_hash: 期望的哈希值（可选），如果提供则验证
+        buffer_size: 读取缓冲区大小
+        
+    Returns:
+        合并后文件的哈希值
+        
+    Raises:
+        FileNotFoundError: 源文件不存在
+        ValueError: 哈希不匹配（如果提供了 expected_hash）
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    
+    total_hash = hashlib.sha256()
+    async with aiofiles.open(destination, "wb") as dest_file:
+        for source_file in source_files:
+            if not source_file.exists():
+                raise FileNotFoundError(f"Source file not found: {source_file}")
+            
+            async with aiofiles.open(source_file, "rb") as src_file:
+                while True:
+                    data = await src_file.read(buffer_size)
+                    if not data:
+                        break
+                    await dest_file.write(data)
+                    total_hash.update(data)
+    
+    final_hash = total_hash.hexdigest()
+    
+    if expected_hash and final_hash != expected_hash:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"Hash mismatch: expected={expected_hash}, actual={final_hash}")
+    
+    return final_hash
+
+
+async def delete_files_async(file_paths: list[str | Path]) -> int:
+    """
+    异步删除多个文件
+    
+    Args:
+        file_paths: 文件路径列表
+        
+    Returns:
+        成功删除的文件数量
+    """
+    
+    deleted_count = 0
+    for file_path in file_paths:
+        await asyncio.to_thread(lambda p=file_path: delete_local_file(p))
+        deleted_count += 1
+    return deleted_count
+
 
 def ensure_storage_dirs() -> None:
     """
@@ -162,7 +321,29 @@ def delete_local_file(path: str | Path) -> None:
     Args:
         path: 文件路径（字符串或 Path 对象）
     """
-    Path(path).unlink(missing_ok=True)
+    # 验证路径不为空
+    if not path:
+        logger.warning("empty path for deletion, skipping")
+        return
+    
+    # 转换为字符串进行验证
+    path_str = str(path).strip()
+    
+    # 验证路径不是特殊值
+    if not path_str or path_str in ('.', '..', '/', '\\'):
+        logger.warning("invalid path for deletion: %r, skipping", path_str)
+        return
+    
+    # 转换为 Path 对象
+    path_obj = Path(path_str)
+    
+    # 验证路径不是目录
+    if path_obj.exists() and path_obj.is_dir():
+        logger.warning("cannot delete directory: %s, skipping", path_str)
+        return
+    
+    # 删除文件
+    path_obj.unlink(missing_ok=True)
 
 
 def assert_file_owner(file_record, current_user) -> bool:
