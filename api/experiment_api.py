@@ -1,5 +1,6 @@
-#########################
-# Experiment API
+##########################
+# Experiment APItodotdo 本模块还没修改  pylint报错没有通过 尤其是process_imzml_experiment_background函数
+#                       和get_experiment_by_file_id函数 
 #########################
 from __future__ import annotations
 
