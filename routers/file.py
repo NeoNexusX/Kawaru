@@ -1,11 +1,12 @@
+from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
 from models.file_models import FilePublic, ChunkedUploadStatus
 from api.file_api import (
-    DeleteFileDep, ListFilesDep, SimpleUploadDep, 
-    CHUNK_BUFFER_SIZE, DownloadFileDep, PreflightDep,
+    DeleteFileDep, ListFilesDep, SimpleUploadDep,
+    DownloadFileDep, PreflightDep,PartPublic,
     ChunkedPreflightDep, ChunkUploadDep, ChunkedStatusDep
 )
-from fastapi import APIRouter
+from constants import CHUNK_BUFFER_SIZE
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -16,13 +17,13 @@ file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文�
 @file_router.post("/preflight", response_model=FilePublic)  # 上传预检
 async def preflight_file(file_record: PreflightDep):
     return file_record
-    
+
 @file_router.post("/upload_simple", response_model=FilePublic)#简单上传
 async def upload_simple_file(file_record: SimpleUploadDep):
     return file_record
 
 
-@file_router.get("", response_model=list[FilePublic])#查询用户文件
+@file_router.get("")#查询用户文件
 async def list_user_files(files: ListFilesDep):
     return files
 
@@ -41,7 +42,7 @@ async def delete_file(result: DeleteFileDep):
 async def preflight_chunked_file(file_record: ChunkedPreflightDep):
     return file_record
 
-@file_router.post("/chunked/upload")  # 分片上传
+@file_router.post("/chunked/upload", response_model=PartPublic)  # 分片上传
 async def upload_chunk(chunk_result: ChunkUploadDep):
     return chunk_result
 

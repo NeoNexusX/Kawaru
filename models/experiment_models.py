@@ -1,11 +1,3 @@
-'''
-Author: xiongqiurong 1513401658@qq.com
-Date: 2026-01-05 16:05:12
-LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2026-01-07 13:29:59
-FilePath: \Kawaru\models\experiment_models.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
 """
 实验数据模型
 """
@@ -67,15 +59,11 @@ class ExperimentPublic(SQLModel):
 class ExperimentImzMLInDB(ExperimentBase, table=True):
     """ImzML 实验数据库模型"""
     __tablename__ = "experiment_imzml"
-    
-    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    
-    # 核心文件信息
+    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True}) # 核心文件信息
     imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
     ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小（字节）")
-    
     # 元数据
     created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
     status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)
@@ -95,13 +83,11 @@ class ExperimentImzMLPublic(ExperimentPublic):
 # class ExperimentRawInDB(ExperimentBase, table=True):
 #     """RAW 实验数据库模型"""
 #     __tablename__ = "experiment_raw"
-#     
 #     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
 #     
 #     # RAW 特有字段
 #     raw_path: str = Field(default="", description=".raw 文件的绝对存储路径")
 #     raw_size: int = Field(default=0, ge=0, description=".raw 文件大小（字节）")
-
 
 # class ExperimentRawPublic(ExperimentPublic):
 #     """RAW 实验公开模型"""
