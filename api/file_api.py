@@ -593,6 +593,8 @@ async def validate_and_merge_chunks(
             await session.delete(chunk)
 
         await session.commit()
+        await session.refresh(file_record)
+        await session.refresh(current_user)
         logger.info(
             "chunks merged successfully file_id=%s user=%s final_path=%s",
             file_record.file_id,
@@ -602,6 +604,8 @@ async def validate_and_merge_chunks(
         return True
 
     except Exception as exc:
+        await session.refresh(file_record)
+        await session.refresh(current_user)
         logger.error(
             "chunk validation and merge failed file_id=%s user=%s error=%s",
             file_record.file_id,
@@ -832,7 +836,7 @@ async def preflight_create_chunked_file(
         raise storage_type_not_supported_exception
     if total_parts <= 0:
         raise total_parts_must_greater_than_exception  # 分片数要大于0
-    if total_parts > 20:
+    if total_parts > 40:
         raise total_part_too_much_exception  # 分片数太多了
 
     # 文件安全与类型校验
@@ -1079,6 +1083,9 @@ async def upload_file_chunk(
     )
     session.add(part_record)
     await session.commit()
+    await session.refresh(part_record)
+    await session.refresh(file_record)
+    await session.refresh(current_user)
 
     logger.info(
         "chunk saved user=%s file_id=%s part=%s size=%s",
@@ -1103,6 +1110,7 @@ async def upload_file_chunk(
             session.add(current_user)
             await session.commit()
             await session.refresh(current_user)
+            await session.refresh(file_record)
 
             logger.info(
                 "chunked upload completed user=%s file_id=%s",
