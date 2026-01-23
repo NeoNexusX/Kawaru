@@ -31,8 +31,9 @@ database:
 storage:
   root: ../
   local_root: data/
-  max_file_size: 2000000000
-  chunk_buffer_size: 1024
+  max_file_size_gb: 2000000000
+  chunk_buffer_size_mb: 1
+  max_chunks_per_upload: 40
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd","IBD"]
   max_path_length: 255

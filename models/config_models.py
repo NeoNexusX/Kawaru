@@ -39,8 +39,9 @@ class StorageSettings(BaseModel):
     """文件存储配置模型"""
     root: str
     local_root: str
-    max_file_size: int
-    chunk_buffer_size: int
+    max_file_size_gb: int
+    chunk_buffer_size_mb: int
+    max_chunks_per_upload: int
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
     max_path_length: int

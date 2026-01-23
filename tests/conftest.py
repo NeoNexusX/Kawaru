@@ -28,4 +28,4 @@ storage_config = config.storage
 BYTES_IN_GB = 1024 ** 3
 BYTES_IN_MB = 1024 ** 2
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
-CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
+CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB

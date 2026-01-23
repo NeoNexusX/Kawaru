@@ -7,10 +7,12 @@
 """
 import os
 import hashlib
+import json
 from typing import Tuple
+from io import BytesIO
+from pathlib import Path
 import pytest
 import aiofiles
-from io import BytesIO
 from httpx import AsyncClient
 from .conftest import logger
 from .conftest import BASE_URL, UPLOAD_FILE_DIR, CHUNK_BUFFER_SIZE
@@ -54,7 +56,7 @@ async def _admin_login(async_client):
     if current_username != username:
         pytest.fail(f"Current user is not the same as target user，"
                     f"username:{username}, current username:{current_username}")
-   
+
     yield client, token, token_type
 
 
@@ -70,14 +72,15 @@ class TestFileUpload:
         logger.info("Start testing upload_file_chunks...")
         if not UPLOAD_FILE_DIR:
             pytest.fail("Environment variable UPLOAD_FILE_DIR is required")
-        
+
         # pursue test for each file in UPLOAD_FILE_DIR
         for file_name in os.listdir(UPLOAD_FILE_DIR):
             file_path = os.path.join(UPLOAD_FILE_DIR, file_name)
             logger.info(f"Now testing: file_path:{file_path}")
-            
+
             # open file asynchronously
             async with aiofiles.open(file=file_path, mode='rb') as upload_file:
+                file_type = Path(file_path).suffix.lstrip('.')
                 total_hash = hashlib.sha256()
                 part_hashes = []
                 total_parts = 0
@@ -100,12 +103,10 @@ class TestFileUpload:
                 total_hash = total_hash.hexdigest() # uniformly transform total hash to hex as the part hashes be
 
                 # Preflight Chunked File
-                rs = await client.post(
-                    "/files/chunked/preflight",
-                    headers={"Authorization": f"{token_type.title()} {token}"},
-                    data={
+                json_data = {
                         "storage_type": "local",
                         "filename": file_name,
+                        "file_type": file_type,
                         "size": size,
                         "hash_sha256": total_hash,
                         "total_parts": total_parts,
@@ -113,11 +114,18 @@ class TestFileUpload:
                         "organism": "Citrus sinensis",
                         "organism_part": "ovary",
                         "condition": "normal condition",
+                        "sample_growth_conditions": "sgc1",
                         "sample_stabilization": "ss1",
                         "tissue_modification": "tm1",
                         "maldi_matrix": "mm1",
                         "maldi_matrix_application": "mma1",
-                    }
+                        "solvent": "",
+                }
+
+                rs = await client.post(
+                    "/files/chunked/preflight",
+                    headers={"Authorization": f"{token_type.title()} {token}"},
+                    json=json_data
                 )
                 assert rs.status_code == 200, rs.text
                 rs.raise_for_status()
@@ -131,17 +139,24 @@ class TestFileUpload:
                         break
                     part_hash = part_hashes[part_number-1]
                     logger.info(f"- uploading chunk part_num:{part_number}, part_hash:{part_hash}")
-                    form_data = {
+
+                    part_data = {
                         "file_hash": total_hash,
                         "part_number": str(part_number), 
                         "part_hash": part_hash,
+                        "part_size": len(chunk),
                     }
+
                     chunk_file = {
                         "chunk": (
                             "chunk.bin",
                             BytesIO(chunk),
                             "application/octet-stream"
                         )
+                    }
+
+                    form_data = {
+                        "part_data_json": json.dumps(part_data),
                     }
 
                     rs = await client.post(
