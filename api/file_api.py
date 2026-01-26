@@ -7,13 +7,15 @@ import json
 from pathlib import Path
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import select
+from sqlmodel import select, and_
 from api.experiment_api import process_imzml_experiment_background
 from api.file_api_business import (
+    assert_file_owner,
     cleanup_stale_preflights,
     delete_experiment_files,
     delete_file_and_parts,
     get_file_record,
+    get_user_file_ids,
     link_file_to_user,
     prepare_download_file,
     safe_cleanup_preflight_record,
@@ -26,7 +28,6 @@ from api.file_api_business import (
     validate_upload_request,
 )
 from api.file_api_helper import (
-    assert_file_owner,
     compute_upload_file_metadata,
     delete_local_file,
     ensure_storage_dirs,
@@ -39,7 +40,7 @@ from constants.file_constants import (
     MAX_DOWNLOADS_PER_USER,
 )
 from database.db import SessionDep
-from exceptions import (
+from exceptions.file_exceptions import (
     chunk_merge_failed_exception,
     download_not_implemented_exception,
     file_not_found_exception,
@@ -52,6 +53,7 @@ from exceptions import (
     part_validation_failed_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    duplicate_file_exception,
 )
 
 from logger import get_logger
@@ -160,7 +162,7 @@ async def preflight_create_file(
     file_record = FileInDB(
         **file_data_dict,
         path=str(final_path),
-        owners=[current_user.id],
+        owners=[current_user],
     )
     session.add(file_record)
     await session.commit()
@@ -242,7 +244,7 @@ async def preflight_create_chunked_file(
         # 更新 total_parts（分片上传特有）
         reused_file.total_parts = file_data.total_parts
         session.add(reused_file)
-        
+
         # 检查文件是否真实存在（物理文件）
         if Path(reused_file.path).exists():
             # 文件存在，提交事务后抛出复用异常
@@ -277,7 +279,7 @@ async def preflight_create_chunked_file(
     file_record = FileInDB(
         **file_data_dict,
         path=str(final_path),
-        owners=[current_user.id],
+        owners=[current_user],
     )
     session.add(file_record)
     await session.commit()
@@ -365,7 +367,13 @@ async def upload_file_chunk(
     if not file_record:
         raise file_not_found_exception
 
-    # 3. 验证分片编号范围：1 <= part_number <= total_parts
+    # 3. 这里是否需要验证file_record物理文件是否已经存在了？还是到时候前端根据exception进行验证？
+    file_existing = Path(file_record.path).exists()
+    if file_existing:
+        raise duplicate_file_exception
+
+    # 4. 验证分片编号范围：1 <= part_number <= total_parts
+    assert part_data.part_number is not None and file_record.total_parts is not None
     if not 1 <= part_data.part_number <= file_record.total_parts:
         logger.error(
             "part_number out of range: %s not in [1, %s] file_id=%s user=%s",
@@ -376,7 +384,8 @@ async def upload_file_chunk(
         )
         raise part_number_out_of_range_exception
 
-    # 4. 检查分片是否已上传（防止重复）- 调用业务层
+    # 5. 检查分片是否已上传（防止重复）- 调用业务层
+    assert file_record.file_id is not None and current_user.id is not None
     if await validate_chunk_metadata(session, file_record.file_id, part_data.part_number, current_user.id):
         logger.warning(
             "chunk already exists user=%s file_id=%s part=%s",
@@ -386,7 +395,7 @@ async def upload_file_chunk(
         )
         raise part_already_exists_exception
 
-    # 5. 验证分片哈希和大小
+    # 6. 验证分片哈希和大小
     chunk_hash, chunk_size = await compute_upload_file_metadata(chunk)
     if chunk_hash != part_data.part_hash or chunk_size != part_data.part_size:
         logger.error(
@@ -401,7 +410,8 @@ async def upload_file_chunk(
         )
         raise part_validation_failed_exception
 
-    # 6. 保存分片到临时目录
+    # 7. 保存分片到临时目录
+    assert file_record.hash_sha256 is not None
     temp_path = prepare_temp_chunk_path(current_user.id, file_record.hash_sha256, part_data.part_number)
     try:
         await save_upload_file(chunk, temp_path)
@@ -442,7 +452,7 @@ async def upload_file_chunk(
             session, file_record, current_user
         )
         if merge_success:
-            link_file_to_user(session, current_user, file_record.file_id, file_record.size)
+            await link_file_to_user(session, current_user, file_record, file_record.size)
             await session.commit()
             await session.refresh(current_user)
             await session.refresh(file_record)
@@ -522,7 +532,8 @@ async def get_chunked_upload_status(
     )
 
     # 检查文件是否已完成上传
-    user_file_ids = set(current_user.file_ids or [])
+    assert current_user.id is not None
+    user_file_ids = await get_user_file_ids(session, current_user.id)
     if file_record.file_id in user_file_ids:
         status.total_parts = 0
         status.is_complete = True
@@ -532,8 +543,8 @@ async def get_chunked_upload_status(
     uploaded_chunks = (
         await session.exec(
             select(PartInDB)
-            .where(PartInDB.file_id == file_id, PartInDB.owner_id == current_user.id)
-            .order_by(PartInDB.part_number)
+            .where(and_(PartInDB.file_id == file_id, PartInDB.owner_id == current_user.id))
+            .order_by(PartInDB.part_number) # type: ignore
         )
     ).all()
 
@@ -590,6 +601,7 @@ async def upload_simple_file(
     )
 
     # 保存文件
+    assert file.filename is not None
     final_path = prepare_local_storage_path(file.filename)
     try:
         await save_upload_file(file, final_path)
@@ -608,7 +620,7 @@ async def upload_simple_file(
     file_record = pre_record
     await session.flush()
 
-    link_file_to_user(session, current_user, file_record.file_id, size)
+    await link_file_to_user(session, current_user, file_record, size)
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -622,6 +634,8 @@ async def upload_simple_file(
 
     if file_record.file_type == "zip":
         experiment_name = Path(file_record.filename).stem
+        assert current_user.id is not None
+        assert file_record.file_id is not None
         background_tasks.add_task(
             process_imzml_experiment_background,
             current_user.id,
@@ -655,31 +669,24 @@ async def list_user_files(
     - 不包括预检记录（未完成上传的文件）
     """
     # 1. 快速返回：用户没有任何文件
-    if not current_user.file_ids:
+    assert current_user.id is not None
+    user_file_ids = await get_user_file_ids(session=session, user_id=current_user.id)
+    if not user_file_ids:
         return FileListResponse(
             total=0,
             files=[],
             user_id=current_user.id
         )
 
-    # 2. 获取用户的文件ID列表（转换为list以便后续操作）
-    seen_ids = list(current_user.file_ids or [])
-    if not seen_ids:
-        return FileListResponse(
-            total=0,
-            files=[],
-            user_id=current_user.id
-        )
-
-    # 3. 批量查询文件记录（使用 IN 查询，效率高）
-    statement = select(FileInDB).where(FileInDB.file_id.in_(seen_ids))  # pylint: disable=no-member
+    # 2. 批量查询文件记录（使用 IN 查询，效率高）
+    statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
     results = (await session.exec(statement)).all()
 
     logger.debug("list user files user=%s count=%s", current_user.id, len(results))
 
     return FileListResponse(
         total=len(results),
-        files=list(results),
+        files=list(results), # type: ignore
         user_id=current_user.id
     )
 
@@ -718,7 +725,7 @@ async def delete_user_file(
     file_record = await get_file_record(file_id, session)
     if not file_record:
         raise file_not_found_exception
-    if not assert_file_owner(file_record, current_user):
+    if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
     # 解除用户与文件的关联（业务层）
@@ -787,7 +794,7 @@ async def get_download_file_metadata(
     file_record = await get_file_record(file_id, session)
     if not file_record:
         raise file_not_found_exception
-    if not assert_file_owner(file_record, current_user):
+    if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
     logger.debug("download request user=%s file_id=%s", current_user.id, file_id)

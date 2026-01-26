@@ -1,9 +1,13 @@
+from typing import TYPE_CHECKING
 from pydantic import BaseModel
-from sqlalchemy import Column
-from sqlalchemy.types import JSON
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Relationship
 from logger import get_logger
 from envset.config import get_config
+from models.link_models import UserFileLink
+
+# 防止循环引用报错
+if TYPE_CHECKING:
+    from models.file_models import FileInDB
 
 # 获取服务器状态模块的日志器
 logger = get_logger("main.user_control")
@@ -33,9 +37,9 @@ class UserInDB(UserBase, table=True):
     """
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     hashed_password: str = Field(max_length=256, description="加密后的密码")
-    file_ids: list[int] = Field(default_factory=list,
-                                sa_column=Column(JSON, nullable=False),
-                                description="用户的文件ID列表")  # 文件ID列表JSON格式
+
+    # 与 FileInDB 的多对多关系
+    files: list["FileInDB"] = Relationship(back_populates="owners", link_model=UserFileLink) # 每次访问需考虑性能开销，按需访问
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")

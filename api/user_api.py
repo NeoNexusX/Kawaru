@@ -73,7 +73,7 @@ async def validate_orcid(orcid: str) -> bool:
     """
     client = AsyncClient(timeout=100)
     url = f"https://pub.orcid.org/v3.0/{orcid}/person"
-    
+
     try:
         r = await client.head(url, headers={'Accept': 'application/json'})
         if r.status_code == status.HTTP_200_OK:        # 200
@@ -81,7 +81,7 @@ async def validate_orcid(orcid: str) -> bool:
         return False
     except (HTTPStatusError, RequestError):  # Network Errors
         return False
-    
+
 def validate_url(url: str) -> bool:
     """
     校验url是否合法。
@@ -96,25 +96,25 @@ async def validate_signup_info(user: UserCreate):
     """
     校验用户注册信息是否合法（总校验逻辑）
     """
-    
+
     # 1. 验证identity必须为None或空字符串（包括仅空白字符）
     if user.identity and user.identity.strip():
         raise identity_not_allowed_exception
-    
+
     # 2. 验证用户职位必须在职位允许列表内
     if user.position not in ALLOWED_POSITION_TYPES:
         raise user_position_not_allowed_exception
-    
+
     # 3. 验证用户地区是否存在
     if user.region not in ALLOWED_REGIONS:
         raise user_region_not_exist_exception
-    
+
     # 4. 验证用户ORCID是否存在
     if user.orcid:
         is_orcid_exist = await validate_orcid(orcid=user.orcid)
         if not is_orcid_exist:
             raise user_orcid_not_exist_exception
-    
+
     # 6. 验证用户主页是否为有效URL
     if user.homepage and not validate_url(user.homepage):
         raise user_homepage_invalid_exception
@@ -297,11 +297,11 @@ async def del_user(
 
 async def create_admin_user():
     """应用启动时检查并创建初始管理员用户，异步函数"""
-    config = get_config()
-    admin_info = config.admin_info
+    _config = get_config()
+    admin_info = _config.admin_info
     random_serc = str(random.randint(10**7, 10**8 - 1))  # 随机创建8位初始密码
     user = UserInDB(
-        username=config.server.name,
+        username=_config.server.name,
         institution=admin_info.institution,
         position=admin_info.position,
         research_field=admin_info.research_field,
