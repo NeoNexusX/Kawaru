@@ -4,12 +4,15 @@
 import random
 from datetime import timedelta
 from typing import Annotated
+from urllib.parse import urlparse
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
-from sqlmodel import select, Session
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette import status
+from httpx import AsyncClient, HTTPStatusError, RequestError
 from api.auth_api import (
     credentials_exception,
     create_access_token,
@@ -18,6 +21,8 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
+from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
+from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import SessionDep, get_session
 from envset.config import get_config
 
@@ -28,36 +33,6 @@ from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
 
 logger = get_logger("main.user_api")
 
-user_already_exists_exception = HTTPException(
-    status_code=status.HTTP_409_CONFLICT,  # 409 Conflict
-    detail="Username already exists",  # 明确提示用户已存在
-)
-
-user_not_active_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,  # 409 Conflict
-    detail="Username not  activate",  # 明确提示用户没激活
-)
-
-user_verification_bad = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,  # 409 Conflict
-    detail="verification code is wrong",  # 明确提示用户验证失败
-)
-
-user_name_bad = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,  # 401 Unauthorized
-    detail="user is unauthorized",  # 明确提示操作用户不一致
-)
-identity_not_allowed_exception = (
-    HTTPException(  # 异常定义，identity设为none，不允许传入
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Identity field must be None, it will be set by the API endpoint",
-    )
-)
-
-admin_create_not_allowed_exception = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail="Only admin users can create admin accounts",
-)
 
 #########################
 # 业务层，API 逻辑，不应该抛出任何异常
@@ -89,6 +64,61 @@ async def authenticate_user(username: str, password: str, db) -> UserInDB | None
         return None
 
     return user
+
+
+async def validate_orcid(orcid: str) -> bool:
+    """
+    校验用户ORCID。
+    存在：返回True；不存在或网络异常：返回False
+    """
+    client = AsyncClient(timeout=100)
+    url = f"https://pub.orcid.org/v3.0/{orcid}/person"
+
+    try:
+        r = await client.head(url, headers={'Accept': 'application/json'})
+        if r.status_code == status.HTTP_200_OK:        # 200
+            return True
+        return False
+    except (HTTPStatusError, RequestError):  # Network Errors
+        return False
+
+def validate_url(url: str) -> bool:
+    """
+    校验url是否合法。
+    合法：返回True；不合法：返回False
+    """
+    p = urlparse(url)
+    if p.scheme not in {'http', 'https'} or not p.netloc:
+        return False
+    return True
+
+async def validate_signup_info(user: UserCreate):
+    """
+    校验用户注册信息是否合法（总校验逻辑）
+    """
+
+    # 1. 验证identity必须为None或空字符串（包括仅空白字符）
+    if user.identity and user.identity.strip():
+        raise identity_not_allowed_exception
+
+    # 2. 验证用户职位必须在职位允许列表内
+    if user.position not in ALLOWED_POSITION_TYPES:
+        raise user_position_not_allowed_exception
+
+    # 3. 验证用户地区是否存在
+    if user.region not in ALLOWED_REGIONS:
+        raise user_region_not_exist_exception
+
+    # 4. 验证用户ORCID是否存在
+    if user.orcid:
+        is_orcid_exist = await validate_orcid(orcid=user.orcid)
+        if not is_orcid_exist:
+            raise user_orcid_not_exist_exception
+
+    # 6. 验证用户主页是否为有效URL
+    if user.homepage and not validate_url(user.homepage):
+        raise user_homepage_invalid_exception
+
 
 #########################
 # 依赖层，最顶层 API 逻辑
@@ -173,15 +203,14 @@ async def login(
         raise
 
 
-async def create_user(user: UserCreate, session: SessionDep) -> UserInDB:
+async def create_user(user: UserCreate, session: SessionDep) -> UserPublic:
 
     """注册普通用户，自动校验验证码并设置默认身份"""
-    # 1. 验证identity必须为None或空字符串（包括仅空白字符）
-    if user.identity and user.identity.strip():
-        raise identity_not_allowed_exception
+
+    # 校验基本的注册信息
+    await validate_signup_info(user)
 
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
-
         user_past = await get_user(user.username,session)  # 检查是否已存在用户名相同的用户
 
         if user_past is None:
@@ -195,9 +224,9 @@ async def create_user(user: UserCreate, session: SessionDep) -> UserInDB:
             logger.error("cannot create user ,user already exists, username:%s", user.username)
             raise user_already_exists_exception
 
-        return user
-    else:
-        raise user_verification_bad
+        return user # type:ignore
+
+    raise user_verification_bad_exception
 
 
 # 创建管理员用户的API函数，需要当前用户是管理员才能调用
@@ -206,13 +235,8 @@ async def create_admin_user_api(user: UserCreate,
                                 session: SessionDep,) -> UserPublic:
     """管理员接口：创建新的管理员账号"""
 
-    #  验证当前用户是管理员
-    if current_admin.identity != "admin":
-        raise admin_create_not_allowed_exception
-
-    #  验证identity必须为None或空字符串（包括仅空白字符）
-    if user.identity and user.identity.strip():
-        raise identity_not_allowed_exception
+    # 校验基本的注册信息
+    await validate_signup_info(user)
 
     #  TOTP验证
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
@@ -229,11 +253,11 @@ async def create_admin_user_api(user: UserCreate,
             await session.refresh(current_admin)
             logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
 
-            return user
+            return user # type:ignore
         else:
             raise user_already_exists_exception
     else:
-        raise user_verification_bad
+        raise user_verification_bad_exception
 
 
 async def update_user(
@@ -247,7 +271,7 @@ async def update_user(
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
     # 如果修改的用户并非当前已登录用户（通过用户名判断），则抛出异常
     if user_past.username != user.username:
-        raise user_name_bad
+        raise user_name_bad_exception
 
     # 处理密码更新
     if "password" in user_data and user_data["password"] is not None:
@@ -266,21 +290,28 @@ async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep
 ):
     """删除当前登录用户"""
-    session.delete(user)  # 删除当前用户
+    await session.delete(user)  # 删除当前用户
     await session.commit()  # 提交数据库操作
     return user
 
 
 async def create_admin_user():
     """应用启动时检查并创建初始管理员用户，异步函数"""
-    config = get_config()
+    _config = get_config()
+    admin_info = _config.admin_info
     random_serc = str(random.randint(10**7, 10**8 - 1))  # 随机创建8位初始密码
     user = UserInDB(
-        username=config.server.name,
+        username=_config.server.name,
+        institution=admin_info.institution,
+        position=admin_info.position,
+        research_field=admin_info.research_field,
+        region=admin_info.region,
+        orcid=admin_info.orcid,
+        homepage=admin_info.homepage,
+        email=admin_info.email,
         identity="admin",
         active=True,
         hashed_password=hashed_password(random_serc),
-        email=config.server.admin_email,
     )
     session_gen = get_session()
     session = await anext(session_gen)
@@ -297,7 +328,7 @@ async def create_admin_user():
         await session_gen.aclose()
 
 
-async def has_admin_user(session: Session, username: str) -> UserInDB | None:
+async def has_admin_user(session: AsyncSession, username: str) -> UserInDB | None:
     """检查指定用户名的管理员是否已存在"""
     statement = select(UserInDB).where((UserInDB.identity == "admin") & (UserInDB.username == username))
     result = (await session.exec(statement)).first()

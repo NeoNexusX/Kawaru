@@ -6,10 +6,13 @@ from envset.config import get_config
 from envset.envset import EnvSet
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
-from logger import get_logger
+from logger import get_logger, LOG_LEVELS
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
+
+# set watchfiles logging level
+get_logger("watchfiles.main").setLevel(LOG_LEVELS["error"])
 
 # get the main logger
 logger = get_logger("main")
@@ -55,4 +58,7 @@ if __name__ == "__main__":
         port=config.server.port,  # 端口号
         log_level=config.server.log_level,  # 日志级别
         reload=True,  # 开发时自动重载
+        reload_excludes=[
+            "tests/**" # 排除测试文件夹导致的自动重载
+        ]
     )

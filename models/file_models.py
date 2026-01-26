@@ -5,9 +5,10 @@ import aiofiles
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey
-from sqlalchemy.types import JSON
 from logger import get_logger
 from envset.config import get_config
+from models.link_models import UserFileLink
+from models.user_models import UserInDB
 
 # 获取服务器状态模块的日志器
 logger = get_logger("main.file_control")
@@ -17,11 +18,11 @@ config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
 
-LOCAL_TIME_OFFSET = timedelta(hours=8)
+LOCAL_TIME_OFFSET = timedelta(hours=0)
 
-
+# TODO：时区信息统一
 def now_local_timezone() -> datetime:
-    """返回东八区本地时间（无时区信息，便于 SQLite 存储）"""
+    """返回格林威治时间（无时区信息，便于 SQLite 存储）"""
     return datetime.now(timezone.utc) + LOCAL_TIME_OFFSET
 
 
@@ -31,20 +32,28 @@ class FileBase(SQLModel):
     filename: str = Field(max_length=storage_config.max_filename_length)
     file_type: str = Field(default="", max_length=storage_config.max_file_type_length)
     # 【实验类型字段】用于定位对应的实验表（如 imzML/raw 等），由前端上传时指定
-    experiment_type: str = Field(default="",description="实验类型（imzml/raw等），用于定位实验表",max_length=sample_config.max_experiment_type_length,)
+    experiment_type: str = Field(default="",
+                                 description="实验类型（imzml/raw等），用于定位实验表",
+                                 max_length=sample_config.max_experiment_type_length,)
     size: int = Field(default=0)
     storage_type: str = Field(default="local", max_length=64)
     hash_sha256: str | None = Field(default=None, max_length=256)
 
     # 样本信息字段
     organism: str = Field(default="",description="样本所属物种",max_length=sample_config.max_organism_length,)
-    organism_part: str = Field(default="",description="样本来源组织",max_length=sample_config.max_organism_part_length,)
+    organism_part: str = Field(default="",
+                               description="样本来源组织",
+                               max_length=sample_config.max_organism_part_length,)
     condition: str = Field(default="",description="样本状态",max_length=sample_config.max_condition_length,)
-    sample_growth_conditions: str = Field(default="",description="样本生长或处理条件（选填）",max_length=sample_config.max_sample_growth_conditions_length,)
-    sample_stabilisation: str = Field(default="",description="样本稳定方式",max_length=sample_config.max_sample_stabilisation_length,)
+    sample_growth_conditions: str = Field(default="",
+                                          description="样本生长或处理条件（选填）",
+                                          max_length=sample_config.max_sample_growth_conditions_length,)
+    sample_stabilization: str = Field(default="",description="样本稳定方式",max_length=sample_config.max_sample_stabilization_length,)
     tissue_modification: str = Field(default="",description="组织修饰方式",max_length=sample_config.max_tissue_modification_length,)
     maldi_matrix: str = Field(default="",description="MALDI 基质",max_length=sample_config.max_maldi_matrix_length,)
-    maldi_matrix_application: str = Field(default="",description="基质施加方式",max_length=sample_config.max_maldi_matrix_application_length,)
+    maldi_matrix_application: str = Field(default="",
+                                          description="基质施加方式",
+                                          max_length=sample_config.max_maldi_matrix_application_length,)
     solvent: str = Field(default="",description="使用溶剂（选填）",max_length=sample_config.max_solvent_length,)
 
 
@@ -92,7 +101,9 @@ class FileInDB(FileBase, table=True):
 
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})  # 文件编号（自增主键）
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
-    owners: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))  # 文件所属用户ID列表JSON格式
+
+    # 与 UserInDB 的多对多关系
+    owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 上传时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数（仅用于分片上传）

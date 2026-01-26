@@ -1,10 +1,11 @@
 from typing import Annotated
 from fastapi import APIRouter, Depends
-from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep
-from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
+from models.auth import Token
 from models.email_models import EmailConfirmRequest
 from models.user_models import UserInDB, UserPublic
-from models.auth import Token
+from api.user_api import UserLoginDep, token_authen, UserCreateDep, AdminCreateDep,UserUpdateDep, UserDeleDep
+from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
+
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
 #########################
 # 用户管理 API

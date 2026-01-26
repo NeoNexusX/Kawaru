@@ -22,8 +22,6 @@ email:
   totp_window: 30
 
 database:
-  path: database/ #need to delete
-  thread : False #need to delete
   host: kawaru-test.cpes2okukxkj.ap-southeast-1.rds.amazonaws.com
   db_name: kawaru_test_1
   db_type: mariadb
@@ -33,8 +31,9 @@ database:
 storage:
   root: ../
   local_root: data/
-  max_file_size: 2000000000
-  chunk_buffer_size: 1024
+  max_file_size_gb: 2000000000
+  chunk_buffer_size_mb: 1
+  max_chunks_per_upload: 40
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd","IBD"]
   max_path_length: 255
@@ -45,7 +44,27 @@ storage:
   preflight_ttl_minutes: 30
   chunk_ttl_minutes: 30
 
+admin_info:
+  institution: Xiamen University
+  position: Researcher
+  research_field: Massflow
+  region: China
+  orcid: admin
+  homepage: admin
+  email: examplr@example.com
+
 user:
+  allowed_position_types:
+    - Researcher
+    - Postdoctoral Researcher
+    - Research Assistant
+    - Research Engineer
+    - Senior Researcher
+    - Professor
+    - Associate Professor
+    - Lecture
+    - PhD Student
+    - Master's Student
   max_identity_length: 10
   max_username_length: 128
   max_useremail_length: 128
@@ -57,7 +76,7 @@ sample_info:
   max_organism_part_length: 128
   max_condition_length: 128
   max_sample_growth_conditions_length: 128
-  max_sample_stabilisation_length: 128
+  max_sample_stabilization_length: 128
   max_tissue_modification_length: 128
   max_maldi_matrix_length: 128
   max_maldi_matrix_application_length: 128

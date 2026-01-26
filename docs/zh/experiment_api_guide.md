@@ -41,7 +41,7 @@ curl -X POST "http://localhost:8000/files/preflight" \
   -F "organism=Human" \
   -F "organism_part=Brain" \
   -F "condition=Healthy" \
-  -F "sample_stabilisation=Fresh frozen" \
+  -F "sample_stabilization=Fresh frozen" \
   -F "tissue_modification=Sectioned" \
   -F "maldi_matrix=DHB" \
   -F "maldi_matrix_application=Spray coating"
@@ -55,7 +55,7 @@ curl -X POST "http://localhost:8000/files/preflight" \
 | `organism_part` | 是 | 样本来源组织 |
 | `condition` | 是 | 样本状态 |
 | `sample_growth_conditions` | 否 | 样本生长或处理条件 |
-| `sample_stabilisation` | 是 | 样本稳定方式 |
+| `sample_stabilization` | 是 | 样本稳定方式 |
 | `tissue_modification` | 是 | 组织修饰方式 |
 | `maldi_matrix` | 是 | MALDI 基质 |
 | `maldi_matrix_application` | 是 | 基质施加方式 |

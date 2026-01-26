@@ -17,8 +17,6 @@ class TokenSettings(BaseModel):
 
 class DatabaseSettings(BaseModel):
     """数据库配置模型"""
-    path: str
-    thread: bool
     db_username: str
     db_name: str
     db_type: str
@@ -41,8 +39,9 @@ class StorageSettings(BaseModel):
     """文件存储配置模型"""
     root: str
     local_root: str
-    max_file_size: int
-    chunk_buffer_size: int
+    max_file_size_gb: int
+    chunk_buffer_size_mb: int
+    max_chunks_per_upload: int
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
     max_path_length: int
@@ -56,9 +55,16 @@ class StorageSettings(BaseModel):
 
 class UserSettings(BaseModel):
     """用户信息配置模型"""
+    allowed_position_types: list[str]
     max_identity_length: int
     max_username_length: int
     max_useremail_length: int
+    max_institution_length: int
+    max_position_length: int
+    max_research_field_length: int
+    max_region_length: int
+    max_orcid_length: int
+    max_homepage_length: int
 
 
 class SampleInfoSettings(BaseModel):
@@ -69,12 +75,22 @@ class SampleInfoSettings(BaseModel):
     max_organism_part_length: int
     max_condition_length: int
     max_sample_growth_conditions_length: int
-    max_sample_stabilisation_length: int
+    max_sample_stabilization_length: int
     max_tissue_modification_length: int
     max_maldi_matrix_length: int
     max_maldi_matrix_application_length: int
     max_solvent_length: int
 
+# Initial admin user's information 初始管理员信息
+class AdminInfo(BaseModel):
+    """初始管理员信息配置模型"""
+    institution: str
+    position: str
+    research_field: str
+    region: str
+    orcid: str
+    homepage: str
+    email: str
 
 class Config(BaseModel):
     """全局配置模型"""
@@ -83,5 +99,6 @@ class Config(BaseModel):
     database: DatabaseSettings
     storage: StorageSettings
     user: UserSettings
-    sample_info: SampleInfoSettings
     token: TokenSettings
+    admin_info: AdminInfo
+    sample_info: SampleInfoSettings

@@ -21,8 +21,11 @@ TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"
 DOWNLOAD_TEMP_ROOT = STORAGE_ROOT / "download_temp"
 
 # 文件大小限制
-MAX_FILE_SIZE = int(storage_config.max_file_size) * BYTES_IN_GB
-CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size) * BYTES_IN_MB
+MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
+CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB
+
+# 单次上传最大允许分片数限制
+MAX_CHUNKS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
 
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
@@ -42,7 +45,7 @@ MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 5
 PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
 CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))
 
-__all__ = [
+__all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
     "BYTES_IN_MB",
     "BYTES_IN_GB",
