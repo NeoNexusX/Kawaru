@@ -45,6 +45,12 @@ async def get_user(username: str, db: SessionDep) -> UserInDB | None:
     return (await db.exec(statement)).first()
 
 
+async def get_user_by_email(email: str, db: SessionDep) -> UserInDB | None:
+    """通过 Session 查询指定邮箱的用户（可返回未激活用户）"""
+    statement = select(UserInDB).where(UserInDB.email == email)
+    return (await db.exec(statement)).first()
+
+
 async def authenticate_user(username: str, password: str, db) -> UserInDB | None:
     """
     校验用户名/密码并返回用户对象。
@@ -92,7 +98,7 @@ def validate_url(url: str) -> bool:
         return False
     return True
 
-async def validate_signup_info(user: UserCreate):
+async def validate_signup_info(user: UserCreate, db: SessionDep):
     """
     校验用户注册信息是否合法（总校验逻辑）
     """
@@ -101,15 +107,20 @@ async def validate_signup_info(user: UserCreate):
     if user.identity and user.identity.strip():
         raise identity_not_allowed_exception
 
-    # 2. 验证用户职位必须在职位允许列表内
+    # 2. 验证邮箱是否已被注册
+    existing_user = await get_user_by_email(user.email, db)
+    if existing_user:
+        raise email_already_exists_exception
+
+    # 3. 验证用户职位必须在职位允许列表内
     if user.position not in ALLOWED_POSITION_TYPES:
         raise user_position_not_allowed_exception
 
-    # 3. 验证用户地区是否存在
+    # 4. 验证用户地区是否存在
     if user.region not in ALLOWED_REGIONS:
         raise user_region_not_exist_exception
 
-    # 4. 验证用户ORCID是否存在
+    # 5. 验证用户ORCID是否存在
     if user.orcid:
         is_orcid_exist = await validate_orcid(orcid=user.orcid)
         if not is_orcid_exist:
@@ -207,8 +218,8 @@ async def create_user(user: UserCreate, session: SessionDep) -> UserPublic:
 
     """注册普通用户，自动校验验证码并设置默认身份"""
 
-    # 校验基本的注册信息
-    await validate_signup_info(user)
+    # 校验基本的注册信息（包括邮箱唯一性）
+    await validate_signup_info(user, session)
 
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
         user_past = await get_user(user.username,session)  # 检查是否已存在用户名相同的用户
@@ -235,8 +246,8 @@ async def create_admin_user_api(user: UserCreate,
                                 session: SessionDep,) -> UserPublic:
     """管理员接口：创建新的管理员账号"""
 
-    # 校验基本的注册信息
-    await validate_signup_info(user)
+    # 校验基本的注册信息（包括邮箱唯一性）
+    await validate_signup_info(user, session)
 
     #  TOTP验证
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟

@@ -11,6 +11,10 @@ from starlette import status
 from logger import get_logger
 from envset.config import get_config
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
+from database.db import SessionDep
+from api.user_api import get_user_by_email
+from exceptions.user_exceptions import email_already_exists_exception
+from exceptions.exception_utils import format_exception_detail
 
 logger = get_logger("api.email-api")
 config = get_config()
@@ -18,19 +22,23 @@ email_config = config.email
 
 email_send_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
-    detail="Send Failed error by server reason",
+    detail=format_exception_detail("Send Failed error by server reason")
 )
 
 email_server_exception = HTTPException(
-                status_code=502,
-                detail="Upstream service error"
+    status_code=status.HTTP_502_BAD_GATEWAY,
+    detail=format_exception_detail("Upstream service error")
 )
 
 # Using MailGun to send an email verify code message
-async def send_mailgun_message(email_info: EmailConfirmResponseBase):
+async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: SessionDep):
     """
     use MailGun API to send email, which is more reliable and faster than SMTP, but may have some limitations 
     """
+    # 验证邮箱是否已被注册
+    existing_user = await get_user_by_email(email_info.email, db)
+    if existing_user:
+        raise email_already_exists_exception
 
     # MailGun environment settings
     mailgun_api_key = os.getenv('MAILGUN_API_KEY')
@@ -75,8 +83,13 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase):
             raise email_send_exception from e
 
 # Using SMTP to send an email verify code message
-async def send_smtp_email(email_info: EmailConfirmResponseBase):
+async def send_smtp_email(email_info: EmailConfirmResponseBase, db: SessionDep):
     """generate code"""
+    # 验证邮箱是否已被注册  
+    existing_user = await get_user_by_email(email_info.email, db)
+    if existing_user:
+        raise email_already_exists_exception
+    
     code = TOTP.now()
 
     # smtp server
@@ -139,7 +152,7 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase):
 
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"SMTP server error: {str(e)}"
+            detail=format_exception_detail(f"SMTP server error: {str(e)}")
         ) from e
 
     except Exception as e:
