@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime,timezone
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 import aiofiles
@@ -18,12 +18,12 @@ config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
 
-LOCAL_TIME_OFFSET = timedelta(hours=0)
-
-# TODO：时区信息统一
 def now_local_timezone() -> datetime:
-    """返回格林威治时间（无时区信息，便于 SQLite 存储）"""
-    return datetime.now(timezone.utc) + LOCAL_TIME_OFFSET
+    """
+    返回当前UTC时间（无时区信息）统一使用格林威治时间（UTC）
+    所有时间戳都应该是UTC时间，不做时区转换
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class FileBase(SQLModel):

@@ -101,7 +101,7 @@ async def preflight_create_file(
 
     try:
         await cleanup_stale_preflights(session, current_user)
-    except (OSError, IOError) as exc:#TODO
+    except (OSError, IOError) as exc:
         # 清理失败不影响主流程，记录日志即可
         logger.warning(
             "cleanup stale preflights failed user=%s error=%s",
@@ -162,7 +162,6 @@ async def preflight_create_file(
     file_record = FileInDB(
         **file_data_dict,
         path=str(final_path),
-        owners=[current_user],
     )
     session.add(file_record)
     await session.commit()
@@ -209,7 +208,7 @@ async def preflight_create_chunked_file(
 
     try:
         await cleanup_stale_preflights(session, current_user)
-    except (OSError, IOError) as exc:#TODO
+    except (OSError, IOError) as exc:
         # 清理失败不影响主流程，记录日志即可
         logger.warning(
             "cleanup stale records failed user=%s error=%s",
@@ -279,7 +278,6 @@ async def preflight_create_chunked_file(
     file_record = FileInDB(
         **file_data_dict,
         path=str(final_path),
-        owners=[current_user],
     )
     session.add(file_record)
     await session.commit()
@@ -737,10 +735,9 @@ async def delete_user_file(
         await session.refresh(current_user)
         await session.refresh(file_record)
         logger.info(
-            "unlinked file reference only user=%s file_id=%s remaining_owners=%s",
+            "unlinked file reference only user=%s file_id=%s ",
             current_user.id,
             file_id,
-            file_record.owners,
         )
         return {"file_id": file_id, "status": "unlinked"}
 

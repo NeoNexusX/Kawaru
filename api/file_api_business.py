@@ -233,7 +233,7 @@ async def unlink_user_from_file(
 
     # 4. 返回是否还有其他用户持有该文件
     owner_counts = (await session.exec(
-        select(func().count("*")).where(UserFileLink.file_id == file_record.file_id)
+        select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
     )).one()
 
     return bool(owner_counts)
@@ -468,8 +468,8 @@ async def remove_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
 
     for linker in user_file_linkers:
         await session.delete(linker)
-    session.expire(user, "files")
-    session.expire(file, "owners")
+    session.expire(user, ["files"])#todo
+    session.expire(file, ["owners"])
 
 
 async def get_file_record(
@@ -515,13 +515,14 @@ async def safe_cleanup_preflight_record(#TODO 后续可以用定时任务来清�
     )).first()
 
     # 从 owners 列表移除当前用户
-    await session.delete(pre_record_linker)
-    await session.flush([pre_record_linker])
-    session.expire(current_user, ["files"])
-    session.expire(pre_record, ["owners"])
+    if pre_record_linker:#todo 要增加为空判断，第一次用户上传文件参数不正确，会删除空
+        await session.delete(pre_record_linker)
+        await session.flush([pre_record_linker])
+        session.expire(current_user, ["files"])
+        session.expire(pre_record, ["owners"])
 
     # 检测是否还有其他用户持有该文件，如有则不删除文件
-    owner_count = (await session.exec(
+    owner_count = (await session.exec( #todotodo
         select(func.count("*")).where(UserFileLink.file_id == pre_record.file_id) # pylint: disable=not-callable
     )).one()
 
@@ -580,14 +581,8 @@ async def cleanup_stale_preflights(
         if file_existing:
             continue
 
-        # TTL 判断 - 确保时区一致
-        if rec.uploaded_at.tzinfo is None:
-            # 如果 uploaded_at 没有时区信息，假设它是本地时区
-            rec_time = rec.uploaded_at.replace(tzinfo=now.tzinfo)
-        else:
-            rec_time = rec.uploaded_at
-
-        if not rec_time < cutoff_time:
+        # TTL 判断 - 所有时间都是UTC时间，直接比较
+        if not rec.uploaded_at < cutoff_time:
             continue
 
         # 满足所有条件，清理预检记录
@@ -969,8 +964,6 @@ async def delete_file_and_parts(
         raise ValueError(f"File not found: file_id={file_id}")
 
     # 2. 删除分片物理文件（数据库记录会在删除文件时自动级联删除）
-    # TODO: （数据库记录会在删除文件时自动级联删除）有这说法？
-    # 不过反正file记录删除了part也关联删除这里应该不用管
     deleted_parts_count = 0
     for part in file_record.parts:
         delete_local_file(part.temp_path)

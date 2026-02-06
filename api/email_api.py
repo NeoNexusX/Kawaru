@@ -85,11 +85,11 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: Session
 # Using SMTP to send an email verify code message
 async def send_smtp_email(email_info: EmailConfirmResponseBase, db: SessionDep):
     """generate code"""
-    # 验证邮箱是否已被注册  
+    # 验证邮箱是否已被注册
     existing_user = await get_user_by_email(email_info.email, db)
     if existing_user:
         raise email_already_exists_exception
-    
+
     code = TOTP.now()
 
     # smtp server
