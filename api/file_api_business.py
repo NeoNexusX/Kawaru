@@ -468,7 +468,7 @@ async def remove_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
 
     for linker in user_file_linkers:
         await session.delete(linker)
-    session.expire(user, ["files"])#todo
+    session.expire(user, ["files"])
     session.expire(file, ["owners"])
 
 
@@ -515,7 +515,7 @@ async def safe_cleanup_preflight_record(#TODO 后续可以用定时任务来清�
     )).first()
 
     # 从 owners 列表移除当前用户
-    if pre_record_linker:#todo 要增加为空判断，第一次用户上传文件参数不正确，会删除空
+    if pre_record_linker: #要增加为空判断，第一次用户上传文件参数不正确，会删除空
         await session.delete(pre_record_linker)
         await session.flush([pre_record_linker])
         session.expire(current_user, ["files"])

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import zipfile
+import shutil
 from pathlib import Path
 
 from constants.experiment_constants import (
@@ -13,13 +14,7 @@ from constants.experiment_constants import (
     EXPERIMENT_TEMP_ROOT,
     EXPERIMENT_PROCESSED_ROOT,
 )
-from exceptions.experiment_exceptions import (
-    invalid_zip_file_exception,
-    unsafe_zip_path_exception,
-    zip_extraction_failed_exception,
-    invalid_zip_content_exception,
-    imzml_validation_failed_exception,
-)
+
 from logger import get_logger
 
 logger = get_logger("main.experiment_api_helper")
@@ -59,7 +54,7 @@ def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool:
     return True
 
 
-def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path, Path]:
+def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple[Path, Path] | None:
     """
     解压并验证 imzML ZIP 文件
     
@@ -70,14 +65,9 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple
         zip_file_path: ZIP 文件路径
         temp_dir: 解压目标目录
     
-    Raises:
-        unsafe_zip_path_exception: ZIP 包含不安全的路径（路径遍历攻击）
-        invalid_zip_file_exception: 无效的 ZIP 文件格式
-        zip_extraction_failed_exception: ZIP 解压失败
-        invalid_zip_content_exception: ZIP 内容不符合要求（缺少必需文件）
-        imzml_validation_failed_exception: imzML 文件验证失败
-    
-
+    Returns:
+        成功时返回 (imzml_path, ibd_path) 元组
+        失败时返回 None
     """
     try:
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
@@ -85,16 +75,14 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple
             temp_dir_resolved = temp_dir.resolve()
             for member in zip_ref.namelist():
                 member_path = (temp_dir / member).resolve()
-                try:
-                    member_path.relative_to(temp_dir_resolved)
-                except ValueError as exc:
-                    raise unsafe_zip_path_exception from exc
+                # 检查路径是否在临时目录内（避免路径遍历攻击）
+                if not member_path.is_relative_to(temp_dir_resolved):
+                    logger.error("unsafe file path in zip file: %s", member)
+                    return None
             zip_ref.extractall(temp_dir)
-    except zipfile.BadZipFile as exc:
-        raise invalid_zip_file_exception from exc
-    except Exception as e:
-        logger.error("zip extraction failed: %s", e)
-        raise zip_extraction_failed_exception from e
+    except (zipfile.BadZipFile, OSError) as e:
+        logger.error("failed to extract zip file error=%s", e)
+        return None
 
     # 查找 imzML 和 ibd 文件
     imzml_path = None
@@ -108,10 +96,63 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple
 
     # 验证文件是否存在
     if not imzml_path or not ibd_path:
-        raise invalid_zip_content_exception
+        logger.error("zip file must contain both .imzML and .ibd files")
+        return None
 
     # 验证文件（目前直接通过）
     if not validate_imzml_files(imzml_path, ibd_path):
-        raise imzml_validation_failed_exception
+        logger.error("imzML file validation failed")
+        return None
 
     return imzml_path, ibd_path
+
+
+def create_experiment_directories(experiment_id: int) -> tuple[Path, Path]:
+    """创建并返回 (temp_dir, processed_dir)"""
+    ensure_experiment_dirs()
+    temp_dir = EXPERIMENT_TEMP_ROOT / f"exp_{experiment_id}"
+    processed_dir = EXPERIMENT_PROCESSED_ROOT / f"exp_{experiment_id}"
+
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    return temp_dir, processed_dir
+
+
+def move_experiment_files(
+    imzml_temp_path: Path,
+    ibd_temp_path: Path,
+    experiment_dir: Path,
+    experiment_name: str,
+) -> tuple[Path, Path]:
+    """将临时文件移动到正式存储位置，返回最终路径"""
+    final_imzml_path = experiment_dir / f"{experiment_name}.imzML"
+    final_ibd_path = experiment_dir / f"{experiment_name}.ibd"
+
+    shutil.move(str(imzml_temp_path), str(final_imzml_path))
+    shutil.move(str(ibd_temp_path), str(final_ibd_path))
+
+    return final_imzml_path, final_ibd_path
+
+
+def delete_source_file_and_clear_path(source_file) -> bool:
+    """删除源文件并清空数据库中的 path 字段，返回是否成功"""
+    if not getattr(source_file, "path", None):
+        return True
+
+    try:
+        Path(source_file.path).unlink(missing_ok=True)
+        source_file.path = ""
+        return True
+    except (OSError, PermissionError) as e:
+        logger.warning("failed to delete source file error=%s", e)
+        return False
+
+
+def cleanup_temp_directory(temp_dir: Path | None) -> None:
+    """清理临时目录"""
+    if temp_dir and temp_dir.exists():
+        try:
+            shutil.rmtree(temp_dir)
+        except (OSError, PermissionError, shutil.Error) as e:
+            logger.error("failed to cleanup temp directory error=%s", e)

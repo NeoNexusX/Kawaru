@@ -2,8 +2,7 @@
 # Experiment API
 #########################
 from __future__ import annotations
-import asyncio
-import shutil
+
 from pathlib import Path
 from datetime import timedelta
 from typing import Annotated
@@ -13,14 +12,17 @@ from sqlmodel import Session, select
 from database.db import SessionDep, get_sync_engine
 
 from api.user_api import token_authen
-from api.file_api_helper import delete_files_async
 from api.file_api_business import (
     get_experiment_by_file_id,
     assert_file_owner,
+    delete_experiment_files,
 )
 from api.experiment_api_helper import (
-    ensure_experiment_dirs,
     extract_and_validate_imzml_zip,
+    create_experiment_directories,
+    move_experiment_files,
+    delete_source_file_and_clear_path,
+    cleanup_temp_directory,
 )
 
 from logger import get_logger
@@ -33,8 +35,6 @@ from models.experiment_models import (
     ExperimentStatus,
 )
 from constants.experiment_constants import (
-    EXPERIMENT_TEMP_ROOT,
-    EXPERIMENT_PROCESSED_ROOT,
     FAILED_EXPERIMENT_TTL_MINUTES,
 )
 from exceptions.experiment_exceptions import (
@@ -59,6 +59,7 @@ async def cleanup_failed_experiments(
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
 
+    # 第一部分：查询过期的失败实验
     try:
         failed_experiments = (
             await session.exec(
@@ -68,92 +69,64 @@ async def cleanup_failed_experiments(
                 )
             )
         ).all()
+    except Exception as e:
+        logger.error("failed to query failed experiments error=%s", e)
+        return cleaned
 
-        for exp in failed_experiments:
-            try:
-                # 删除物理文件
-                files_to_delete = []
-                if exp.imzml_path:
-                    files_to_delete.append(exp.imzml_path)
-                if exp.ibd_path:
-                    files_to_delete.append(exp.ibd_path)
+    # 第二部分：处理每个失败的实验
+    for exp in failed_experiments:
+        try:
+            # 删除实验相关的物理文件和数据库记录（business 层）
+            await delete_experiment_files(session, exp.source_file_id)
 
-                if files_to_delete:
-                    await delete_files_async(files_to_delete)
+            # 查找文件表中对应的记录
+            file_record = (await session.exec(
+                select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
+            )).first()
 
-                # 删除实验目录（如果为空）
-                if exp.imzml_path:
-                    experiment_dir = Path(exp.imzml_path).parent
+            if file_record:
+                file_size = file_record.size
 
-                    def _rmdir_if_empty(d: Path):
-                        if d.exists() and not any(d.iterdir()):
-                            d.rmdir()
+                # 通过 UserFileLink 查询所有拥有该文件的用户ID
+                user_ids = (await session.exec(
+                    select(UserFileLink.user_id).where(
+                        UserFileLink.file_id == exp.source_file_id
+                    )
+                )).all()
 
-                    await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
+                # 更新所有拥有该文件的用户：减少 file_count 和 total_file_size
+                for user_id in user_ids:
+                    user_record = (await session.exec(
+                        select(UserInDB).where(UserInDB.id == user_id)
+                    )).first()
 
-                # 查找文件表中对应的记录
-                file_record = (await session.exec(
-                    select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
-                )).first()
-
-                if file_record:
-                    file_size = file_record.size or 0
-
-                    # 通过 UserFileLink 查询所有拥有该文件的用户ID（避免加载完整的用户对象）
-                    user_ids = (await session.exec(
-                        select(UserFileLink.user_id).where(
-                            UserFileLink.file_id == exp.source_file_id
+                    if user_record:
+                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)
+                        user_record.total_file_size = max(0, (user_record.total_file_size or 0) - file_size)
+                        session.add(user_record)
+                        logger.debug(
+                            "cleanup user record: user_id=%s file_id=%s",
+                            user_id,
+                            exp.source_file_id,
                         )
-                    )).all()
 
-                    # 更新所有拥有该文件的用户：减少 file_count 和 total_file_size
-                    for user_id in user_ids:
-                        user_record = (await session.exec(
-                            select(UserInDB).where(UserInDB.id == user_id)
-                        )).first()
+                # 删除文件记录（会级联删除 UserFileLink）
+                await session.delete(file_record)
+                logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
 
-                        if user_record:
-                            user_record.file_count = max(
-                                0, (user_record.file_count or 0) - 1
-                            )
-                            user_record.total_file_size = max(
-                                0, (user_record.total_file_size or 0) - file_size
-                            )
-                            session.add(user_record)
-                            logger.debug(
-                                "cleanup user record: user_id=%s file_id=%s",
-                                user_id,
-                                exp.source_file_id,
-                            )
+            cleaned += 1
+            logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
+        except Exception as e:
+            logger.error(
+                "failed to cleanup experiment exp_id=%s error=%s", exp.id, e
+            )
 
-                    # 删除所有 UserFileLink 关联
-                    user_file_links = (await session.exec(
-                        select(UserFileLink).where(
-                            UserFileLink.file_id == exp.source_file_id
-                        )
-                    )).all()
-
-                    for link in user_file_links:
-                        await session.delete(link)
-
-                    # 删除文件记录
-                    await session.delete(file_record)
-                    logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
-
-                # 删除实验记录
-                await session.delete(exp)
-                cleaned += 1
-                logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
-            except Exception as e:
-                logger.error(
-                    "failed to cleanup experiment exp_id=%s error=%s", exp.id, e
-                )
-
+    # 第三部分：提交事务
+    try:
         await session.commit()
         logger.info("cleanup failed experiments completed count=%s", cleaned)
-
     except Exception as e:
-        logger.error("cleanup failed experiments error=%s", e)
+        logger.error("failed to commit cleanup changes error=%s", e)
 
     return cleaned
 
@@ -202,27 +175,22 @@ def process_imzml_experiment_background(
             session.commit()
             session.refresh(experiment_record)
 
-            # 创建临时目录：experiments/temp/exp_{id}/
-            ensure_experiment_dirs()
-            temp_dir = EXPERIMENT_TEMP_ROOT / f"exp_{experiment_record.id}"
-            temp_dir.mkdir(parents=True, exist_ok=True)
+            # 创建临时与正式目录（helper 层）
+            temp_dir, experiment_dir = create_experiment_directories(experiment_record.id)
 
             # 解压和验证
             source_path = Path(source_file.path)
-            imzml_temp_path, ibd_temp_path = extract_and_validate_imzml_zip(
-                source_path, temp_dir
+            result = extract_and_validate_imzml_zip(source_path, temp_dir)
+
+            if result is None:
+                raise ValueError("Failed to extract and validate imzML zip file")
+
+            imzml_temp_path, ibd_temp_path = result
+
+            # 将临时文件移动到正式位置（helper 层）
+            final_imzml_path, final_ibd_path = move_experiment_files(
+                imzml_temp_path, ibd_temp_path, experiment_dir, experiment_name
             )
-
-            # 准备正式存储路径：experiments/processed/exp_{id}/
-            experiment_dir = EXPERIMENT_PROCESSED_ROOT / f"exp_{experiment_record.id}"
-            experiment_dir.mkdir(parents=True, exist_ok=True)
-
-            # 移动文件到正式位置
-            final_imzml_path = experiment_dir / f"{experiment_name}.imzML"
-            final_ibd_path = experiment_dir / f"{experiment_name}.ibd"
-
-            shutil.move(str(imzml_temp_path), str(final_imzml_path))
-            shutil.move(str(ibd_temp_path), str(final_ibd_path))
 
             # 更新实验记录
             experiment_record.imzml_path = str(final_imzml_path)
@@ -232,17 +200,13 @@ def process_imzml_experiment_background(
             experiment_record.status = ExperimentStatus.COMPLETED
             session.add(experiment_record)
 
-            # 删除原始ZIP文件并清空文件表中的path字段
-            try:
-                source_path.unlink()
-                source_file.path = ""
-                session.add(source_file)
-                logger.info(
-                    "deleted source zip file and cleared path field file_id=%s",
-                    source_file_id,
-                )
-            except (OSError, PermissionError) as e:
-                logger.warning("failed to delete source zip file error=%s", e)
+            # 删除原始 ZIP 文件并清空文件表中的 path 字段（helper 层）
+            delete_source_file_and_clear_path(source_file)
+            session.add(source_file)
+            logger.info(
+                "deleted source zip file and cleared path field file_id=%s",
+                source_file_id,
+            )
 
             session.commit()
             logger.info(
@@ -252,13 +216,12 @@ def process_imzml_experiment_background(
     except Exception as e:
         logger.error("imzml experiment processing failed error=%s", e)
 
-        # 更新实验状态为失败
+        # 更新实验状态为失败（business 层）
         if experiment_record and experiment_record.id:
             try:
                 with Session(get_sync_engine()) as session:
                     statement = select(ExperimentImzMLInDB).where(
-                        ExperimentImzMLInDB.id == experiment_record.id
-                    )
+                        ExperimentImzMLInDB.id == experiment_record.id)
                     exp_record = session.exec(statement).first()
 
                     if exp_record:
@@ -266,26 +229,19 @@ def process_imzml_experiment_background(
                         exp_record.error_message = str(e)
                         session.add(exp_record)
 
-                        # 删除原始ZIP文件并清空path字段
+                        # 删除原始 ZIP 文件并清空 path 字段（helper 层）
                         file_statement = select(FileInDB).where(
                             FileInDB.file_id == source_file_id
                         )
                         source_file = session.exec(file_statement).first()
 
                         if source_file and source_file.path:
-                            try:
-                                Path(source_file.path).unlink(missing_ok=True)
-                                source_file.path = ""
-                                session.add(source_file)
-                                logger.info(
-                                    "deleted source zip file after failure file_id=%s",
-                                    source_file_id,
-                                )
-                            except (OSError, PermissionError) as cleanup_error:
-                                logger.warning(
-                                    "failed to delete source zip file after failure error=%s",
-                                    cleanup_error,
-                                )
+                            delete_source_file_and_clear_path(source_file)
+                            session.add(source_file)
+                            logger.info(
+                                "deleted source zip file after failure file_id=%s",
+                                source_file_id,
+                            )
 
                         session.commit()
 
@@ -295,12 +251,8 @@ def process_imzml_experiment_background(
                 )
 
     finally:
-        # 清理临时目录
-        if temp_dir and temp_dir.exists():
-            try:
-                shutil.rmtree(temp_dir)
-            except (OSError, PermissionError, shutil.Error) as e:
-                logger.error("failed to cleanup temp directory error=%s", e)
+        # 清理临时目录（helper 层）
+        cleanup_temp_directory(temp_dir)
 
 
 #########################
@@ -325,6 +277,7 @@ async def get_experiment_by_file_id_api(
     # 清理过期的失败实验记录
     try:
         await cleanup_failed_experiments(session)
+        await session.refresh(current_user)
     except Exception:
         logger.exception(
             "Failed to cleanup failed experiments for file_id=%s user_id=%s",
@@ -334,8 +287,7 @@ async def get_experiment_by_file_id_api(
 
     # 1. 查询文件记录
     file_record = (
-        await session.exec(select(FileInDB).where(FileInDB.file_id == file_id))
-    ).first()
+        await session.exec(select(FileInDB).where(FileInDB.file_id == file_id))).first()
     if not file_record:
         raise source_file_not_found_exception
 
