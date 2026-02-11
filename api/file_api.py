@@ -118,13 +118,14 @@ async def preflight_create_file(
     )
 
     # 参数验证
-    if not validate_upload_request(file_data.storage_type, file_data.filename):
+    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.experiment_type):
         logger.warning(
-            "validation failed user=%s filename=%s storage=%s size=%s",
+            "validation failed user=%s filename=%s storage=%s size=%s experiment_type=%s",
             current_user.id,
             file_data.filename,
             file_data.storage_type,
-            file_data.size
+            file_data.size,
+            file_data.experiment_type
         )
         raise invalid_request_parameters_exception
 
@@ -155,15 +156,18 @@ async def preflight_create_file(
             )
             return reused_file # type: ignore
 
-    # 创建新的文件记录
-    final_path = prepare_local_storage_path(file_data.filename)
-
+    # 创建新的文件记录（预检状态，路径为空）
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
         **file_data_dict,
-        path=str(final_path),
+        path="",  # 预检时设置为空字符串，上传成功后再更新
     )
     session.add(file_record)
+    await session.flush()  # 获取 file_id
+    
+    # 立即建立用户关联
+    await link_file_to_user(session, current_user, file_record, file_data.size)
+    
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -226,14 +230,15 @@ async def preflight_create_chunked_file(
     )
 
     # 参数验证
-    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.total_parts):
+    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.experiment_type, file_data.total_parts):
         logger.warning(
-            "validation failed user=%s filename=%s storage=%s size=%s parts=%s",
+            "validation failed user=%s filename=%s storage=%s size=%s parts=%s experiment_type=%s",
             current_user.id,
             file_data.filename,
             file_data.storage_type,
             file_data.size,
-            file_data.total_parts
+            file_data.total_parts,
+            file_data.experiment_type
         )
         raise invalid_request_parameters_exception
 
@@ -270,16 +275,18 @@ async def preflight_create_chunked_file(
             )
             return reused_file # type: ignore
 
-    # 创建新的文件记录
-    final_path = prepare_local_storage_path(file_data.filename)
-
-    # 将 FileCreate 转换为 FileInDB
+    # 创建新的文件记录（预检状态，路径为空）
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
         **file_data_dict,
-        path=str(final_path),
+        path="",  # 预检时设置为空字符串，合并成功后再更新
     )
     session.add(file_record)
+    await session.flush()  # 获取 file_id
+    
+    # 立即建立用户关联
+    await link_file_to_user(session, current_user, file_record, file_data.size)
+    
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -450,7 +457,7 @@ async def upload_file_chunk(
             session, file_record, current_user
         )
         if merge_success:
-            await link_file_to_user(session, current_user, file_record, file_record.size)
+            # 合并成功，路径已在 merge_chunks_to_file 中更新，预检时已建立用户关联
             await session.commit()
             await session.refresh(current_user)
             await session.refresh(file_record)
@@ -615,10 +622,12 @@ async def upload_simple_file(
         await session.commit()
         raise file_persist_failed_exception from exc
 
+    # 更新文件记录的路径和大小（预检时已建立用户关联）
     file_record = pre_record
-    await session.flush()
-
-    await link_file_to_user(session, current_user, file_record, size)
+    file_record.path = str(final_path)
+    file_record.size = size
+    session.add(file_record)
+    
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)

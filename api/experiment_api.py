@@ -16,6 +16,7 @@ from api.file_api_business import (
     get_experiment_by_file_id,
     assert_file_owner,
     delete_experiment_files,
+    delete_experiment_physical_files,
 )
 from api.experiment_api_helper import (
     extract_and_validate_imzml_zip,
@@ -41,7 +42,6 @@ from exceptions.experiment_exceptions import (
     experiment_not_found_exception,
     experiment_permission_denied_exception,
     source_file_not_found_exception,
-    unsupported_experiment_type_exception,
 )
 
 logger = get_logger("main.experiment_api")
@@ -54,7 +54,15 @@ logger = get_logger("main.experiment_api")
 async def cleanup_failed_experiments(
     session: SessionDep, ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES
 ) -> int:
-    """清理过期的失败实验记录，同时删除对应的文件表记录和更新用户表"""
+    """
+    清理过期的失败实验记录
+    
+    利用数据库级联删除：
+    - 删除 experiment 记录时，数据库会自动删除关联的 file 记录（ON DELETE CASCADE）
+    - 删除 file 记录时，数据库会自动删除关联的 UserFileLink 记录（ON DELETE CASCADE）
+    
+    注意：需要手动更新用户统计信息（file_count 和 total_file_size）
+    """
     now = now_local_timezone()
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
@@ -76,13 +84,9 @@ async def cleanup_failed_experiments(
     # 第二部分：处理每个失败的实验
     for exp in failed_experiments:
         try:
-            # 删除实验相关的物理文件和数据库记录（business 层）
-            await delete_experiment_files(session, exp.source_file_id)
-
-            # 查找文件表中对应的记录
+            # 查找文件表中对应的记录（在删除前获取信息）
             file_record = (await session.exec(
-                select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
-            )).first()
+                select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
 
             if file_record:
                 file_size = file_record.size
@@ -90,15 +94,12 @@ async def cleanup_failed_experiments(
                 # 通过 UserFileLink 查询所有拥有该文件的用户ID
                 user_ids = (await session.exec(
                     select(UserFileLink.user_id).where(
-                        UserFileLink.file_id == exp.source_file_id
-                    )
-                )).all()
+                        UserFileLink.file_id == exp.source_file_id))).all()
 
                 # 更新所有拥有该文件的用户：减少 file_count 和 total_file_size
                 for user_id in user_ids:
                     user_record = (await session.exec(
-                        select(UserInDB).where(UserInDB.id == user_id)
-                    )).first()
+                        select(UserInDB).where(UserInDB.id == user_id))).first()
 
                     if user_record:
                         user_record.file_count = max(0, (user_record.file_count or 0) - 1)
@@ -110,10 +111,11 @@ async def cleanup_failed_experiments(
                             exp.source_file_id,
                         )
 
-                # 删除文件记录（会级联删除 UserFileLink）
-                await session.delete(file_record)
-                logger.debug("cleanup file record: file_id=%s", exp.source_file_id)
+            # 删除实验相关的物理文件（不删除数据库记录）
+            await delete_experiment_physical_files(session, exp.source_file_id)
 
+            # 删除实验记录（数据库会自动级联删除 file 和 UserFileLink）
+            await session.delete(exp)
             cleaned += 1
             logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
         except Exception as e:
@@ -301,8 +303,6 @@ async def get_experiment_by_file_id_api(
         if file_record.experiment_type
         else None
     )
-    if not query_func:
-        raise unsupported_experiment_type_exception
 
     # 4. 调用查询函数
     experiment = await query_func(session, file_id)

@@ -30,6 +30,7 @@ MAX_CHUNKS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
+ALLOWED_EXPERIMENT_TYPES = set(storage_config.allowed_experiment_types)
 
 # 文件名限制
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
@@ -58,6 +59,7 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
+    "ALLOWED_EXPERIMENT_TYPES",
     "MAX_FILENAME_LENGTH",
     "MAX_FILES_PER_USER",
     "MAX_TOTAL_STORAGE_PER_USER",

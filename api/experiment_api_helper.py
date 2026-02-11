@@ -91,7 +91,7 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, temp_dir: Path) -> tuple
     for file_path in temp_dir.iterdir():
         if file_path.suffix == ".imzML":
             imzml_path = file_path
-        elif file_path.suffix == ".ibd":
+        elif file_path.suffix.lower() == ".ibd":
             ibd_path = file_path
 
     # 验证文件是否存在

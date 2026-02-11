@@ -20,6 +20,7 @@ from constants.file_constants import (
     TEMP_CHUNKS_ROOT,
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
+    ALLOWED_EXPERIMENT_TYPES,
     MAX_FILES_PER_USER,
     MAX_TOTAL_STORAGE_PER_USER,
     CHUNK_BUFFER_SIZE,
@@ -243,6 +244,25 @@ def validate_file_type(filename: str) -> bool:
         return False
 
     if file_ext not in ALLOWED_FILE_TYPES:
+        return False
+
+    return True
+
+
+def validate_experiment_type(experiment_type: str) -> bool:
+    """
+    校验实验类型是否在允许列表中
+
+    Args:
+        experiment_type: 实验类型（如 imzML、raw 等）
+
+    Returns:
+        True 表示验证通过，False 表示验证失败
+    """
+    if not experiment_type:
+        return False
+
+    if experiment_type not in ALLOWED_EXPERIMENT_TYPES:
         return False
 
     return True

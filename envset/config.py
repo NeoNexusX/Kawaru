@@ -48,7 +48,7 @@ class ConfigCreate:
                 logger.error(f"config file not found: {CONFIG_PATH.resolve()}")
                 self.config = None
                 raise FileNotFoundError(f"config file not found: {CONFIG_PATH.resolve()}")
-            
+
             if not REGION_PATH.exists():
                 logger.error(f"region data file not found: {REGION_PATH.resolve()}")
                 self.config = None

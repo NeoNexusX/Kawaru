@@ -44,6 +44,7 @@ class StorageSettings(BaseModel):
     max_chunks_per_upload: int
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
+    allowed_experiment_types: list[str]
     max_path_length: int
     max_filename_length: int
     max_file_type_length: int

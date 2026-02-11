@@ -22,12 +22,6 @@ source_file_not_found_exception = HTTPException(
     detail=format_exception_detail("source file not found")
 )
 
-# 不支持的实验类型异常
-unsupported_experiment_type_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("unsupported experiment type")
-)
-
 # ZIP文件格式无效异常
 invalid_zip_file_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
@@ -62,7 +56,6 @@ __all__ = [
     "experiment_not_found_exception",
     "experiment_permission_denied_exception",
     "source_file_not_found_exception",
-    "unsupported_experiment_type_exception",
     "invalid_zip_file_exception",
     "unsafe_zip_path_exception",
     "zip_extraction_failed_exception",

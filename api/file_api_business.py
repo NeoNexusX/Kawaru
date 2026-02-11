@@ -21,6 +21,7 @@ from api.file_api_helper import (
     compute_upload_file_metadata,
     validate_file_metadata,
     validate_upload_params,
+    validate_experiment_type,
     build_zip_file,
     merge_files_with_hash,
     delete_files_async,
@@ -96,6 +97,7 @@ async def validate_chunk_metadata(
 def validate_upload_request(
     storage_type: str,
     filename: str,
+    experiment_type: str = "",
     total_parts: int | None = None
 ) -> bool:
     """
@@ -103,7 +105,8 @@ def validate_upload_request(
 
     Args:
         storage_type: 存储类型
-        filename: 文件名validate_upload_params
+        filename: 文件名
+        experiment_type: 实验类型（可选）
         total_parts: 分片总数（可选，分片上传时需要）
 
     Returns:
@@ -117,7 +120,11 @@ def validate_upload_request(
     if not validate_file_metadata(filename):
         return False
 
-    # 3. 分片数量验证（如果需要）
+    # 3. 实验类型验证（如果提供）
+    if experiment_type and not validate_experiment_type(experiment_type):
+        return False
+
+    # 4. 分片数量验证（如果需要）
     if total_parts is not None and not validate_total_parts(total_parts):
         return False
 
@@ -385,12 +392,12 @@ async def link_file_to_user(
     # 1. 将文件添加到用户的文件列表
     new_linker = await append_file_link(session, user, file)
 
-    # 2. 更新用户的文件统计信息
+    # 2. 更新用户的文件统计信息#todo  保留  统一加  统一删除的时候减
     if new_linker:
         user.file_count = (user.file_count or 0) + 1
         user.total_file_size = (user.total_file_size or 0) + file_size
 
-    # 3. 将用户对象和链接器对象添加到会话
+    # 3. 将用户对象和链接器对象添加到会话 #todo 这里不需要建立linker，因为在预检的时候已经建立连接linker了 但是在有些场景需要调用这个函数，第二次上传不需要调用，只需要更新路径即可
     session.add(new_linker)
     session.add(user)
 
@@ -499,34 +506,21 @@ async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int|Non
     return list(res.all())
 
 
-async def safe_cleanup_preflight_record(#TODO 后续可以用定时任务来清理
+async def safe_cleanup_preflight_record(
     session: AsyncSession, current_user: UserInDB, pre_record: FileInDB
 ) -> None:
     """
     安全清理预检记录
-
+    
     处理逻辑：
+    - 使用 unlink_user_from_file 解除用户关联并更新统计信息
     - 如果文件属于多个用户：只移除当前用户的关联，保留记录
     - 如果文件只属于当前用户：删除整条记录
     """
-    # 先删当前用户，再过滤数据库是否还有其他的linker(代表其他用户也拥有该文件)
-    pre_record_linker = (await session.exec(
-        select(UserFileLink).where(and_(UserFileLink.file_id == pre_record.file_id, UserFileLink.user_id == current_user.id))
-    )).first()
-
-    # 从 owners 列表移除当前用户
-    if pre_record_linker: #要增加为空判断，第一次用户上传文件参数不正确，会删除空
-        await session.delete(pre_record_linker)
-        await session.flush([pre_record_linker])
-        session.expire(current_user, ["files"])
-        session.expire(pre_record, ["owners"])
-
-    # 检测是否还有其他用户持有该文件，如有则不删除文件
-    owner_count = (await session.exec( #todotodo
-        select(func.count("*")).where(UserFileLink.file_id == pre_record.file_id) # pylint: disable=not-callable
-    )).one()
-
-    if owner_count > 0:
+    # 解除用户与文件的关联，并更新用户统计信息
+    has_other_owners = await unlink_user_from_file(session, current_user, pre_record)
+    
+    if has_other_owners:
         # 还有其他用户持有，只更新 owners
         logger.debug(
             "preflight cleanup: removed user=%s from file_id=%s owners",
@@ -963,7 +957,7 @@ async def delete_file_and_parts(
         logger.error("file not found file_id=%s", file_id)
         raise ValueError(f"File not found: file_id={file_id}")
 
-    # 2. 删除分片物理文件（数据库记录会在删除文件时自动级联删除）
+    # 2. 删除分片物理文件（数据库记录会在删除文件记录时自动级联删除）
     deleted_parts_count = 0
     for part in file_record.parts:
         delete_local_file(part.temp_path)
@@ -992,12 +986,64 @@ async def delete_file_and_parts(
     )
 
 
+async def delete_experiment_physical_files(
+    session: AsyncSession,
+    file_id: int,
+) -> None:
+    """
+    只删除实验的物理文件，不删除数据库记录
+    
+    用于 cleanup_failed_experiments，利用数据库级联删除来删除记录
+    
+    处理逻辑：
+    1. 查询与 source_file_id 关联的实验记录
+    2. 删除实验相关的物理文件（imzml_path、ibd_path）
+    3. 删除实验目录（如果为空）
+    
+    Raises:
+        OSError: 物理文件删除失败时
+    """
+    # 查询 imzML 实验记录
+    experiment = await get_experiment_by_file_id(session, file_id)
+
+    if not experiment:
+        logger.debug("no experiment found for file_id=%s", file_id)
+        return
+
+    # 收集需要删除的文件
+    files_to_delete = []
+    if experiment.imzml_path:
+        files_to_delete.append(experiment.imzml_path)
+    if experiment.ibd_path:
+        files_to_delete.append(experiment.ibd_path)
+
+    # 批量删除实验文件
+    if files_to_delete:
+        deleted_count = await delete_files_async(files_to_delete)
+        logger.info("deleted %s experiment files for file_id=%s", deleted_count, file_id)
+
+    # 删除实验目录（如果为空）
+    if experiment.imzml_path:
+        experiment_dir = Path(experiment.imzml_path).parent
+
+        def _rmdir_if_empty(d: Path) -> None:
+            if d.exists() and not any(d.iterdir()):
+                d.rmdir()
+
+        await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
+        logger.debug("cleaned up experiment directory path=%s", experiment_dir)
+
+    logger.info("deleted experiment physical files for file_id=%s", file_id)
+
+
 async def delete_experiment_files(
     session: AsyncSession,
     file_id: int,
 ) -> None:
     """
-    删除与文件关联的实验文件（imzML、ibd 等）
+    删除与文件关联的实验文件（imzML、ibd 等）及数据库记录
+    
+    用于用户主动删除文件时，完整删除实验相关的所有内容
 
     处理逻辑：
     1. 查询与 source_file_id 关联的实验记录

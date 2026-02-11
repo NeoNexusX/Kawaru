@@ -36,6 +36,7 @@ storage:
   max_chunks_per_upload: 40
   allowed_storage_types: ["local"]
   allowed_file_types: ["imzML","ibd","IBD"]
+  allowed_experiment_types: ["imzML"]
   max_path_length: 255
   max_filename_length: 100
   max_file_type_length: 64
