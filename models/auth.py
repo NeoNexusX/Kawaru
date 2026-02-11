@@ -25,3 +25,8 @@ class FormData(BaseModel):
     username: str
     password: str
     model_config = {"extra": "forbid"}
+
+class RedisLoginData(BaseModel):
+    """用于Redis存储的登录信息字段，包括用户名和最近访问时间"""
+    username: str
+    last_access_time: str # 用户上次访问时间，用于登录信息滑动过期操作, str类型方便Redis存储
