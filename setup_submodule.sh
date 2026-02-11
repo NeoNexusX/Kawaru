@@ -1,6 +1,6 @@
 # 使用此文件更新子模块
 set -e
-git submodule update --init --depth 1   # 或不用 --depth
+git submodule update --init --recursive --depth 1   # 或不用 --depth
 
 # 对每个需要稀疏的子模块重复
 (cd external/countries-states-cities-database &&

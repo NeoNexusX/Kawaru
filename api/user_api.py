@@ -18,16 +18,19 @@ from api.auth_api import (
     create_access_token,
     hashed_password,
     verify_password,
+    login_expired_exception,
     token_invalid_exception,
     token_expired_exception,
 )
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import SessionDep, get_session
+from database.redis_client import redis_client
+from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
 from envset.config import get_config
 
 from logger import get_logger
-from models.auth import Token, oauth2_scheme, SECRET_KEY
+from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
 
@@ -80,6 +83,7 @@ async def validate_orcid(orcid: str) -> bool:
             return True
         return False
     except (HTTPStatusError, RequestError):  # Network Errors
+        logger.error("Cannot access ORCID public API due to network error.")
         return False
 
 def validate_url(url: str) -> bool:
@@ -170,6 +174,22 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], db: Sessio
         if username is None:
             raise token_invalid_exception
 
+        # Retrieve login status
+        login_key = f"login_token:{token}"
+        login_data = await redis_client.hgetall(login_key) # type:ignore
+
+        # 1. Check if login data exists
+        if not login_data:
+            raise login_expired_exception
+        login_data = RedisLoginData(**(login_data))
+
+        # 2. Check if login data correspond to current user
+        if login_data.username != username:
+            raise login_expired_exception
+
+        #TODO: 极为罕见的情况即hget后刚好过期，是否需要考虑？
+        await redis_client.expire(login_key, LOGIN_EXPIRE_SECONDS)
+
     except ExpiredSignatureError as exc:
         raise token_expired_exception from exc
 
@@ -194,6 +214,15 @@ async def login(
         access_token_expires = timedelta(minutes=get_config().token.token_expire_minutes)
         access_token = create_access_token(data={"sub": user.username},
                                            expires_delta=access_token_expires)
+
+        # Create redis login information
+        last_access_time = now_local_timezone().strftime(TIME_STR_FORMAT)
+        login_key = f"login_token:{access_token}"
+        login_data = RedisLoginData(username=user.username,
+                                    last_access_time=last_access_time)
+        await redis_client.hset(login_key, mapping=login_data.model_dump()) # type:ignore
+        await redis_client.expire(login_key, LOGIN_EXPIRE_SECONDS) # set default expiration time
+
         # return Token
         return Token(access_token=access_token, token_type="bearer")
 
@@ -201,6 +230,42 @@ async def login(
         logger.error(e)
         # 此处可以添加自定义异常处理
         raise
+
+
+async def logout(token: Annotated[str, Depends(oauth2_scheme)], db: SessionDep):
+    """用户登出，返回登出的用户信息"""
+    try:
+        payload = jwt.decode(
+            token, SECRET_KEY, algorithms=[get_config().token.algorithm]
+        )
+        username = payload.get("sub")
+        if username is None:
+            raise token_invalid_exception
+
+        # Retrieve login status
+        login_key = f"login_token:{token}"
+        login_data = await redis_client.hgetall(login_key) # type:ignore
+
+        # 1. Check if login data exists
+        if not login_data:
+            raise login_expired_exception
+        login_data = RedisLoginData(**(login_data))
+
+        # 2. Check if login data correspond to current user
+        if login_data.username != username:
+            raise login_expired_exception
+
+        await redis_client.delete(login_key)
+
+    except ExpiredSignatureError as exc:
+        raise token_expired_exception from exc
+
+    except InvalidTokenError as exc:
+        raise token_invalid_exception from exc
+
+    user = await get_activate_user(username, db)
+
+    return user
 
 
 async def create_user(user: UserCreate, session: SessionDep) -> UserPublic:
@@ -340,6 +405,7 @@ async def has_admin_user(session: AsyncSession, username: str) -> UserInDB | Non
 ##########################
 UserDep = Annotated[UserInDB, Depends(get_activate_user)]  # 获取当前已激活用户
 UserLoginDep = Annotated[Token, Depends(login)]  # 用户登陆
+UserLogoutDep = Annotated[UserPublic, Depends(logout)]  # 用户登出
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用户
 AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增（管理员用户）
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用户信息

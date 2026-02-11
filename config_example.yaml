@@ -7,7 +7,8 @@ server:
   admin_email: examplr@example.com
 
 token:
-  token_expire_minutes: 30
+  token_expire_minutes: 1440
+  login_expire_minutes: 120
   algorithm: HS256
 
 email:
@@ -27,6 +28,12 @@ database:
   db_type: mariadb
   db_username: kawaru
   port: 3306
+
+redis:
+  username: default
+  host: 127.0.0.1
+  port: 6379
+  max_connection: 50
 
 storage:
   root: ../
@@ -68,6 +75,12 @@ user:
   max_identity_length: 10
   max_username_length: 128
   max_useremail_length: 128
+  max_institution_length: 128
+  max_position_length: 128
+  max_research_field_length: 128
+  max_region_length: 128
+  max_orcid_length: 19
+  max_homepage_length: 64
 
 sample_info:
   max_experiment_name_length: 128

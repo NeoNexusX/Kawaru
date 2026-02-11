@@ -1,6 +1,5 @@
 """存储和用户相关的常量定义"""
 import json
-from pathlib import Path
 from envset.config import REGION_PATH, get_config
 
 config = get_config()
@@ -15,8 +14,11 @@ ALLOWED_REGIONS = {
     json.loads(REGION_PATH.read_text(encoding="utf-8"))
 }
 
+# 无操作后登录自动过期时间
+LOGIN_EXPIRE_SECONDS = config.token.login_expire_minutes * 60
+
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "ALLOWED_POSITION_TYPES",
     "ALLOWED_REGIONS",
-
+    "LOGIN_EXPIRE_SECONDS",
 ]
