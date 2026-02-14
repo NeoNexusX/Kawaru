@@ -35,6 +35,7 @@ from api.file_api_helper import (
     prepare_temp_chunk_path,
     save_upload_file,
 )
+from api.experiment_api_helper import is_file_uploaded
 from api.user_api import token_authen
 from constants.file_constants import (
     MAX_DOWNLOADS_PER_USER,
@@ -53,7 +54,6 @@ from exceptions.file_exceptions import (
     part_validation_failed_exception,
     permission_denied_exception,
     user_download_limit_exception,
-    duplicate_file_exception,
 )
 
 from logger import get_logger
@@ -132,29 +132,16 @@ async def preflight_create_file(
     # 验证文件并尝试复用（配额检查、重复检查、哈希复用）
     reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
     if reused_file:
-        # 检查文件是否真实存在（物理文件）
-        if Path(reused_file.path).exists():
-            # 文件存在，提交事务后抛出复用异常
-            await session.commit()
-            await session.refresh(reused_file)
-            await session.refresh(current_user)
-            logger.info(
-                "preflight reused existing file user=%s file_id=%s",
-                current_user.id,
-                reused_file.file_id,
-            )
-            raise file_reused_exception
-        else:
-            # 文件不存在，返回记录等待上传
-            await session.commit()
-            await session.refresh(reused_file)
-            await session.refresh(current_user)
-            logger.info(
-                "preflight reused record but file missing user=%s file_id=%s",
-                current_user.id,
-                reused_file.file_id,
-            )
-            return reused_file # type: ignore
+        # 不需要检查物理文件是否存在，直接提交事务后抛出复用异常
+        await session.commit()
+        await session.refresh(reused_file)
+        await session.refresh(current_user)
+        logger.info(
+            "preflight reused existing file user=%s file_id=%s",
+            current_user.id,
+            reused_file.file_id,
+        )
+        raise file_reused_exception
 
     # 创建新的文件记录（预检状态，路径为空）
     file_data_dict = file_data.model_dump()
@@ -164,10 +151,10 @@ async def preflight_create_file(
     )
     session.add(file_record)
     await session.flush()  # 获取 file_id
-    
+
     # 立即建立用户关联
     await link_file_to_user(session, current_user, file_record, file_data.size)
-    
+
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -249,31 +236,17 @@ async def preflight_create_chunked_file(
         reused_file.total_parts = file_data.total_parts
         session.add(reused_file)
 
-        # 检查文件是否真实存在（物理文件）
-        if Path(reused_file.path).exists():
-            # 文件存在，提交事务后抛出复用异常
-            await session.commit()
-            await session.refresh(reused_file)
-            await session.refresh(current_user)
-            logger.info(
-                "chunked preflight reused existing file user=%s file_id=%s parts=%s",
-                current_user.id,
-                reused_file.file_id,
-                file_data.total_parts,
-            )
-            raise file_reused_exception
-        else:
-            # 文件不存在，返回记录等待上传
-            await session.commit()
-            await session.refresh(reused_file)
-            await session.refresh(current_user)
-            logger.info(
-                "chunked preflight reused record but file missing user=%s file_id=%s parts=%s",
-                current_user.id,
-                reused_file.file_id,
-                file_data.total_parts,
-            )
-            return reused_file # type: ignore
+        # 不需要文件是否存在，提交事务后抛出复用异常
+        await session.commit()
+        await session.refresh(reused_file)
+        await session.refresh(current_user)
+        logger.info(
+            "chunked preflight reused existing file user=%s file_id=%s parts=%s",
+            current_user.id,
+            reused_file.file_id,
+            file_data.total_parts,
+        )
+        raise file_reused_exception
 
     # 创建新的文件记录（预检状态，路径为空）
     file_data_dict = file_data.model_dump()
@@ -283,10 +256,10 @@ async def preflight_create_chunked_file(
     )
     session.add(file_record)
     await session.flush()  # 获取 file_id
-    
+
     # 立即建立用户关联
     await link_file_to_user(session, current_user, file_record, file_data.size)
-    
+
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -301,7 +274,7 @@ async def preflight_create_chunked_file(
     return file_record # type: ignore
 
 
-async def upload_file_chunk(
+async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可能是将对空目录进行文件操作
     part_data_json: Annotated[str, Form(alias="part_data_json")],
     chunk: Annotated[UploadFile, File()],
     current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -372,12 +345,7 @@ async def upload_file_chunk(
     if not file_record:
         raise file_not_found_exception
 
-    # 3. 这里是否需要验证file_record物理文件是否已经存在了？还是到时候前端根据exception进行验证？
-    file_existing = Path(file_record.path).exists()
-    if file_existing:
-        raise duplicate_file_exception
-
-    # 4. 验证分片编号范围：1 <= part_number <= total_parts
+    # 3. 验证分片编号范围：1 <= part_number <= total_parts
     assert part_data.part_number is not None and file_record.total_parts is not None
     if not 1 <= part_data.part_number <= file_record.total_parts:
         logger.error(
@@ -389,7 +357,7 @@ async def upload_file_chunk(
         )
         raise part_number_out_of_range_exception
 
-    # 5. 检查分片是否已上传（防止重复）- 调用业务层
+    # 4. 检查分片是否已上传（防止重复）- 调用业务层
     assert file_record.file_id is not None and current_user.id is not None
     if await validate_chunk_metadata(session, file_record.file_id, part_data.part_number, current_user.id):
         logger.warning(
@@ -400,7 +368,7 @@ async def upload_file_chunk(
         )
         raise part_already_exists_exception
 
-    # 6. 验证分片哈希和大小
+    # 5. 验证分片哈希和大小
     chunk_hash, chunk_size = await compute_upload_file_metadata(chunk)
     if chunk_hash != part_data.part_hash or chunk_size != part_data.part_size:
         logger.error(
@@ -415,7 +383,7 @@ async def upload_file_chunk(
         )
         raise part_validation_failed_exception
 
-    # 7. 保存分片到临时目录
+    # 6. 保存分片到临时目录
     assert file_record.hash_sha256 is not None
     temp_path = prepare_temp_chunk_path(current_user.id, file_record.hash_sha256, part_data.part_number)
     try:
@@ -602,7 +570,7 @@ async def upload_simple_file(
 
     # 统一验证（业务层）
     _, size = await validate_simple_upload(
-        session, current_user, file, storage_type, pre_record
+        session, current_user, file,  pre_record
     )
 
     # 保存文件
@@ -618,7 +586,7 @@ async def upload_simple_file(
             exc,
         )
         delete_local_file(final_path)
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
+        await safe_cleanup_preflight_record(session, current_user, pre_record)# todo 做了任务队列之后可以删除
         await session.commit()
         raise file_persist_failed_exception from exc
 
@@ -627,7 +595,7 @@ async def upload_simple_file(
     file_record.path = str(final_path)
     file_record.size = size
     session.add(file_record)
-    
+
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
@@ -687,13 +655,19 @@ async def list_user_files(
 
     # 2. 批量查询文件记录（使用 IN 查询，效率高）
     statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
-    results = (await session.exec(statement)).all()
+    all_results = (await session.exec(statement)).all()
 
-    logger.debug("list user files user=%s count=%s", current_user.id, len(results))
+    # 只保留真正上传的文件
+    filtered_results = []
+    for file_record in all_results:
+        if await is_file_uploaded(session, file_record):
+            filtered_results.append(file_record)
+
+    logger.debug("list user files user=%s count=%s", current_user.id, len(filtered_results))
 
     return FileListResponse(
-        total=len(results),
-        files=list(results), # type: ignore
+        total=len(filtered_results),
+        files=list(filtered_results), # type: ignore
         user_id=current_user.id
     )
 

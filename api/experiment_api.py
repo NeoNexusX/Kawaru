@@ -16,7 +16,6 @@ from api.file_api_business import (
     get_experiment_by_file_id,
     assert_file_owner,
     delete_experiment_files,
-    delete_experiment_physical_files,
 )
 from api.experiment_api_helper import (
     extract_and_validate_imzml_zip,
@@ -57,17 +56,23 @@ async def cleanup_failed_experiments(
     """
     清理过期的失败实验记录
     
-    利用数据库级联删除：
-    - 删除 experiment 记录时，数据库会自动删除关联的 file 记录（ON DELETE CASCADE）
-    - 删除 file 记录时，数据库会自动删除关联的 UserFileLink 记录（ON DELETE CASCADE）
+    完整的清理流程：
+    1. 查询过期的失败实验记录
+    2. 手动更新所有相关用户的 file_count 和 total_file_size
+    3. 删除实验文件（imzML、ibd）物理文件
+    4. 删除文件表记录
+    5. 数据库自动级联删除关联的 UserFileLink 和 ExperimentImzMLInDB 记录
     
-    注意：需要手动更新用户统计信息（file_count 和 total_file_size）
+    注意：
+    - 源 ZIP 文件不删除
+    - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
+    - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
     """
     now = now_local_timezone()
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
 
-    # 第一部分：查询过期的失败实验
+    # 第一步：查询过期的失败实验
     try:
         failed_experiments = (
             await session.exec(
@@ -81,49 +86,69 @@ async def cleanup_failed_experiments(
         logger.error("failed to query failed experiments error=%s", e)
         return cleaned
 
-    # 第二部分：处理每个失败的实验
+    # 第二步：处理每个失败的实验
     for exp in failed_experiments:
         try:
-            # 查找文件表中对应的记录（在删除前获取信息）
+            # 查询关联的文件记录
             file_record = (await session.exec(
-                select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
+                select(FileInDB).where(FileInDB.file_id == exp.source_file_id)
+            )).first()
 
-            if file_record:
-                file_size = file_record.size
+            if not file_record:
+                logger.warning(
+                    "file record not found for exp_id=%s source_file_id=%s",
+                    exp.id,
+                    exp.source_file_id,
+                )
+                # 即使文件记录不存在，也要删除实验记录
+                await session.delete(exp)
+                cleaned += 1
+                continue
 
-                # 通过 UserFileLink 查询所有拥有该文件的用户ID
-                user_ids = (await session.exec(
-                    select(UserFileLink.user_id).where(
-                        UserFileLink.file_id == exp.source_file_id))).all()
+            # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
+            user_ids = (await session.exec(
+                select(UserFileLink.user_id).where(
+                    UserFileLink.file_id == exp.source_file_id
+                )
+            )).all()
 
-                # 更新所有拥有该文件的用户：减少 file_count 和 total_file_size
-                for user_id in user_ids:
-                    user_record = (await session.exec(
-                        select(UserInDB).where(UserInDB.id == user_id))).first()
+            for user_id in user_ids:
+                user_record = (await session.exec(
+                    select(UserInDB).where(UserInDB.id == user_id)
+                )).first()
 
-                    if user_record:
-                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)
-                        user_record.total_file_size = max(0, (user_record.total_file_size or 0) - file_size)
-                        session.add(user_record)
-                        logger.debug(
-                            "cleanup user record: user_id=%s file_id=%s",
-                            user_id,
-                            exp.source_file_id,
-                        )
+                if user_record:
+                    user_record.file_count = max(0, (user_record.file_count or 0) - 1)
+                    user_record.total_file_size = max(
+                        0, (user_record.total_file_size or 0) - (file_record.size or 0)
+                    )
+                    session.add(user_record)
+                    logger.debug(
+                        "updated user stats: user_id=%s file_count=%s total_size=%s",
+                        user_id,
+                        user_record.file_count,
+                        user_record.total_file_size,
+                    )
 
-            # 删除实验相关的物理文件（不删除数据库记录）
-            await delete_experiment_physical_files(session, exp.source_file_id)
+            # 2. 删除实验文件（imzML、ibd）物理文件
+            # delete_experiment_files 只处理物理文件删除，不操作数据库
+            await delete_experiment_files(session, exp.source_file_id)
 
-            # 删除实验记录（数据库会自动级联删除 file 和 UserFileLink）
-            await session.delete(exp)
+            # 3. 删除文件表记录
+            # 数据库级联删除会自动处理：
+            # - 删除关联的 UserFileLink 记录
+            # - 删除关联的 ExperimentImzMLInDB 记录
+            await session.delete(file_record)
+
             cleaned += 1
             logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
+
         except Exception as e:
             logger.error(
                 "failed to cleanup experiment exp_id=%s error=%s", exp.id, e
             )
 
-    # 第三部分：提交事务
+    # 第三步：提交事务
     try:
         await session.commit()
         logger.info("cleanup failed experiments completed count=%s", cleaned)
@@ -202,7 +227,7 @@ def process_imzml_experiment_background(
             experiment_record.status = ExperimentStatus.COMPLETED
             session.add(experiment_record)
 
-            # 删除原始 ZIP 文件并清空文件表中的 path 字段（helper 层）
+            # 删除原始 ZIP 文件并修改文件表中的 path 字段（helper 层）
             delete_source_file_and_clear_path(source_file)
             session.add(source_file)
             logger.info(

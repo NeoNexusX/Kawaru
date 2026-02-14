@@ -18,7 +18,6 @@ storage_config = config.storage
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"
-DOWNLOAD_TEMP_ROOT = STORAGE_ROOT / "download_temp"
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
@@ -54,7 +53,6 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "STORAGE_ROOT",
     "LOCAL_STORAGE_ROOT",
     "TEMP_CHUNKS_ROOT",
-    "DOWNLOAD_TEMP_ROOT",
     "MAX_FILE_SIZE",
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",

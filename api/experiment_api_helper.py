@@ -9,15 +9,21 @@ import zipfile
 import shutil
 from pathlib import Path
 
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
+from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
+
 from constants.experiment_constants import (
     EXPERIMENT_STORAGE_ROOT,
     EXPERIMENT_TEMP_ROOT,
     EXPERIMENT_PROCESSED_ROOT,
+    SOURCE_FILE_PATH_CLEARED,
 )
 
 from logger import get_logger
 
 logger = get_logger("main.experiment_api_helper")
+
 
 
 def ensure_experiment_dirs() -> None:
@@ -142,7 +148,8 @@ def delete_source_file_and_clear_path(source_file) -> bool:
 
     try:
         Path(source_file.path).unlink(missing_ok=True)
-        source_file.path = ""
+        # 不再将 path 置为空字符串，而是使用模块级占位常量
+        source_file.path = SOURCE_FILE_PATH_CLEARED
         return True
     except (OSError, PermissionError) as e:
         logger.warning("failed to delete source file error=%s", e)
@@ -156,3 +163,20 @@ def cleanup_temp_directory(temp_dir: Path | None) -> None:
             shutil.rmtree(temp_dir)
         except (OSError, PermissionError, shutil.Error) as e:
             logger.error("failed to cleanup temp directory error=%s", e)
+
+async def is_file_uploaded(session: AsyncSession, file_record) -> bool:
+    """
+    判断文件是否真正上传：
+    - 对于 experiment_type==imzML，需有对应 experiment 且 status=COMPLETED
+    - 其他类型可根据实际业务扩展
+    """
+    if getattr(file_record, 'experiment_type', None) == 'imzML':
+        exp = (await session.exec(
+            select(ExperimentImzMLInDB).where(
+                ExperimentImzMLInDB.source_file_id == file_record.file_id,
+                ExperimentImzMLInDB.status == ExperimentStatus.COMPLETED
+            )
+        )).first()
+        return exp is not None
+    # 其他类型直接视为已上传
+    return True

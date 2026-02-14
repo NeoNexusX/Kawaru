@@ -20,7 +20,6 @@ from api.file_api_helper import (
     validate_total_parts,
     compute_upload_file_metadata,
     validate_file_metadata,
-    validate_upload_params,
     validate_experiment_type,
     build_zip_file,
     merge_files_with_hash,
@@ -30,7 +29,7 @@ from constants.file_constants import (
     MAX_FILES_PER_USER,
     PREFLIGHT_TTL_MINUTES,
     ALLOWED_STORAGE_TYPES,
-    DOWNLOAD_TEMP_ROOT,
+    LOCAL_STORAGE_ROOT,
 )
 from exceptions import (
     chunk_file_missing_exception,
@@ -168,10 +167,10 @@ async def prepare_download_file(
             logger.warning("experiment files missing file_id=%s", file_record.file_id)
             raise file_content_missing_exception
 
-        # 创建 ZIP 包
+        # 创建 ZIP 包（存放在本地存储根目录下）
         zip_filename = file_record.filename
-        DOWNLOAD_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        zip_path = DOWNLOAD_TEMP_ROOT / zip_filename
+        LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
         # 准备文件列表：(文件路径, ZIP中的文件名)
         files_to_zip = [
@@ -286,7 +285,6 @@ async def validate_simple_upload(
     session: AsyncSession,
     current_user: UserInDB,
     file: "UploadFile",
-    storage_type: str,
     pre_record: FileInDB,
 ) -> tuple[str, int]:
     """
@@ -296,22 +294,7 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     """
     try:
-        # 1. 基础参数验证
-        if not validate_upload_params(storage_type,file.filename or "",pre_record.storage_type,pre_record.filename):
-            logger.warning(
-                "validation failed user=%s filename=%s storage=%s",
-                current_user.id,
-                file.filename if file.filename else "None",
-                storage_type,
-            )
-            raise invalid_request_parameters_exception
-
-        # 2. 重复文件名检查
-        assert file.filename is not None
-        if await check_duplicate_filename(session, current_user, file.filename):
-            raise duplicate_file_exception
-
-        # 3. 验证文件元数据（哈希和大小）
+        # 只校验文件元数据（哈希和大小）
         hash_sha256, size = await compute_upload_file_metadata(file)
         if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
             logger.error(
@@ -323,13 +306,7 @@ async def validate_simple_upload(
                 size,
             )
             raise invalid_request_parameters_exception
-
-        # 4. 用户配额检查
-        if not check_user_quota(current_user, size):
-            raise user_file_limit_exception
-
         return hash_sha256, size
-
     except Exception:
         # 统一的清理逻辑
         await safe_cleanup_preflight_record(session, current_user, pre_record)
@@ -392,12 +369,12 @@ async def link_file_to_user(
     # 1. 将文件添加到用户的文件列表
     new_linker = await append_file_link(session, user, file)
 
-    # 2. 更新用户的文件统计信息#todo  保留  统一加  统一删除的时候减
+    # 2. 更新用户的文件统计信息
     if new_linker:
         user.file_count = (user.file_count or 0) + 1
         user.total_file_size = (user.total_file_size or 0) + file_size
 
-    # 3. 将用户对象和链接器对象添加到会话 #todo 这里不需要建立linker，因为在预检的时候已经建立连接linker了 但是在有些场景需要调用这个函数，第二次上传不需要调用，只需要更新路径即可
+    # 3. 将用户对象和链接器对象添加到会话
     session.add(new_linker)
     session.add(user)
 
@@ -519,7 +496,7 @@ async def safe_cleanup_preflight_record(
     """
     # 解除用户与文件的关联，并更新用户统计信息
     has_other_owners = await unlink_user_from_file(session, current_user, pre_record)
-    
+
     if has_other_owners:
         # 还有其他用户持有，只更新 owners
         logger.debug(
@@ -568,11 +545,10 @@ async def cleanup_stale_preflights(
         .where(UserFileLink.user_id == current_user.id)
     )).all()
 
-    for rec in records:
 
-        # 检查文件是否存在，存在，不能删
-        file_existing = Path(rec.path).exists()
-        if file_existing:
+    for rec in records:
+        # 只要 path 不为空字符串，直接跳过（不再检查物理文件是否存在）
+        if rec.path:
             continue
 
         # TTL 判断 - 所有时间都是UTC时间，直接比较
@@ -740,11 +716,6 @@ async def check_duplicate_filename(
     Returns:
         True 表示存在重复文件名，False 表示不重复
     """
-    # TODO: 整个用户文件共享架构可能都需要修改，
-    # 存在问题：在当前多对多的架构下，A用户上传某一文件，该文件关联至用户A，
-    # 此时另一B用户上传同名不同哈希文件，该文件由于不和B存在联系，故能够通
-    # 过重名检查，但实际上存储路径已有A用户上传的同名文件，会导致文件系统
-    # 文件名重复错误。
 
     # 通过 SQL 的 exists() 直接判断数据库是否存在重复文件名文件
     stmt = select(
@@ -845,26 +816,11 @@ async def try_reuse_file_by_hash(
     if not same_hash_file:
         return None
 
-    # 如果物理文件已存在，可以直接复用
-    if Path(same_hash_file.path).exists():
-        # 建立用户与文件的关联
-        assert same_hash_file.file_id is not None
-        await link_file_to_user(session, user, same_hash_file, same_hash_file.size or 0)
-
-        logger.info(
-            "reused existing file user=%s file_id=%s hash=%s",
-            user.id,
-            same_hash_file.file_id,
-            hash_sha256,
-        )
-        # 返回文件记录，由调用方提交事务后抛出异常
-        return same_hash_file
-
-    # 物理文件不存在，建立关联，返回记录（等待上传）
+    # 直接复用数据库中相同哈希的记录（不检查物理路径是否存在）
     assert same_hash_file.file_id is not None
     await link_file_to_user(session, user, same_hash_file, same_hash_file.size or 0)
     logger.info(
-        "found existing record but file missing user=%s file_id=%s hash=%s",
+        "reused existing file record user=%s file_id=%s hash=%s (physical existence not checked)",
         user.id,
         same_hash_file.file_id,
         hash_sha256,
@@ -986,56 +942,6 @@ async def delete_file_and_parts(
     )
 
 
-async def delete_experiment_physical_files(
-    session: AsyncSession,
-    file_id: int,
-) -> None:
-    """
-    只删除实验的物理文件，不删除数据库记录
-    
-    用于 cleanup_failed_experiments，利用数据库级联删除来删除记录
-    
-    处理逻辑：
-    1. 查询与 source_file_id 关联的实验记录
-    2. 删除实验相关的物理文件（imzml_path、ibd_path）
-    3. 删除实验目录（如果为空）
-    
-    Raises:
-        OSError: 物理文件删除失败时
-    """
-    # 查询 imzML 实验记录
-    experiment = await get_experiment_by_file_id(session, file_id)
-
-    if not experiment:
-        logger.debug("no experiment found for file_id=%s", file_id)
-        return
-
-    # 收集需要删除的文件
-    files_to_delete = []
-    if experiment.imzml_path:
-        files_to_delete.append(experiment.imzml_path)
-    if experiment.ibd_path:
-        files_to_delete.append(experiment.ibd_path)
-
-    # 批量删除实验文件
-    if files_to_delete:
-        deleted_count = await delete_files_async(files_to_delete)
-        logger.info("deleted %s experiment files for file_id=%s", deleted_count, file_id)
-
-    # 删除实验目录（如果为空）
-    if experiment.imzml_path:
-        experiment_dir = Path(experiment.imzml_path).parent
-
-        def _rmdir_if_empty(d: Path) -> None:
-            if d.exists() and not any(d.iterdir()):
-                d.rmdir()
-
-        await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
-        logger.debug("cleaned up experiment directory path=%s", experiment_dir)
-
-    logger.info("deleted experiment physical files for file_id=%s", file_id)
-
-
 async def delete_experiment_files(
     session: AsyncSession,
     file_id: int,
@@ -1084,8 +990,8 @@ async def delete_experiment_files(
         await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
         logger.debug("cleaned up experiment directory path=%s", experiment_dir)
 
-    # 删除实验数据库记录
-    await session.delete(experiment)
-    logger.info(
-        "deleted experiment record exp_id=%s file_id=%s", experiment.id, file_id
-    )
+    # # 删除实验数据库记录
+    # await session.delete(experiment)
+    # logger.info(
+    #     "deleted experiment record exp_id=%s file_id=%s", experiment.id, file_id
+    # )

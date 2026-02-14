@@ -28,6 +28,7 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     MAX_CHUNKS_PER_UPLOAD,
 )
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 
 from logger import get_logger
 
@@ -346,6 +347,10 @@ def delete_local_file(path: str | Path) -> None:
     # 验证路径不为空
     if not path:
         logger.warning("empty path for deletion, skipping")
+        return
+    # 跳过特殊占位符路径
+    if str(path) == SOURCE_FILE_PATH_CLEARED:
+        logger.debug("skip deletion for SOURCE_FILE_PATH_CLEARED placeholder")
         return
 
     # 转换为字符串进行验证

@@ -59,7 +59,7 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
     """ImzML 实验数据库模型"""
     __tablename__ = "experiment_imzml"
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    
+
     # 外键关联 FileInDB，数据库层面配置级联删除
     source_file_id: int = Field(
         sa_column=Column(
@@ -71,7 +71,7 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
         ),
         description="原始ZIP文件ID（外键）"
     )
-    
+
     # 核心文件信息
     imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
@@ -97,7 +97,6 @@ class ExperimentImzMLPublic(ExperimentPublic):
 #     """RAW 实验数据库模型"""
 #     __tablename__ = "experiment_raw"
 #     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-#     
 #     # RAW 特有字段
 #     raw_path: str = Field(default="", description=".raw 文件的绝对存储路径")
 #     raw_size: int = Field(default=0, ge=0, description=".raw 文件大小（字节）")
