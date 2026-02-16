@@ -34,6 +34,9 @@ redis:
   host: 127.0.0.1
   port: 6379
   max_connection: 50
+  token_db_index: 0
+  celery_broker_db_index: 1
+  celery_backend_db_index: 2
 
 storage:
   root: ../

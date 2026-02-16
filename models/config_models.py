@@ -30,6 +30,9 @@ class RedisSettings(BaseModel):
     host: str
     port: int
     max_connection: int
+    token_db_index: int
+    celery_broker_db_index: int
+    celery_backend_db_index: int
 
 
 class EmailSettings(BaseModel):
