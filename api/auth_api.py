@@ -5,6 +5,7 @@ from starlette import status
 from fastapi import HTTPException
 from models.auth import PWD_CONTEXT, SECRET_KEY
 from envset.config import get_config
+from exceptions.exception_utils import format_exception_detail
 
 #########################
 # http 异常声明
@@ -12,20 +13,20 @@ from envset.config import get_config
 # 用户名或密码错误
 credentials_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Incorrect username or password",
+    detail=format_exception_detail("Incorrect username or password"),
     headers={"WWW-Authenticate": "Bearer"},
 )
 
 # 令牌过期
 token_expired_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Token expired",
+    detail=format_exception_detail("Token expired"),
     headers={"WWW-Authenticate": "Bearer"},
 )
 
 token_invalid_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Invalid token",
+    detail=format_exception_detail("Invalid token"),
     headers={"WWW-Authenticate": "Bearer"},
 )
 #########################

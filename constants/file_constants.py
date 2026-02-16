@@ -18,7 +18,6 @@ storage_config = config.storage
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"
-DOWNLOAD_TEMP_ROOT = STORAGE_ROOT / "download_temp"
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
@@ -30,6 +29,7 @@ MAX_CHUNKS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)
+ALLOWED_EXPERIMENT_TYPES = set(storage_config.allowed_experiment_types)
 
 # 文件名限制
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
@@ -53,11 +53,11 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "STORAGE_ROOT",
     "LOCAL_STORAGE_ROOT",
     "TEMP_CHUNKS_ROOT",
-    "DOWNLOAD_TEMP_ROOT",
     "MAX_FILE_SIZE",
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
+    "ALLOWED_EXPERIMENT_TYPES",
     "MAX_FILENAME_LENGTH",
     "MAX_FILES_PER_USER",
     "MAX_TOTAL_STORAGE_PER_USER",

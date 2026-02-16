@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey
 from models.file_models import now_local_timezone
 from envset.config import get_config
 
@@ -33,7 +33,6 @@ class ExperimentBase(SQLModel):
     注意：实验通过 source_file_id 关联文件，多用户共享同一文件时共享同一实验记录
     """
     experiment_name: str = Field(min_length=1, max_length=255, description="实验名称")
-    source_file_id: int = Field(gt=0, description="原始ZIP文件ID", index=True, unique=True)
     created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
     status: str = Field(default=ExperimentStatus.PROCESSING, description="处理状态: processing, completed, failed")
     error_message: str = Field(default="", description="错误信息（失败时）")
@@ -59,7 +58,21 @@ class ExperimentPublic(SQLModel):
 class ExperimentImzMLInDB(ExperimentBase, table=True):
     """ImzML 实验数据库模型"""
     __tablename__ = "experiment_imzml"
-    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True}) # 核心文件信息
+    id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
+
+    # 外键关联 FileInDB，数据库层面配置级联删除
+    source_file_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("fileindb.file_id", ondelete="CASCADE"),  # 数据库层：级联删除
+            nullable=False,
+            index=True,
+            unique=True
+        ),
+        description="原始ZIP文件ID（外键）"
+    )
+
+    # 核心文件信息
     imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小（字节）")
     ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
@@ -84,7 +97,6 @@ class ExperimentImzMLPublic(ExperimentPublic):
 #     """RAW 实验数据库模型"""
 #     __tablename__ = "experiment_raw"
 #     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-#     
 #     # RAW 特有字段
 #     raw_path: str = Field(default="", description=".raw 文件的绝对存储路径")
 #     raw_size: int = Field(default=0, ge=0, description=".raw 文件大小（字节）")

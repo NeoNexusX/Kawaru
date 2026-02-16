@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
-from sqlmodel import Field, SQLModel, Relationship
+from sqlmodel import Field, SQLModel, Relationship,Column, String
 from logger import get_logger
 from envset.config import get_config
 from models.link_models import UserFileLink
@@ -29,7 +29,7 @@ class UserBase(SQLModel):
     homepage: str | None = Field(max_length=user_config.max_homepage_length)
     active: bool = Field(default=True)
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
-    email: str = Field(max_length=user_config.max_useremail_length, description="用户邮箱")
+    email: str = Field(sa_column=Column(String(user_config.max_useremail_length), unique=True), description="用户邮箱")
 
 class UserInDB(UserBase, table=True):
     """
