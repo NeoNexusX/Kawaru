@@ -4,16 +4,14 @@ import json
 import pprint
 from pydantic import ValidationError, BaseModel
 import yaml
+import os
 from models.config_models import Config
 
 CONFIG: "ConfigCreate | None" = None
 
-CONFIG_PATH = Path(
-    "config.yaml"
-)  # 引入 CONFIG_PATH，在读取前显式检查文件是否存在，缺失时直接记录错误并阻止继续使用空配置。
+CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "config.yaml"))  # 从环境变量获取配置文件路径，默认为当前目录下的 config.yaml
 
-REGION_PATH = Path(
-    "external/countries-states-cities-database/json/countries.json"
+REGION_PATH = Path( os.getenv("REGION_PATH", "external/countries-states-cities-database/json/countries.json")
 )  # 引入 REGION_PATH，存放世界所有国家或地区的信息，用于校验用户地区合法性。
 
 def format_value(v):

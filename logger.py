@@ -15,6 +15,8 @@ LOG_LEVELS = {
     "critical": logging.CRITICAL
 }
 
+# 创建日志管理器单例实例
+LOGGER_MANAGER = None
 
 class ColorFormatter(logging.Formatter):
     """带颜色的日志格式化器（仅对控制台生效）"""
@@ -268,12 +270,6 @@ class LoggerManager:
             # update all handlers for this logger
             for handler in logger.handlers:
                 handler.setLevel(level)
-
-
-# 创建日志管理器单例实例
-LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
-LOGGER_MANAGER = LoggerManager()
-
 
 # 获取日志器的便捷函数
 def get_logger(name="app"):

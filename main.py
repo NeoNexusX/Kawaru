@@ -2,6 +2,7 @@ from boot.bootstrap import bootstrap
 bootstrap()
 
 import uvicorn
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,7 +55,7 @@ if __name__ == "__main__":
         "main:app",  # 模块名:FastAPI 实例名
         host=config.server.host,  # 监听所有网络接口
         port=config.server.port,  # 端口号
-        log_level=config.server.log_level,  # 日志级别
+        log_level=os.getenv("LOG_LEVEL", "info"),  # 日志级别
         reload=True,  # 开发时自动重载
         reload_excludes=[
             "tests/**" # 排除测试文件夹导致的自动重载

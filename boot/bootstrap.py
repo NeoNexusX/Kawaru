@@ -3,11 +3,13 @@ from typing import Optional
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
     """显式初始化日志系统（必须先于任何 get_logger 调用）"""
-    from logger import LOGGER_MANAGER
-    if getattr(LOGGER_MANAGER, "initialized", False):
-        return
+    import logger
 
-    LOGGER_MANAGER.init_app(
+    if getattr(logger.LOGGER_MANAGER, "initialized", False):
+        return
+    logger.LOGGER_MANAGER = logger.LoggerManager()
+
+    logger.LOGGER_MANAGER.init_app(
         log_level=log_level or os.getenv("LOG_LEVEL", "info"),
         log_dir=log_dir or os.getenv("LOG_DIR", "logs"),
     )

@@ -7,7 +7,9 @@ stander_envs=[
     'SMTP_PASSWORD',
     'DATABASE_PASSWORD',
     'LOG_DIR',
-    'LOG_LEVEL'
+    'LOG_LEVEL',
+    'CONFIG_PATH',
+    'REGION_PATH'
 ]
 class EnvSet:
     """

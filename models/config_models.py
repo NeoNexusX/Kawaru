@@ -6,8 +6,6 @@ class ServerSettings(BaseModel):
     name: str
     port: int
     host: str
-    log_level: str
-    log_dir: str
     admin_email: str
 
 class TokenSettings(BaseModel):
