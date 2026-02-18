@@ -20,7 +20,7 @@ from constants.experiment_constants import (
     SOURCE_FILE_PATH_CLEARED,
 )
 
-from logger import get_logger
+from tools.logger import get_logger
 
 logger = get_logger("api.experiment_api_helper")
 

@@ -56,7 +56,7 @@ from exceptions.file_exceptions import (
     user_download_limit_exception,
 )
 
-from logger import get_logger
+from tools.logger import get_logger
 from models.file_models import (
     ChunkedUploadStatus,
     FileCreate,

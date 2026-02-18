@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from logger import get_logger
+from tools.logger import get_logger
 
 stander_envs=[
     'MAILGUN_API_KEY',

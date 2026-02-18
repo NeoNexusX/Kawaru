@@ -26,7 +26,7 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from database.db import SessionDep, get_session
 from boot.config import get_config
 
-from logger import get_logger
+from tools.logger import get_logger
 from models.auth import Token, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic

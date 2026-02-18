@@ -3,7 +3,7 @@ from typing import Optional
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
     """显式初始化日志系统（必须先于任何 get_logger 调用）"""
-    import logger
+    import tools.logger as logger
 
     if getattr(logger.LOGGER_MANAGER, "initialized", False):
         return
@@ -45,7 +45,7 @@ def bootstrap(*, validate_env: bool = True):
     init_logging()
 
     #log part
-    from logger import get_logger
+    from tools.logger import get_logger
     logger = get_logger("bootstrap")
     logger.info("runtime environment initialized")
 

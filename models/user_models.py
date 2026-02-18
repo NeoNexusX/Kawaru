@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from sqlmodel import Field, SQLModel, Relationship,Column, String
-from logger import get_logger
+from tools.logger import get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
 

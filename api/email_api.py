@@ -8,7 +8,7 @@ import httpx
 from fastapi import HTTPException, Depends
 from starlette import status
 
-from logger import get_logger
+from tools.logger import get_logger
 from boot.config import get_config
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
 from database.db import SessionDep

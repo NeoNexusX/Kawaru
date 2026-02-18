@@ -25,7 +25,7 @@ from api.experiment_api_helper import (
     cleanup_temp_directory,
 )
 
-from logger import get_logger
+from tools.logger import get_logger
 from models.user_models import UserInDB
 from models.file_models import FileInDB, now_local_timezone
 from models.link_models import UserFileLink

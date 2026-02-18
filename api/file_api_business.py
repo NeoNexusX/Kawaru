@@ -40,7 +40,7 @@ from exceptions import (
     file_content_missing_exception,
     invalid_request_parameters_exception,
 )
-from logger import get_logger
+from tools.logger import get_logger
 from models.file_models import FileInDB, PartInDB, now_local_timezone, FileCreate
 from models.user_models import UserInDB
 from models.link_models import UserFileLink

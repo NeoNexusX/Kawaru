@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from boot.config import get_config
-from logger import get_logger
+from tools.logger import get_logger
 
 logger = get_logger("database")
 

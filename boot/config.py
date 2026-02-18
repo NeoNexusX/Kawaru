@@ -64,7 +64,7 @@ class ConfigCreate:
     def summary(self):
         """Print the configuration summary."""
         #logger part
-        from logger import get_logger
+        from tools.logger import get_logger
         logger = get_logger("bootstrap.config")
 
         if self.config is None:

@@ -10,7 +10,7 @@ from boot.config import get_config
 from boot.envset import EnvSet
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
-from logger import get_logger
+from tools.logger import get_logger
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
