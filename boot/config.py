@@ -2,9 +2,9 @@
 from pathlib import Path
 import json
 import pprint
+import os
 from pydantic import ValidationError, BaseModel
 import yaml
-import os
 from models.config_models import Config
 
 CONFIG: "ConfigCreate | None" = None
@@ -64,7 +64,8 @@ class ConfigCreate:
     def summary(self):
         """Print the configuration summary."""
         #logger part
-        from tools.logger import get_logger
+        from tools.logger import get_logger  # pylint: disable=import-outside-toplevel
+
         logger = get_logger("bootstrap.config")
 
         if self.config is None:

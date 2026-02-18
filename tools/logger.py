@@ -62,7 +62,7 @@ class ColorFormatter(logging.Formatter):
 
 
 class FileFormatter(logging.Formatter):
-
+    """文件日志格式化器，保持原始记录名"""
     def format(self, record):
         original_message = super().format(record)
         levelname_fixed = f"{record.levelname + ':':<10.10}"
@@ -228,15 +228,6 @@ class LoggerManager:
         if name not in self.loggers:
             child = logging.getLogger(name)
 
-            # Remove any handlers that might have been attached previously
-            if child.handlers:
-                for h in list(child.handlers):
-                    child.removeHandler(h)
-                    try:
-                        h.close()
-                    except Exception:
-                        pass
-
             # Let records bubble up to 'bootstrap' (parent), which has the file+console handlers
             child.propagate = True
 
@@ -273,6 +264,8 @@ class LoggerManager:
 
 # 获取日志器的便捷函数
 def get_logger(name="app"):
+    """Get logger by name."""
+
     if LOGGER_MANAGER is None:
-        raise Exception("LoggerManager is not initialized")
+        raise RuntimeError("LoggerManager is not initialized")
     return LOGGER_MANAGER.get_logger(name)

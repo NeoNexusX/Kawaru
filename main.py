@@ -1,22 +1,18 @@
-from boot.bootstrap import bootstrap
-bootstrap()
-
-import uvicorn
 import os
 from contextlib import asynccontextmanager
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from boot.bootstrap import bootstrap
+bootstrap()
+# pylint: disable=wrong-import-position
 from boot.config import get_config
-from boot.envset import EnvSet
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
-from tools.logger import get_logger
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
-
-# get the main logger
-logger = get_logger("main")
+# pylint: enable=wrong-import-position
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name

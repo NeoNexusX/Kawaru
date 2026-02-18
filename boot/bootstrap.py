@@ -3,7 +3,7 @@ from typing import Optional
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
     """显式初始化日志系统（必须先于任何 get_logger 调用）"""
-    import tools.logger as logger
+    import tools.logger as logger  # pylint: disable=import-outside-toplevel
 
     if getattr(logger.LOGGER_MANAGER, "initialized", False):
         return
@@ -18,7 +18,7 @@ def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None)
 def init_env():
     """显式加载 .env,并可选校验必需环境变量"""
     # 延迟 import，避免 envset 模块 import-time 拉起 logger
-    from boot.envset import EnvSet
+    from boot.envset import EnvSet  # pylint: disable=import-outside-toplevel
 
     env = EnvSet()
 
@@ -28,7 +28,7 @@ def init_env():
 def init_config():
     """显式读取 config.yaml 并初始化全局 CONFIG"""
     # 必须在 init_logging 之后 import（因为 envset.config 顶层会取 logger）
-    import boot.config
+    import boot.config  # pylint: disable=import-outside-toplevel
 
     boot.config.CONFIG = boot.config.ConfigCreate()
     if boot.config.CONFIG.config is None:
@@ -37,15 +37,16 @@ def init_config():
     return boot.config.CONFIG
 
 
-def bootstrap(*, validate_env: bool = True):
+def bootstrap():
     """统一显式初始化 Env + Logger + Config幂等"""
 
-    ENV = init_env()
-    CONFIG = init_config()
+    ENV = init_env() # pylint: disable=C0103
+    CONFIG = init_config() # pylint: disable=C0103
     init_logging()
 
     #log part
-    from tools.logger import get_logger
+    from tools.logger import get_logger   # pylint: disable=import-outside-toplevel
+
     logger = get_logger("bootstrap")
     logger.info("runtime environment initialized")
 
