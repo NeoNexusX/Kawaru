@@ -1,6 +1,6 @@
 """存储和文件相关的常量定义"""
 from pathlib import Path
-from envset.config import get_config
+from boot.config import get_config
 
 # 字节单位常量
 BYTES_IN_KB = 1024

@@ -6,14 +6,18 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
-from envset.config import get_config
+from boot.config import get_config
 from logger import get_logger
 
-logger = get_logger("main.database")
+logger = get_logger("database")
 
 _SYNC_ENGINE = None
 _ASYNC_ENGINE = None
 
+"""
+    # DigitalOcean 等云数据库通常需要 SSL 连接，添加 ssl 参数
+    # 注意：这里假设服务器证书是可信的，或者不验证证书，视具体安全需求而定
+"""
 
 def _check_database_env():
     """检查数据库相关环境变量是否存在"""
@@ -36,7 +40,12 @@ def get_sync_engine():
             f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
             f"?charset=utf8mb4"
         )
-        _SYNC_ENGINE = create_engine(db_url, pool_pre_ping=True)
+        _SYNC_ENGINE = create_engine(db_url, 
+                                    pool_size=config.database.pool_size,# 连接池大小
+                                    max_overflow=config.database.max_overflow, # 最大溢出连接数
+                                    echo_pool=config.database.echo_pool, # 不输出连接池日志（生产环境建议False）
+                                    pool_recycle=config.database.pool_recycle,# 连接回收时间（秒），防止 MySQL 断开连接
+                                    pool_pre_ping=True)
         logger.info("Sync database engine initialized")
 
     return _SYNC_ENGINE
@@ -45,17 +54,20 @@ def get_sync_engine():
 def get_async_engine():
     """懒加载异步引擎"""
     global _ASYNC_ENGINE # pylint: disable=global-statement
-
+    logger.info("Try to get async database engine")
     if _ASYNC_ENGINE is None:
         config = get_config()
         db_password = _check_database_env()
-        # DigitalOcean 等云数据库通常需要 SSL 连接，添加 ssl 参数
-        # 注意：这里假设服务器证书是可信的，或者不验证证书，视具体安全需求而定
+
         _ASYNC_ENGINE = create_async_engine(
             f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
             f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
             f"?charset=utf8mb4",
             pool_pre_ping=True,
+            pool_size=config.database.pool_size,# 连接池大小
+            max_overflow=config.database.max_overflow, # 最大溢出连接数
+            echo_pool=config.database.echo_pool, # 不输出连接池日志（生产环境建议False）
+            pool_recycle=config.database.pool_recycle,# 连接回收时间（秒），防止 MySQL 断开连接
             # connect_args={"ssl": True}  # 暂时禁用 SSL 以解决连接中断问题
         )
         logger.info("Async database engine initialized")
@@ -76,6 +88,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         logger.error(f"Database connection error: {e}")
         raise e
 
+
 def get_sync_session():
     """
     获取同步数据库会话
@@ -91,13 +104,14 @@ def get_sync_session():
 
 async def ensure_database_exists():
     """
-    检查并创建数据库
+    检查并创建数据库,独立构建引擎连接到系统数据库执行 CREATE DATABASE 语句，避免权限问题导致的连接失败
     """
+    logger.info("Ensuring database exists...")
     config = get_config()
     db_password = _check_database_env()
     db_name = config.database.db_name
 
-    # 连接到 mysql 系统数据库，用于创建目标数据库
+    # 连接到系统数据库，用于创建目标数据库
     sys_db_url = (
         f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
         f"@{config.database.host}:{config.database.port}/mysql?charset=utf8mb4"
@@ -118,8 +132,8 @@ async def ensure_database_exists():
             logger.info(f"Database '{db_name}' ensured")
 
     except Exception as e:
-        # 如果连接 mysql 库失败，可能是权限问题，记录警告但尝试继续（也许库已经存在）
-        logger.error(f"Failed to check/create database via 'mysql' db: {e}")
+        # 如果连接数据库失败，可能是权限问题，记录警告但尝试继续（也许库已经存在）
+        logger.error(f"Failed to check/create database via {config.database.db_type} db: {e}")
         raise
 
     finally:

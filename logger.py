@@ -94,9 +94,10 @@ class LoggerManager:
         self.loggers = {}
         self.log_dir = "logs"
         self.log_level = logging.INFO
-        self.max_bytes = 10 * 1024 * 1024  # 10MB
+        self.max_bytes = 1 * 1024 * 1024  # 1MB
         self.backup_count = 5
         self.initialized = False
+
 
     def init_app(self, log_level="info", log_dir='logs'):
         """init logger system"""
@@ -115,7 +116,10 @@ class LoggerManager:
         self._configure_root_logger()
 
         self.initialized = True
+        self.get_logger("main").info(
+            f"Logger initialized with level {log_level} and log directory '{self.log_dir}' ")
         return self
+
 
     def _configure_root_logger(self):
         """configure root logger"""
@@ -131,9 +135,6 @@ class LoggerManager:
         # add console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(self.log_level)
-        formatter = FileFormatter(
-            '%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s'
-        )
         console_formatter = ColorFormatter(  # console Formatter for colors
             '%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s',
             datefmt='%y-%m-%d %H:%M'
@@ -142,27 +143,108 @@ class LoggerManager:
         root_logger.addHandler(console_handler)
 
         # add file handler
-        file_path = os.path.join(self.log_dir, "app.log")
+        root_file_path = os.path.join(self.log_dir, "kawaru.log")
         file_handler = RotatingFileHandler(
-            file_path,
+            root_file_path,
             maxBytes=self.max_bytes,
             backupCount=self.backup_count
         )
+        file_formatter = FileFormatter(
+            '%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s'
+        )
         file_handler.setLevel(self.log_level)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
 
-    def get_logger(self, name) -> logging.Logger:
-        """get or create specify logger"""
-        if not self.initialized:
-            self.init_app()
 
+    def _configure_logger(self, logger, name):
+        """Configure a named logger with console and rotating file handlers."""
+        # Avoid adding duplicate handlers
+        if logger.handlers:
+            return logger
+
+        # Set base logger level
+        logger.setLevel(self.log_level)
+
+        # Prevent propagation to root logger
+        logger.propagate = False
+
+        # add console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(self.log_level)
+        console_formatter = ColorFormatter(
+            "%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s",
+            datefmt="%y-%m-%d %H:%M",
+        )
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        # add file handler
+        file_path = os.path.join(self.log_dir, f"{name}.log")
+        file_handler = RotatingFileHandler(
+            file_path, maxBytes=self.max_bytes, backupCount=self.backup_count
+        )
+        file_handler.setLevel(self.log_level)
+        file_formatter = FileFormatter(
+            "%(levelname)s%(asctime)s %(lineno)d %(name)s - %(message)s"
+        )
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+
+        return logger
+
+
+    def _logger_group(self, name: str) -> str:
+        """Top-level logger group: 'bootstrap.config' -> 'bootstrap'."""
+        return (name or "app").split(".", 1)[0]
+
+    def get_logger(self, name="app") -> logging.Logger:
+        """Get logger.
+
+        Desired behavior:
+        - child loggers (e.g. bootstrap.xxx) print to console and write to *parent file* (bootstrap.log)
+        - file output keeps original record.name (bootstrap.xxx)
+        """
+        if not self.initialized:
+            raise RuntimeError(
+                "LoggerManager is not initialized. Call bootstrap.init_logging() (or bootstrap.init_runtime()) first."
+            )
+
+        group = self._logger_group(name)
+
+        # 1) Ensure the parent/group logger is configured ONCE (handlers live here)
+        if group not in self.loggers:
+            group_logger = logging.getLogger(group)
+            group_logger = self._configure_logger(group_logger, group)  # writes to logs/{group}.log
+            self.loggers[group] = group_logger
+
+        # 2) If requesting the group itself, return it
+        if name == group:
+            return self.loggers[group]
+
+        # 3) Child logger: no handlers; propagate to parent/group so it uses parent's handlers
         if name not in self.loggers:
-            logger = logging.getLogger(name)
-            logger.setLevel(self.log_level)
-            self.loggers[name] = logger
+            child = logging.getLogger(name)
+
+            # Remove any handlers that might have been attached previously
+            if child.handlers:
+                for h in list(child.handlers):
+                    child.removeHandler(h)
+                    try:
+                        h.close()
+                    except Exception:
+                        pass
+
+            # Let records bubble up to 'bootstrap' (parent), which has the file+console handlers
+            child.propagate = True
+
+            # Keep it permissive; filtering/levels are enforced by parent/group effective level
+            child.setLevel(logging.NOTSET)
+
+            self.loggers[name] = child
 
         return self.loggers[name]
+
 
     def set_level(self, level):
         """dynamic change logger level"""
@@ -176,27 +258,25 @@ class LoggerManager:
         root_logger = logging.getLogger()
         root_logger.setLevel(level)
 
-        # update all handler
+        # update root handler
         for handler in root_logger.handlers:
-            # error keep level
-            if isinstance(handler, logging.FileHandler) and os.path.basename(handler.baseFilename) == "error.log":
-                continue
             handler.setLevel(level)
 
         # update all logger
         for logger in self.loggers.values():
             logger.setLevel(level)
+            # update all handlers for this logger
+            for handler in logger.handlers:
+                handler.setLevel(level)
 
 
 # 创建日志管理器单例实例
-logger_manager = LoggerManager()
-
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
-
-# 初始化日志管理器
-logger_manager.init_app(log_level=LOG_LEVEL, log_dir=os.getenv("LOG_DIR", "logs"))
+LOGGER_MANAGER = LoggerManager()
 
 
 # 获取日志器的便捷函数
 def get_logger(name="app"):
-    return logger_manager.get_logger(name)
+    if LOGGER_MANAGER is None:
+        raise Exception("LoggerManager is not initialized")
+    return LOGGER_MANAGER.get_logger(name)

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from logger import get_logger
 
-logger = get_logger("main.email_models")
+logger = get_logger("models.email_models")
 
 
 class EmailConfirmResponseBase(BaseModel):

@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-from envset.config import get_config
+from boot.config import get_config
 from logger import get_logger
 
 # 此处同时加载项目环境变量.env和pytest环境变量.env.pytest

@@ -1,18 +1,18 @@
-from contextlib import asynccontextmanager
+from boot.bootstrap import bootstrap
+bootstrap()
+
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from envset.config import get_config
-from envset.envset import EnvSet
+from boot.config import get_config
+from boot.envset import EnvSet
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
-from logger import get_logger, LOG_LEVELS
+from logger import get_logger
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
-
-# set watchfiles logging level
-get_logger("watchfiles.main").setLevel(LOG_LEVELS["error"])
 
 # get the main logger
 logger = get_logger("main")
@@ -23,8 +23,6 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     FastAPI lifespan context manager.
     initialize resources before the application starts
     """
-    EnvSet()
-    # start run
     await create_db_and_tables()
     # admin create
     await create_admin_user()

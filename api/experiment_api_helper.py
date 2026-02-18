@@ -22,7 +22,7 @@ from constants.experiment_constants import (
 
 from logger import get_logger
 
-logger = get_logger("main.experiment_api_helper")
+logger = get_logger("api.experiment_api_helper")
 
 
 

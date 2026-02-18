@@ -9,12 +9,12 @@ from fastapi import HTTPException, Depends
 from starlette import status
 
 from logger import get_logger
-from envset.config import get_config
+from boot.config import get_config
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
 from database.db import SessionDep
 from api.user_api import get_user_by_email
 from exceptions.user_exceptions import email_already_exists_exception
-from exceptions.exception_utils import format_exception_detail
+from exceptions.utils_exception import format_exception_detail
 
 logger = get_logger("api.email-api")
 config = get_config()

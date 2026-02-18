@@ -6,12 +6,12 @@ from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey
 from logger import get_logger
-from envset.config import get_config
+from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 
 # 获取服务器状态模块的日志器
-logger = get_logger("main.file_control")
+logger = get_logger("models.file_models")
 
 # 模型字段配置来自 config
 config = get_config()
@@ -20,7 +20,7 @@ sample_config = config.sample_info
 
 def now_local_timezone() -> datetime:
     """
-    返回当前UTC时间（无时区信息）统一使用格林威治时间（UTC）
+    返回当前UTC时间(无时区信息)统一使用格林威治时间(UTC)
     所有时间戳都应该是UTC时间，不做时区转换
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -31,9 +31,9 @@ class FileBase(SQLModel):
 
     filename: str = Field(max_length=storage_config.max_filename_length)
     file_type: str = Field(default="", max_length=storage_config.max_file_type_length)
-    # 【实验类型字段】用于定位对应的实验表（如 imzML/raw 等），由前端上传时指定
+    # 【实验类型字段】用于定位对应的实验表(如 imzML/raw 等)，由前端上传时指定
     experiment_type: str = Field(default="",
-                                 description="实验类型（imzml/raw等），用于定位实验表",
+                                 description="实验类型(imzml/raw等)，用于定位实验表",
                                  max_length=sample_config.max_experiment_type_length,)
     size: int = Field(default=0)
     storage_type: str = Field(default="local", max_length=64)
@@ -46,7 +46,7 @@ class FileBase(SQLModel):
                                max_length=sample_config.max_organism_part_length,)
     condition: str = Field(default="",description="样本状态",max_length=sample_config.max_condition_length,)
     sample_growth_conditions: str = Field(default="",
-                                          description="样本生长或处理条件（选填）",
+                                          description="样本生长或处理条件(选填)",
                                           max_length=sample_config.max_sample_growth_conditions_length,)
     sample_stabilization: str = Field(default="",description="样本稳定方式",max_length=sample_config.max_sample_stabilization_length,)
     tissue_modification: str = Field(default="",description="组织修饰方式",max_length=sample_config.max_tissue_modification_length,)
@@ -54,18 +54,18 @@ class FileBase(SQLModel):
     maldi_matrix_application: str = Field(default="",
                                           description="基质施加方式",
                                           max_length=sample_config.max_maldi_matrix_application_length,)
-    solvent: str = Field(default="",description="使用溶剂（选填）",max_length=sample_config.max_solvent_length,)
+    solvent: str = Field(default="",description="使用溶剂(选填)",max_length=sample_config.max_solvent_length,)
 
 
 class FileCreate(FileBase):
-    """创建文件时的请求模型（普通上传和分片上传）"""
-    total_parts: int | None = Field(default=None, description="分片总数（分片上传时必填）")
+    """创建文件时的请求模型(普通上传和分片上传)"""
+    total_parts: int | None = Field(default=None, description="分片总数(分片上传时必填)")
 
 
 class PartBase(SQLModel):
     """分片信息基类"""
     file_hash: str = Field(max_length=256, description="关联的文件哈希")
-    part_number: int = Field(..., description="分片编号（从1开始）")
+    part_number: int = Field(..., description="分片编号(从1开始)")
     part_hash: str = Field(max_length=256, description="分片哈希值")
     part_size: int = Field(..., description="分片大小")
 
@@ -99,14 +99,14 @@ class FileListResponse(SQLModel):
 class FileInDB(FileBase, table=True):
     """数据库模型"""
 
-    file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})  # 文件编号（自增主键）
+    file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})  # 文件编号(自增主键)
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 上传时间
     download_count: int = Field(default=0)  # 下载次数
-    total_parts: int | None = Field(default=1)  # 分片上传的总分片数（仅用于分片上传）
+    total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
 
     # 与 PartInDB 的一对多关系，配置级联删除
     parts: List["PartInDB"] = Relationship(
@@ -180,7 +180,7 @@ class PartInDB(PartBase, table=True):
             nullable=False,
             index=True
         ),
-        description="关联的文件ID（外键）"
+        description="关联的文件ID(外键)"
     )
     total_file_size: int = Field(..., description="总文件大小")
     total_parts: int = Field(..., description="分片总数")

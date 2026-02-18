@@ -1,6 +1,6 @@
 """存储和实验相关的常量定义"""
 from pathlib import Path
-from envset.config import get_config
+from boot.config import get_config
 
 # 加载配置
 config = get_config()

@@ -1,6 +1,6 @@
 from starlette import status
 from fastapi import HTTPException
-from exceptions.exception_utils import format_exception_detail
+from exceptions.utils_exception import format_exception_detail
 
 
 # 用户文件列表同步异常

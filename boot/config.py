@@ -4,9 +4,9 @@ import json
 import pprint
 from pydantic import ValidationError, BaseModel
 import yaml
-from logger import get_logger
 from models.config_models import Config
-logger = get_logger("main.settings")
+
+CONFIG: "ConfigCreate | None" = None
 
 CONFIG_PATH = Path(
     "config.yaml"
@@ -37,7 +37,6 @@ class ConfigCreate:
     def __init__(self):
         super().__init__()
         self.config = None
-        self.read()
 
     def read(self):
         """
@@ -45,46 +44,43 @@ class ConfigCreate:
         """
         try:
             if not CONFIG_PATH.exists():
-                logger.error(f"config file not found: {CONFIG_PATH.resolve()}")
                 self.config = None
                 raise FileNotFoundError(f"config file not found: {CONFIG_PATH.resolve()}")
 
             if not REGION_PATH.exists():
-                logger.error(f"region data file not found: {REGION_PATH.resolve()}")
                 self.config = None
                 raise FileNotFoundError(f"region data file not found: {REGION_PATH.resolve()}")
 
             with CONFIG_PATH.open("r", encoding="utf-8") as file:
                 data = yaml.safe_load(file) or {}
                 self.config = Config(**data)
-                logger.info(
-                    "config data has been loaded\n"
-                    + "\n".join(f"{k}:\n{format_value(v)}" for k, v in self.config)
-                )
 
         except ValidationError as e:
-            logger.error(e)
-            self.config = None
-
-        except Exception as e:
-            logger.error(e)
             self.config = None
             raise e
 
-    def get_config(self) -> Config:
-        """ "Get the configuration object."""
+        except Exception as e:
+            self.config = None
+            raise e
+
+    def summary(self):
+        """Print the configuration summary."""
+        #logger part
+        from logger import get_logger
+        logger = get_logger("bootstrap.config")
+
         if self.config is None:
             logger.error("config file not found")
             raise FileNotFoundError("config file not found")
 
-        return self.config
+        logger.info("config data has been loaded\n"
+                    + "\n".join(f"{k}:\n{format_value(v)}" for k, v in self.config))
 
-
-CONFIG = ConfigCreate()
-
-
-def get_config():
+def get_config() -> Config:
     """
     全局唯一的config获取函数
     """
-    return CONFIG.get_config()
+    if CONFIG is None or CONFIG.config is None:
+        raise FileNotFoundError("config file not found")
+    else:
+        return CONFIG.config

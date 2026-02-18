@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from sqlmodel import Field, SQLModel, Relationship,Column, String
 from logger import get_logger
-from envset.config import get_config
+from boot.config import get_config
 from models.link_models import UserFileLink
 
 # 防止循环引用报错
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from models.file_models import FileInDB
 
 # 获取服务器状态模块的日志器
-logger = get_logger("main.user_control")
+logger = get_logger("models.user_models")
 
 # 模型字段配置来自 config
 config = get_config()

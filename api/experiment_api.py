@@ -43,7 +43,7 @@ from exceptions.experiment_exceptions import (
     source_file_not_found_exception,
 )
 
-logger = get_logger("main.experiment_api")
+logger = get_logger("api.experiment_api")
 
 #########################
 # 异步清理函数

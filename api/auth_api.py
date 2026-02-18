@@ -4,8 +4,8 @@ import jwt
 from starlette import status
 from fastapi import HTTPException
 from models.auth import PWD_CONTEXT, SECRET_KEY
-from envset.config import get_config
-from exceptions.exception_utils import format_exception_detail
+from boot.config import get_config
+from exceptions.utils_exception import format_exception_detail
 
 #########################
 # http 异常声明

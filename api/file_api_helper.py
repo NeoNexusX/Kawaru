@@ -32,7 +32,7 @@ from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 
 from logger import get_logger
 
-logger = get_logger("main.file_api_helper")
+logger = get_logger("api.file_api_helper")
 
 
 def validate_file_metadata(filename: str) -> bool:

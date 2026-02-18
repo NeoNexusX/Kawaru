@@ -49,7 +49,7 @@ from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 if TYPE_CHECKING:
     from fastapi import UploadFile
 
-logger = get_logger("main.file_api_business")
+logger = get_logger("api.file_api_business")
 
 
 async def get_experiment_by_file_id(

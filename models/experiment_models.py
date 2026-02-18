@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey
 from models.file_models import now_local_timezone
-from envset.config import get_config
+from boot.config import get_config
 
 config = get_config()
 storage_config = config.storage

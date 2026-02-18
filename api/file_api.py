@@ -69,7 +69,7 @@ from models.file_models import (
     PartPublic,
 )
 from models.user_models import UserInDB
-logger = get_logger("main.file_api")
+logger = get_logger("api.file_api")
 
 
 async def preflight_create_file(
@@ -80,11 +80,11 @@ async def preflight_create_file(
     """
     【预检接口 - 简单上传】
     
-    功能：根据前端提供的元数据创建文件记录，但不写入用户 file_ids 与计数。
-    时机：在实际文件上传之前调用
-    目的：提前验证、预分配文件ID、支持秒传（哈希复用）
+    功能:根据前端提供的元数据创建文件记录，但不写入用户 file_ids 与计数。
+    时机:在实际文件上传之前调用
+    目的:提前验证、预分配文件ID、支持秒传（哈希复用）
     
-    流程：
+    流程:
     1. 清理过期的预检记录
     2. 参数验证（存储类型、文件名、文件类型）
     3. 用户配额检查
@@ -92,7 +92,7 @@ async def preflight_create_file(
     5. 尝试复用已存在的相同哈希文件（秒传）
     6. 如果无法复用，创建新的文件记录（预检状态）
     
-    注意：
+    注意:
     - 此时文件记录已创建，但用户的 file_ids 和统计信息尚未更新
     - 只有在后续上传接口中校验通过后，才会更新用户计数与 file_ids
     - 如果上传失败，预检记录会在下次预检时被清理
@@ -174,24 +174,24 @@ async def preflight_create_chunked_file(
 ) -> FilePublic:
     """
     【预检接口 - 分片上传】
-    
-    功能：为分片上传创建文件记录，准备接收分片
-    时机：在分片上传之前调用
-    目的：提前验证、预分配文件ID、支持秒传（哈希复用）
-    
-    流程：
+
+    功能:为分片上传创建文件记录，准备接收分片
+    时机:在分片上传之前调用
+    目的:提前验证、预分配文件ID、支持秒传(哈希复用)
+
+    流程:
     1. 清理过期的预检记录
     2. 参数验证（存储类型、文件名、文件类型、分片数量）
     3. 用户配额检查
     4. 重复文件检查（文件名、哈希）
     5. 尝试复用已存在的相同哈希文件（秒传）
     6. 如果无法复用，创建新的文件记录（预检状态）
-    
-    与简单上传的区别：
+
+    与简单上传的区别:
     - 需要验证 total_parts 参数
     - 复用文件时需要更新 total_parts
-    
-    注意：
+
+    注意:
     - 此时文件记录已创建，但用户的 file_ids 和统计信息尚未更新
     - 只有在所有分片上传并合并成功后，才会更新用户计数与 file_ids
     """
@@ -207,8 +207,9 @@ async def preflight_create_chunked_file(
             exc,
         )
     await session.refresh(current_user)
+
     logger.info(
-        "chunked preflight start user=%s filename=%s storage=%s size=%s parts=%s",
+        "chunked preflight start , upload file info:    \nuser=%s filename=%s storage=%s size=%s parts=%s",
         current_user.id,
         file_data.filename,
         file_data.storage_type,
@@ -284,14 +285,14 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     """
     【分片上传接口】
     
-    功能：上传单个文件分片，每次上传后验证并尝试合并
-    时机：在预检接口之后，逐个上传分片
+    功能:上传单个文件分片，每次上传后验证并尝试合并
+    时机:在预检接口之后，逐个上传分片
     
-    请求格式：multipart/form-data
+    请求格式:multipart/form-data
     - part_data: JSON 字符串，包含分片元数据，对应模型为PartCreate
     - chunk: 分片文件内容
     
-    流程：
+    流程:
     1. 解析分片元数据（从 JSON 字符串）
     2. 根据 file_id 查询文件记录
     3. 验证分片编号范围
@@ -302,14 +303,14 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     8. 尝试合并分片（如果所有分片都已上传）
     9. 如果合并成功，更新用户统计信息并触发后台任务
     
-    合并时机：
+    合并时机:
     - 每次上传分片后都会检查是否所有分片都已上传
     - 如果是最后一个分片，会自动触发合并
     
-    后台任务：
+    后台任务:
     - 如果是 ZIP 文件，合并成功后会自动触发实验文件提取
     
-    注意：
+    注意:
     - 分片保存在临时目录，合并成功后会被删除
     - 合并失败时会清理所有分片和文件记录
     - part_data 必须是有效的 JSON 字符串
@@ -345,7 +346,7 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     if not file_record:
         raise file_not_found_exception
 
-    # 3. 验证分片编号范围：1 <= part_number <= total_parts
+    # 3. 验证分片编号范围:1 <= part_number <= total_parts
     assert part_data.part_number is not None and file_record.total_parts is not None
     if not 1 <= part_data.part_number <= file_record.total_parts:
         logger.error(
@@ -475,10 +476,10 @@ async def get_chunked_upload_status(
     """
     【分片上传状态查询接口】
     
-    功能：查询分片上传的进度和状态
-    时机：前端可以定期调用此接口查询上传进度
+    功能:查询分片上传的进度和状态
+    时机:前端可以定期调用此接口查询上传进度
     
-    返回信息：
+    返回信息:
     - file_hash: 文件哈希
     - filename: 文件名
     - total_parts: 总分片数
@@ -486,7 +487,7 @@ async def get_chunked_upload_status(
     - total_size: 文件总大小
     - is_complete: 是否已完成上传
     
-    判断逻辑：
+    判断逻辑:
     - 如果文件ID在用户的 file_ids 中，说明已完成上传
     - 否则查询已上传的分片记录
     """
@@ -536,21 +537,21 @@ async def upload_simple_file(
     """
     【简单上传接口】
     
-    功能：一次性接收完整文件，不做分片
-    时机：在预检接口之后调用
-    适用场景：小文件上传（< 100MB）
+    功能:一次性接收完整文件，不做分片
+    时机:在预检接口之后调用
+    适用场景:小文件上传（< 100MB）
     
-    流程：
+    流程:
     1. 查询预检记录
     2. 统一验证（存储类型、文件名、元数据、配额）
     3. 保存文件到存储目录
     4. 更新用户统计信息（file_ids、file_count、total_file_size）
     5. 如果是 ZIP 文件，触发后台任务提取实验文件
     
-    后台任务：
+    后台任务:
     - 如果是 ZIP 文件，上传成功后会自动触发实验文件提取
     
-    注意：
+    注意:
     - 必须先调用预检接口获取 pre_file_id
     - 文件哈希和大小必须与预检记录匹配，否则上传失败
     - 上传失败时会清理预检记录
@@ -632,18 +633,18 @@ async def list_user_files(
     """
     【文件列表查询接口】
     
-    功能：查询当前用户的全部文件记录
-    返回：包含文件总数、文件列表和用户ID的JSON对象
+    功能:查询当前用户的全部文件记录
+    返回:包含文件总数、文件列表和用户ID的JSON对象
     
-    查询逻辑：
+    查询逻辑:
     - 从用户的 file_ids 列表中获取文件ID
     - 批量查询文件记录
     
-    注意：
+    注意:
     - 只返回用户拥有的文件（file_id 在 user.file_ids 中）
     - 不包括预检记录（未完成上传的文件）
     """
-    # 1. 快速返回：用户没有任何文件
+    # 1. 快速返回:用户没有任何文件
     assert current_user.id is not None
     user_file_ids = await get_user_file_ids(session=session, user_id=current_user.id)
     if not user_file_ids:
@@ -680,25 +681,25 @@ async def delete_user_file(
     """
     【文件删除接口】
     
-    功能：删除当前用户的指定文件
+    功能:删除当前用户的指定文件
     
-    删除策略（多用户共享文件）：
-    1. 如果文件被多个用户共享：
+    删除策略（多用户共享文件）:
+    1. 如果文件被多个用户共享:
        - 只解除当前用户与文件的关联
        - 更新当前用户的统计信息（file_count、total_file_size）
        - 从文件的 owners 列表中移除当前用户
        - 保留文件记录和物理文件
-       - 返回状态：unlinked
+       - 返回状态:unlinked
     
-    2. 如果文件只属于当前用户：
+    2. 如果文件只属于当前用户:
        - 删除实验相关文件（如果有，如 imzML、ibd）
        - 删除文件物理文件
        - 删除所有分片记录和物理文件
        - 删除文件数据库记录
        - 更新当前用户的统计信息
-       - 返回状态：deleted
+       - 返回状态:deleted
     
-    判断逻辑：
+    判断逻辑:
     - 通过 file_record.owners 列表判断是否有其他用户持有该文件
     - 移除当前用户后，如果 owners 为空，则执行完全删除
 
@@ -747,25 +748,25 @@ async def get_download_file_metadata(
     """
     【文件下载元数据接口】
     
-    功能：返回文件元数据和路径，供下载使用
-    时机：在实际下载文件之前调用
+    功能:返回文件元数据和路径，供下载使用
+    时机:在实际下载文件之前调用
     
-    流程：
+    流程:
     1. 权限验证（用户是否拥有该文件）
     2. 下载次数限制检查（非管理员用户）
     3. 准备下载文件（处理实验文件ZIP打包）
     4. 更新下载统计（文件下载次数、用户下载次数）
     
-    实验文件处理：
+    实验文件处理:
     - 如果原始文件不存在，但实验文件（imzML、ibd）存在
     - 动态创建 ZIP 包，包含 imzML 和 ibd 文件
     - ZIP 包保存在临时目录，供下载使用
     
-    下载限制：
-    - 管理员：无限制
-    - 普通用户：受 MAX_DOWNLOADS_PER_USER 限制
+    下载限制:
+    - 管理员:无限制
+    - 普通用户:受 MAX_DOWNLOADS_PER_USER 限制
     
-    注意：
+    注意:
     - 此接口只返回元数据，不返回文件流
     - 实际文件下载由前端或其他接口处理
     - 实验文件的 ZIP 包是临时生成的，需要定期清理

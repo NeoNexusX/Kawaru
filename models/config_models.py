@@ -20,6 +20,10 @@ class DatabaseSettings(BaseModel):
     db_username: str
     db_name: str
     db_type: str
+    pool_size: int
+    pool_recycle: int
+    max_overflow: int
+    echo_pool: bool
     host: str
     port: int
 
