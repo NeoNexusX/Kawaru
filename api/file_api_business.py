@@ -316,8 +316,8 @@ async def validate_simple_upload(
 
 
 
-async def append_file_link(session: AsyncSession, user: UserInDB, file: FileInDB) -> UserFileLink | None:
-    """
+async def append_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> UserFileLink | None:
+    """ 
     将文件添加到用户的文件列表中
     上传成功后调用，建立用户与文件的关联关系，
     并返回新的linker(如果已存在关联关系，则返回None)。
@@ -333,14 +333,14 @@ async def append_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
         raise invalid_user_for_file_list_sync_exception
 
     # 文件已在列表中，无需重复添加
-    is_alread_exist = (await session.exec(
-                        select(exists().where(and_(UserFileLink.user_id == user.id)))
+    is_alread_exist = (await async_session.exec(
+                        select(exists()
+                               .where(and_(UserFileLink.user_id == user.id,
+                                           UserFileLink.file_id == file.file_id))
+                               )
                     )).one()
     if is_alread_exist:
         return None
-
-    if user.file_count >= MAX_FILES_PER_USER:
-        raise user_file_limit_exception
 
     # 新建 UserFileLink 链接
     new_linker = UserFileLink(user_id=user.id, file_id=file.file_id)
@@ -348,7 +348,7 @@ async def append_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
 
 
 async def link_file_to_user(
-    session: AsyncSession,
+    async_session: AsyncSession,
     user: UserInDB,
     file: FileInDB,
     file_size: int,
@@ -367,7 +367,7 @@ async def link_file_to_user(
         user_file_limit_exception: 超过用户文件数量限制
     """
     # 1. 将文件添加到用户的文件列表
-    new_linker = await append_file_link(session, user, file)
+    new_linker = await append_file_link(async_session, user, file)
 
     # 2. 更新用户的文件统计信息
     if new_linker:
@@ -375,8 +375,8 @@ async def link_file_to_user(
         user.total_file_size = (user.total_file_size or 0) + file_size
 
     # 3. 将用户对象和链接器对象添加到会话
-    session.add(new_linker)
-    session.add(user)
+    async_session.add(new_linker)
+    async_session.add(user)
 
 
 async def validate_and_try_reuse_file(
@@ -401,31 +401,15 @@ async def validate_and_try_reuse_file(
 
     # 1. 用户配额检查（工具层）
     if not check_user_quota(current_user, file_data.size):
-        logger.warning(
-            "quota check failed user=%s filename=%s size=%s",
-            current_user.id,
-            file_data.filename,
-            file_data.size,
-        )
         raise user_file_limit_exception
 
     # 2. 重复文件名检查（业务层）
     if await check_duplicate_filename(session, current_user, file_data.filename):
-        logger.warning(
-            "duplicate filename user=%s filename=%s",
-            current_user.id,
-            file_data.filename,
-        )
         raise duplicate_file_exception
 
     # 3. 重复文件哈希检查（业务层）
     assert file_data.hash_sha256 is not None
     if await check_duplicate_file_hash(session, current_user, file_data.hash_sha256):
-        logger.warning(
-            "duplicate file hash user=%s hash=%s",
-            current_user.id,
-            file_data.hash_sha256,
-        )
         raise duplicate_file_exception
 
     # 4. 尝试复用相同哈希的文件（业务层）
@@ -703,9 +687,9 @@ async def merge_chunks_to_file(
     # 合并成功，清理分片临时文件和记录
     await delete_parts_by_file_id(session, file_record.file_id)
 
-
+#TODO：转移到 helper 层
 async def check_duplicate_filename(
-    session: AsyncSession, user: UserInDB, filename: str
+    async_session: AsyncSession, user: UserInDB, filename: str
 ) -> bool:
     """
     检查用户是否已有同名文件
@@ -714,7 +698,7 @@ async def check_duplicate_filename(
     异常处理：不抛出异常，返回检查结果
 
     Returns:
-        True 表示存在重复文件名，False 表示不重复
+        True 表示存在重复文件名,False 表示不重复
     """
 
     # 通过 SQL 的 exists() 直接判断数据库是否存在重复文件名文件
@@ -728,10 +712,10 @@ async def check_duplicate_filename(
         )
     )
 
-    has_duplicate_file = (await session.exec(stmt)).one()
+    has_duplicate_file = (await async_session.exec(stmt)).one()
 
     if has_duplicate_file:
-        logger.debug(
+        logger.warning(
             "duplicate filename found user=%s filename=%s",
             user.id,
             filename,
@@ -740,7 +724,7 @@ async def check_duplicate_filename(
 
     return False
 
-
+#TODO：转移到 helper 层
 async def check_duplicate_file_hash(
     session: AsyncSession, user: UserInDB, hash_sha256: str
 ) -> bool:
@@ -766,7 +750,7 @@ async def check_duplicate_file_hash(
     )).one()
 
     if has_same_hash_file:
-        logger.debug(
+        logger.warning(
             "duplicate file hash found user=%s hash=%s",
             user.id,
             hash_sha256,
@@ -777,7 +761,7 @@ async def check_duplicate_file_hash(
 
 
 async def try_reuse_file_by_hash(
-    session: AsyncSession,
+    async_session: AsyncSession,
     user: UserInDB,
     hash_sha256: str,
 ) -> FileInDB | None:
@@ -797,7 +781,7 @@ async def try_reuse_file_by_hash(
 
     # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件
     same_hash_file = (
-        await session.exec(
+        await async_session.exec(
             select(FileInDB)
             .where(FileInDB.hash_sha256 == hash_sha256)
             .where(
@@ -818,7 +802,7 @@ async def try_reuse_file_by_hash(
 
     # 直接复用数据库中相同哈希的记录（不检查物理路径是否存在）
     assert same_hash_file.file_id is not None
-    await link_file_to_user(session, user, same_hash_file, same_hash_file.size or 0)
+    await link_file_to_user(async_session, user, same_hash_file, same_hash_file.size or 0)
     logger.info(
         "reused existing file record user=%s file_id=%s hash=%s (physical existence not checked)",
         user.id,

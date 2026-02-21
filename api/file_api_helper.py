@@ -415,38 +415,17 @@ def check_user_quota(user: UserInDB, file_size: int) -> bool:
     3. 总存储空间是否超过限制
 
     Returns:
-        True 表示所有配额检查通过，False 表示至少有一项超出限制
+        True 表示所有配额检查通过,False 表示至少有一项超出限制
     """
-    # 检查文件数量
+    # 检查文件数量,单个文件大小,总存储空间
     current_count = user.file_count
-    if current_count >= MAX_FILES_PER_USER:
-        logger.debug(
-            "file count quota exceeded user=%s current=%s limit=%s",
-            user.id,
-            current_count,
-            MAX_FILES_PER_USER,
-        )
-        return False
-
-    # 检查单个文件大小
-    if file_size > MAX_FILE_SIZE:
-        logger.debug(
-            "file size quota exceeded user=%s size=%s limit=%s",
-            user.id,
-            file_size,
-            MAX_FILE_SIZE,
-        )
-        return False
-
-    # 检查总存储空间
     projected_total_size = user.total_file_size + file_size
-    if projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
-        logger.debug(
-            "storage quota exceeded user=%s projected=%s limit=%s",
-            user.id,
-            projected_total_size,
-            MAX_TOTAL_STORAGE_PER_USER,
-        )
+    if current_count >= MAX_FILES_PER_USER or file_size > MAX_FILE_SIZE or projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
+        logger.warning(f"user quota exceeded user={user.id}:\n"
+                       f"current={current_count}: limit={MAX_FILES_PER_USER},{current_count >= MAX_FILES_PER_USER}\n"
+                       f"current={file_size}: limit={MAX_FILE_SIZE},{file_size > MAX_FILE_SIZE}\n"
+                       f"current={projected_total_size}: limit={MAX_TOTAL_STORAGE_PER_USER},{projected_total_size > MAX_TOTAL_STORAGE_PER_USER}"
+                       )
         return False
 
     return True

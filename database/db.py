@@ -40,7 +40,7 @@ def get_sync_engine():
             f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
             f"?charset=utf8mb4"
         )
-        _SYNC_ENGINE = create_engine(db_url, 
+        _SYNC_ENGINE = create_engine(db_url,
                                     pool_size=config.database.pool_size,# 连接池大小
                                     max_overflow=config.database.max_overflow, # 最大溢出连接数
                                     echo_pool=config.database.echo_pool, # 不输出连接池日志（生产环境建议False）
@@ -54,7 +54,6 @@ def get_sync_engine():
 def get_async_engine():
     """懒加载异步引擎"""
     global _ASYNC_ENGINE # pylint: disable=global-statement
-    logger.info("Try to get async database engine")
     if _ASYNC_ENGINE is None:
         config = get_config()
         db_password = _check_database_env()
@@ -75,7 +74,7 @@ def get_async_engine():
     return _ASYNC_ENGINE
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """
     获取异步数据库会话
     """
@@ -97,6 +96,7 @@ def get_sync_session():
         sync_engine = get_sync_engine()
         with Session(sync_engine) as session:
             yield session
+
     except SQLAlchemyError as e:
         logger.error(f"Database connection error: {e}")
         raise e
@@ -155,6 +155,6 @@ async def create_db_and_tables():
         logger.error(f"Failed to create database tables: {e}")
         raise
 
-# 直接将Session对get_session()的依赖写进SessionDep类型签名，方便后续调用
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+# 直接将Session对get_async_session()的依赖写进AsyncSessionDep类型签名，方便后续调用
+AsyncSessionDep = Annotated[AsyncSession, Depends(get_async_session)]
 SyncSessionDep = Annotated[Session, Depends(get_sync_session)]

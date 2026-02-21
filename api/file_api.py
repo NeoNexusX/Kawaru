@@ -1,8 +1,6 @@
 #########################
 # File API - API入口层
 #########################
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Annotated, Any
@@ -37,10 +35,8 @@ from api.file_api_helper import (
 )
 from api.experiment_api_helper import is_file_uploaded
 from api.user_api import token_authen
-from constants.file_constants import (
-    MAX_DOWNLOADS_PER_USER,
-)
-from database.db import SessionDep
+from constants.file_constants import MAX_DOWNLOADS_PER_USER
+from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     chunk_merge_failed_exception,
     download_not_implemented_exception,
@@ -55,8 +51,6 @@ from exceptions.file_exceptions import (
     permission_denied_exception,
     user_download_limit_exception,
 )
-
-from tools.logger import get_logger
 from models.file_models import (
     ChunkedUploadStatus,
     FileCreate,
@@ -69,13 +63,14 @@ from models.file_models import (
     PartPublic,
 )
 from models.user_models import UserInDB
+from tools.logger import get_logger
 logger = get_logger("api.file_api")
 
 
 async def preflight_create_file(
     file_data: FileCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> FilePublic:
     """
     【预检接口 - 简单上传】
@@ -170,7 +165,7 @@ async def preflight_create_file(
 async def preflight_create_chunked_file(
     file_data: FileCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> FilePublic:
     """
     【预检接口 - 分片上传】
@@ -279,7 +274,7 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     part_data_json: Annotated[str, Form(alias="part_data_json")],
     chunk: Annotated[UploadFile, File()],
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
     background_tasks: BackgroundTasks,
 ) -> PartPublic:
     """
@@ -471,7 +466,7 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
 async def get_chunked_upload_status(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> ChunkedUploadStatus:
     """
     【分片上传状态查询接口】
@@ -528,7 +523,7 @@ async def get_chunked_upload_status(
 
 async def upload_simple_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
     background_tasks: BackgroundTasks,
     storage_type: str = Form("local"),
     pre_file_id: int = Form(...),
@@ -628,7 +623,7 @@ async def upload_simple_file(
 
 
 async def list_user_files(
-    current_user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep
+    current_user: Annotated[UserInDB, Depends(token_authen)], session: AsyncSessionDep
 ) -> FileListResponse:
     """
     【文件列表查询接口】
@@ -676,7 +671,7 @@ async def list_user_files(
 async def delete_user_file(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> dict[str, Any]:
     """
     【文件删除接口】
@@ -743,7 +738,7 @@ async def delete_user_file(
 async def get_download_file_metadata(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> FileDownloadMeta:
     """
     【文件下载元数据接口】

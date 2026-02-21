@@ -5,7 +5,7 @@ from exceptions.utils_exception import format_exception_detail
 
 user_already_exists_exception = HTTPException(
     status_code=status.HTTP_409_CONFLICT,#提示用户已经存在
-    detail=format_exception_detail("Username already exists")
+    detail=format_exception_detail("User already exists")
 )
 
 email_already_exists_exception = HTTPException(

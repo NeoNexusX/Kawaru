@@ -11,7 +11,7 @@ from starlette import status
 from tools.logger import get_logger
 from boot.config import get_config
 from models.email_models import EmailConfirmResponseBase, EmailConfirmRequest, EmailSMTPRequest, TOTP
-from database.db import SessionDep
+from database.db import AsyncSessionDep
 from api.user_api import get_user_by_email
 from exceptions.user_exceptions import email_already_exists_exception
 from exceptions.utils_exception import format_exception_detail
@@ -31,7 +31,7 @@ email_server_exception = HTTPException(
 )
 
 # Using MailGun to send an email verify code message
-async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: SessionDep):
+async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: AsyncSessionDep):
     """
     use MailGun API to send email, which is more reliable and faster than SMTP, but may have some limitations 
     """
@@ -83,7 +83,7 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: Session
             raise email_send_exception from e
 
 # Using SMTP to send an email verify code message
-async def send_smtp_email(email_info: EmailConfirmResponseBase, db: SessionDep):
+async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSessionDep):
     """generate code"""
     # 验证邮箱是否已被注册
     existing_user = await get_user_by_email(email_info.email, db)

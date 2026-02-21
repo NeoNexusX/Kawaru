@@ -6,7 +6,6 @@ class ServerSettings(BaseModel):
     name: str
     port: int
     host: str
-    admin_email: str
 
 class TokenSettings(BaseModel):
     """令牌配置模型"""
@@ -87,6 +86,7 @@ class SampleInfoSettings(BaseModel):
 # Initial admin user's information 初始管理员信息
 class AdminInfo(BaseModel):
     """初始管理员信息配置模型"""
+    username: str
     institution: str
     position: str
     research_field: str

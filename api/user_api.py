@@ -11,6 +11,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from starlette import status
 from httpx import AsyncClient, HTTPStatusError, RequestError
 from api.auth_api import (
@@ -23,9 +24,8 @@ from api.auth_api import (
 )
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
-from database.db import SessionDep, get_session
+from database.db import AsyncSessionDep, get_async_session
 from boot.config import get_config
-
 from tools.logger import get_logger
 from models.auth import Token, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
@@ -38,26 +38,26 @@ logger = get_logger("api.user_api")
 # 业务层，API 逻辑，不应该抛出任何异常
 #########################
 
-async def get_user(username: str, db: SessionDep) -> UserInDB | None:
+async def get_user(username: str, async_session: AsyncSession) -> UserInDB | None:
     """通过 Session 查询指定用户名的用户（可返回未激活用户）"""
     # 通过 Session 查询用户
     statement = select(UserInDB).where(UserInDB.username == username)
-    return (await db.exec(statement)).first()
+    return (await async_session.exec(statement)).first()
 
 
-async def get_user_by_email(email: str, db: SessionDep) -> UserInDB | None:
+async def get_user_by_email(email: str, async_session: AsyncSession) -> UserInDB | None:
     """通过 Session 查询指定邮箱的用户（可返回未激活用户）"""
     statement = select(UserInDB).where(UserInDB.email == email)
-    return (await db.exec(statement)).first()
+    return (await async_session.exec(statement)).first()
 
 
-async def authenticate_user(username: str, password: str, db) -> UserInDB | None:
+async def authenticate_user(username: str, password: str, async_session: AsyncSession) -> UserInDB | None:
     """
     校验用户名/密码并返回用户对象。
     为了安全（防枚举），统一返回 False 而不是抛出异常。
     """
     # 1. 直接查库，如果用户不存在直接返回 False
-    user = await get_user(username, db)
+    user = await get_user(username, async_session)
     if not user:
         return None
 
@@ -71,11 +71,12 @@ async def authenticate_user(username: str, password: str, db) -> UserInDB | None
 
     return user
 
-
+# TODO:丢去作为任务来实现
 async def validate_orcid(orcid: str) -> bool:
     """
     校验用户ORCID。
-    存在：返回True；不存在或网络异常：返回False
+    存在:返回True;
+    不存在或网络异常:返回False;
     """
     client = AsyncClient(timeout=100)
     url = f"https://pub.orcid.org/v3.0/{orcid}/person"
@@ -88,17 +89,19 @@ async def validate_orcid(orcid: str) -> bool:
     except (HTTPStatusError, RequestError):  # Network Errors
         return False
 
+
 def validate_url(url: str) -> bool:
     """
     校验url是否合法。
-    合法：返回True；不合法：返回False
+    合法:返回True;不合法:返回False
     """
     p = urlparse(url)
     if p.scheme not in {'http', 'https'} or not p.netloc:
         return False
     return True
 
-async def validate_signup_info(user: UserCreate, db: SessionDep):
+
+async def validate_signup_info(user: UserCreate, async_session: AsyncSession):
     """
     校验用户注册信息是否合法（总校验逻辑）
     """
@@ -108,7 +111,7 @@ async def validate_signup_info(user: UserCreate, db: SessionDep):
         raise identity_not_allowed_exception
 
     # 2. 验证邮箱是否已被注册
-    existing_user = await get_user_by_email(user.email, db)
+    existing_user = await get_user_by_email(user.email, async_session)
     if existing_user:
         raise email_already_exists_exception
 
@@ -131,25 +134,11 @@ async def validate_signup_info(user: UserCreate, db: SessionDep):
         raise user_homepage_invalid_exception
 
 
-#########################
-# 依赖层，最顶层 API 逻辑
-#########################
-
-async def get_activate_user(username: str, db: SessionDep) -> UserInDB:
-    """获取已激活用户，不存在或未激活都会抛出异常"""
-    user = await get_user(username, db)
-
-    if user is None or not user.active:
-        raise user_not_active_exception
-
-    return user
-
-
-async def get_authenticated_user(username: str, password: str, db: SessionDep) -> UserInDB:
+async def get_authenticated_user(username: str, password: str, async_session: AsyncSession) -> UserInDB:
     """
     校验用户名和密码，获取认证通过的用户对象。
 
-    主要功能：
+    主要功能:
     调用 authenticate_user 进行校验，如果校验失败（返回 False)
     则直接抛出统一的凭证认证异常 (credentials_exception)。
 
@@ -164,14 +153,27 @@ async def get_authenticated_user(username: str, password: str, db: SessionDep) -
     Raises:
         credentials_exception: 当用户名/密码错误、用户不存在或未激活时抛出
     """
-    user = await authenticate_user(username, password, db)
+    user = await authenticate_user(username, password, async_session)
     if user is None:
         raise credentials_exception
     else:
         return user
 
+#########################
+# API层，最顶层 API 逻辑
+#########################
 
-async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], db: SessionDep):
+async def get_activate_user(username: str, async_session: AsyncSessionDep) -> UserInDB:
+    """获取已激活用户，不存在或未激活都会抛出异常"""
+    user = await get_user(username, async_session)
+
+    if user is None or not user.active:
+        raise user_not_active_exception
+
+    return user
+
+
+async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
     """解析并校验 JWT Token 返回当前登录用户"""
     try:
         payload = jwt.decode(
@@ -187,19 +189,19 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], db: Sessio
     except InvalidTokenError as exc:
         raise token_invalid_exception from exc
 
-    user = await get_activate_user(username, db)
+    user = await get_activate_user(username, async_session)
 
     return user
 
 
 async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-    db: SessionDep
+    async_session: AsyncSessionDep
     ) -> Token:
 
     """用户登录，返回 access token"""
     try:
-        user = await get_authenticated_user(form_data.username, form_data.password, db)
+        user = await get_authenticated_user(form_data.username, form_data.password, async_session)
 
         # Create JWT Token
         access_token_expires = timedelta(minutes=get_config().token.token_expire_minutes)
@@ -210,27 +212,26 @@ async def login(
 
     except Exception as e:
         logger.error(e)
-        # 此处可以添加自定义异常处理
         raise
 
 
-async def create_user(user: UserCreate, session: SessionDep) -> UserPublic:
+async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserPublic:
 
     """注册普通用户，自动校验验证码并设置默认身份"""
 
     # 校验基本的注册信息（包括邮箱唯一性）
-    await validate_signup_info(user, session)
+    await validate_signup_info(user, async_session)
 
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username,session)  # 检查是否已存在用户名相同的用户
+        user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
 
         if user_past is None:
             user_data = user.model_dump(exclude={'password'})
             user_data["identity"] = "user"  # 由API设置为普通用户
-            user = UserInDB(**user_data,hashed_password=hashed_password(user.password))
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
+            user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
+            async_session.add(user)
+            await async_session.commit()
+            await async_session.refresh(user)
         else:
             logger.error("cannot create user ,user already exists, username:%s", user.username)
             raise user_already_exists_exception
@@ -243,25 +244,25 @@ async def create_user(user: UserCreate, session: SessionDep) -> UserPublic:
 # 创建管理员用户的API函数，需要当前用户是管理员才能调用
 async def create_admin_user_api(user: UserCreate,
                                 current_admin: Annotated[UserInDB, Depends(token_authen)],
-                                session: SessionDep,) -> UserPublic:
-    """管理员接口：创建新的管理员账号"""
+                                async_session: AsyncSessionDep,) -> UserPublic:
+    """管理员接口:创建新的管理员账号"""
 
     # 校验基本的注册信息（包括邮箱唯一性）
-    await validate_signup_info(user, session)
+    await validate_signup_info(user, async_session)
 
     #  TOTP验证
     if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username, session)
+        user_past = await get_user(user.username, async_session)
 
         if user_past is None:
             # 排除password，显式设置identity为"admin"
             user_data = user.model_dump(exclude={'password'})
             user_data["identity"] = "admin"  # 由API设置身份为管理员
-            user = UserInDB(**user_data, hashed_password=hashed_password(user.password))
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-            await session.refresh(current_admin)
+            user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
+            async_session.add(user)
+            await async_session.commit()
+            await async_session.refresh(user)
+            await async_session.refresh(current_admin)
             logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
 
             return user # type:ignore
@@ -274,14 +275,15 @@ async def create_admin_user_api(user: UserCreate,
 async def update_user(
     user: UserUpdate,
     user_past: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
-):
+    async_session: AsyncSessionDep,
+)-> UserPublic:
     """
     更新当前用户信息，支持可选字段及密码变更
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
+
     # 如果修改的用户并非当前已登录用户（通过用户名判断），则抛出异常
-    if user_past.username != user.username:
+    if user_data["username"] is None or user_past.username != user.username:
         raise user_name_bad_exception
 
     # 处理密码更新
@@ -291,18 +293,18 @@ async def update_user(
 
     # 再更新除密码外剩下的用户信息
     user_past.sqlmodel_update(user_data)
-    session.add(user_past)
-    await session.commit()
+    async_session.add(user_past)
+    await async_session.commit()
 
-    return user
+    return user # type:ignore
 
 
 async def del_user(
-    user: Annotated[UserInDB, Depends(token_authen)], session: SessionDep
+    user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
 ):
     """删除当前登录用户"""
-    await session.delete(user)  # 删除当前用户
-    await session.commit()  # 提交数据库操作
+    await async_session.delete(user)  # 删除当前用户
+    await async_session.commit()  # 提交数据库操作
     return user
 
 
@@ -310,21 +312,18 @@ async def create_admin_user():
     """应用启动时检查并创建初始管理员用户，异步函数"""
     _config = get_config()
     admin_info = _config.admin_info
+    # admin_info 如果是 Pydantic/SQLModel 模型，通常有 model_dump()
+    admin_data = admin_info.model_dump()  # 如果这里报错，再改用 vars(admin_info) 并过滤字段
+
     random_serc = str(random.randint(10**7, 10**8 - 1))  # 随机创建8位初始密码
     user = UserInDB(
-        username=_config.server.name,
-        institution=admin_info.institution,
-        position=admin_info.position,
-        research_field=admin_info.research_field,
-        region=admin_info.region,
-        orcid=admin_info.orcid,
-        homepage=admin_info.homepage,
-        email=admin_info.email,
+        **admin_data,
         identity="admin",
         active=True,
         hashed_password=hashed_password(random_serc),
     )
-    session_gen = get_session()
+
+    session_gen = get_async_session()
     session = await anext(session_gen)
     try:
         user_past = await has_admin_user(session, user.username)
@@ -335,6 +334,16 @@ async def create_admin_user():
             logger.info(f"create admin user {user.username}, password {random_serc}")
         else:
             logger.warning(f"cannot create user,user already exists, username:{user.username}")
+
+    except IntegrityError as e:
+        logger.error(f"failed to create admin user\n"
+                     f"admin user info is not right, please check config file!\n {e}")
+        raise
+
+    except Exception as e:
+        logger.error(f"failed to create admin user: {e}")
+        raise
+
     finally:
         await session_gen.aclose()
 

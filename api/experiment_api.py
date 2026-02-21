@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends
 from sqlmodel import Session, select
-from database.db import SessionDep, get_sync_engine
+from database.db import AsyncSessionDep, get_sync_engine
 
 from api.user_api import token_authen
 from api.file_api_business import (
@@ -51,7 +51,7 @@ logger = get_logger("api.experiment_api")
 
 
 async def cleanup_failed_experiments(
-    session: SessionDep, ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES
+    session: AsyncSessionDep, ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES
 ) -> int:
     """
     清理过期的失败实验记录
@@ -298,7 +298,7 @@ EXPERIMENT_QUERY_MAP = {
 async def get_experiment_by_file_id_api(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: SessionDep,
+    session: AsyncSessionDep,
 ) -> ExperimentImzMLPublic:
     """根据源文件ID查询实验记录，根据文件的 experiment_type 字段定位对应实验表"""
     # 清理过期的失败实验记录

@@ -268,4 +268,5 @@ def get_logger(name="app"):
 
     if LOGGER_MANAGER is None:
         raise RuntimeError("LoggerManager is not initialized")
-    return LOGGER_MANAGER.get_logger(name)
+    else:
+        return LOGGER_MANAGER.get_logger(name)

@@ -25,11 +25,12 @@ class UserBase(SQLModel):
     position: str = Field(default="", max_length=user_config.max_position_length)
     research_field: str | None = Field(max_length=user_config.max_research_field_length)
     region: str | None = Field(max_length=user_config.max_region_length)
-    orcid: str | None = Field(max_length=user_config.max_orcid_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(max_length=user_config.max_homepage_length)
     active: bool = Field(default=True)
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
     email: str = Field(sa_column=Column(String(user_config.max_useremail_length), unique=True), description="用户邮箱")
+
 
 class UserInDB(UserBase, table=True):
     """
@@ -43,6 +44,7 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
+
 
 class UserCreate(UserBase):
     """新用户创建模型，包括邮箱、密码、验证码"""
