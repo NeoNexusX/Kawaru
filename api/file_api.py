@@ -77,15 +77,15 @@ async def preflight_create_file(
     
     功能:根据前端提供的元数据创建文件记录，但不写入用户 file_ids 与计数。
     时机:在实际文件上传之前调用
-    目的:提前验证、预分配文件ID、支持秒传（哈希复用）
+    目的:提前验证、预分配文件ID、支持秒传(哈希复用)
     
     流程:
     1. 清理过期的预检记录
-    2. 参数验证（存储类型、文件名、文件类型）
+    2. 参数验证(存储类型、文件名、文件类型)
     3. 用户配额检查
-    4. 重复文件检查（文件名、哈希）
-    5. 尝试复用已存在的相同哈希文件（秒传）
-    6. 如果无法复用，创建新的文件记录（预检状态）
+    4. 重复文件检查(文件名、哈希)
+    5. 尝试复用已存在的相同哈希文件(秒传)
+    6. 如果无法复用，创建新的文件记录(预检状态)
     
     注意:
     - 此时文件记录已创建，但用户的 file_ids 和统计信息尚未更新
@@ -94,6 +94,7 @@ async def preflight_create_file(
     """
     ensure_storage_dirs()
 
+    # 此部分要删除
     try:
         await cleanup_stale_preflights(session, current_user)
     except (OSError, IOError) as exc:
@@ -111,6 +112,7 @@ async def preflight_create_file(
         file_data.storage_type,
         file_data.size,
     )
+    # TODO:此部分往上要删除
 
     # 参数验证
     if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.experiment_type):
@@ -124,21 +126,17 @@ async def preflight_create_file(
         )
         raise invalid_request_parameters_exception
 
-    # 验证文件并尝试复用（配额检查、重复检查、哈希复用）
+    # 验证文件并尝试复用(配额检查、重复检查、哈希复用)
     reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
     if reused_file:
         # 不需要检查物理文件是否存在，直接提交事务后抛出复用异常
         await session.commit()
         await session.refresh(reused_file)
         await session.refresh(current_user)
-        logger.info(
-            "preflight reused existing file user=%s file_id=%s",
-            current_user.id,
-            reused_file.file_id,
-        )
+        logger.info(f"preflight reused existing file user={current_user.id} file_id={reused_file.file_id}")
         raise file_reused_exception
 
-    # 创建新的文件记录（预检状态，路径为空）
+    # 创建新的文件记录(预检状态，路径为空)
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
         **file_data_dict,
@@ -153,12 +151,8 @@ async def preflight_create_file(
     await session.commit()
     await session.refresh(file_record)
     await session.refresh(current_user)
-    logger.info(
-        "preflight created new file record user=%s file_id=%s filename=%s",
-        current_user.id,
-        file_record.file_id,
-        file_record.filename,
-    )
+    logger.info(f"preflight created new file record user={current_user.id} file_id={file_record.file_id} filename={file_record.filename}")
+
     return file_record # type: ignore
 
 
@@ -176,11 +170,11 @@ async def preflight_create_chunked_file(
 
     流程:
     1. 清理过期的预检记录
-    2. 参数验证（存储类型、文件名、文件类型、分片数量）
+    2. 参数验证(存储类型、文件名、文件类型、分片数量)
     3. 用户配额检查
-    4. 重复文件检查（文件名、哈希）
-    5. 尝试复用已存在的相同哈希文件（秒传）
-    6. 如果无法复用，创建新的文件记录（预检状态）
+    4. 重复文件检查(文件名、哈希)
+    5. 尝试复用已存在的相同哈希文件(秒传)
+    6. 如果无法复用，创建新的文件记录(预检状态)
 
     与简单上传的区别:
     - 需要验证 total_parts 参数
@@ -225,10 +219,10 @@ async def preflight_create_chunked_file(
         )
         raise invalid_request_parameters_exception
 
-    # 验证文件并尝试复用（配额检查、重复检查、哈希复用）
+    # 验证文件并尝试复用(配额检查、重复检查、哈希复用)
     reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
     if reused_file:
-        # 更新 total_parts（分片上传特有）
+        # 更新 total_parts(分片上传特有)
         reused_file.total_parts = file_data.total_parts
         session.add(reused_file)
 
@@ -236,15 +230,12 @@ async def preflight_create_chunked_file(
         await session.commit()
         await session.refresh(reused_file)
         await session.refresh(current_user)
-        logger.info(
-            "chunked preflight reused existing file user=%s file_id=%s parts=%s",
-            current_user.id,
-            reused_file.file_id,
-            file_data.total_parts,
-        )
+        logger.info(f"chunked preflight reused existing file user={current_user.id} "
+                    f"file_id={reused_file.file_id} "
+                    f"parts={file_data.total_parts}")
         raise file_reused_exception
 
-    # 创建新的文件记录（预检状态，路径为空）
+    # 创建新的文件记录(预检状态，路径为空)
     file_data_dict = file_data.model_dump()
     file_record = FileInDB(
         **file_data_dict,
@@ -260,13 +251,9 @@ async def preflight_create_chunked_file(
     await session.refresh(file_record)
     await session.refresh(current_user)
 
-    logger.info(
-        "chunked preflight created new record user=%s file_id=%s filename=%s parts=%s",
-        current_user.id,
-        file_record.file_id,
-        file_record.filename,
-        file_data.total_parts,
-    )
+    logger.info(f"chunked preflight created new record user={current_user.id} "
+                f"file_id={file_record.file_id} filename={file_record.filename} "
+                f"parts={file_data.total_parts}")
     return file_record # type: ignore
 
 
@@ -288,14 +275,14 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     - chunk: 分片文件内容
     
     流程:
-    1. 解析分片元数据（从 JSON 字符串）
+    1. 解析分片元数据(从 JSON 字符串)
     2. 根据 file_id 查询文件记录
     3. 验证分片编号范围
-    4. 检查分片是否已上传（防止重复）
+    4. 检查分片是否已上传(防止重复)
     5. 验证分片哈希和大小
     6. 保存分片到临时目录
     7. 创建分片记录
-    8. 尝试合并分片（如果所有分片都已上传）
+    8. 尝试合并分片(如果所有分片都已上传)
     9. 如果合并成功，更新用户统计信息并触发后台任务
     
     合并时机:
@@ -317,66 +304,44 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
     try:
         part_data_dict = json.loads(part_data_json)
         part_data = PartCreate(**part_data_dict)
+
     except Exception as exc:
         logger.error(
-            "invalid part_data user=%s error=%s",
-            current_user.id,
-            exc,
-        )
+            f"invalid part_data user={current_user.id} error={exc}")
         raise invalid_part_data_exception from exc
 
-    logger.info(
-        "chunk upload start user=%s file_hash=%s part=%s",
-        current_user.id,
-        part_data.file_hash,
-        part_data.part_number,
-    )
+    logger.info(f"chunk upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
 
     # 2. 根据 file_hash 查询文件记录
     file_record = (
         await session.exec(
-            select(FileInDB).where(FileInDB.hash_sha256 == part_data.file_hash)
-        )
-    ).first()
+            select(FileInDB)
+            .where(FileInDB.hash_sha256 == part_data.file_hash))
+            ).first()
     if not file_record:
         raise file_not_found_exception
 
     # 3. 验证分片编号范围:1 <= part_number <= total_parts
     assert part_data.part_number is not None and file_record.total_parts is not None
     if not 1 <= part_data.part_number <= file_record.total_parts:
-        logger.error(
-            "part_number out of range: %s not in [1, %s] file_id=%s user=%s",
-            part_data.part_number,
-            file_record.total_parts,
-            file_record.file_id,
-            current_user.id,
-        )
+        logger.error(f"part_number out of range:\n"
+                     f"{part_data.part_number} not in [1, {file_record.total_parts}] file_id={file_record.file_id} user={current_user.id}")
         raise part_number_out_of_range_exception
 
-    # 4. 检查分片是否已上传（防止重复）- 调用业务层
+    # 4. 检查分片是否已上传(防止重复)- 调用业务层
     assert file_record.file_id is not None and current_user.id is not None
     if await validate_chunk_metadata(session, file_record.file_id, part_data.part_number, current_user.id):
-        logger.warning(
-            "chunk already exists user=%s file_id=%s part=%s",
-            current_user.id,
-            file_record.file_id,
-            part_data.part_number,
-        )
+        logger.warning(f"chunk already exists user={current_user.id} file_id={file_record.file_id} part={part_data.part_number}")
         raise part_already_exists_exception
 
     # 5. 验证分片哈希和大小
-    chunk_hash, chunk_size = await compute_upload_file_metadata(chunk)
-    if chunk_hash != part_data.part_hash or chunk_size != part_data.part_size:
+    act_part_hash, act_part_size = await compute_upload_file_metadata(chunk)
+    if act_part_hash != part_data.part_hash or act_part_size != part_data.part_size:
         logger.error(
-            "chunk validation failed user=%s file_id=%s part=%s expected_hash=%s actual_hash=%s expected_size=%s actual_size=%s",
-            current_user.id,
-            file_record.file_id,
-            part_data.part_number,
-            part_data.part_hash,
-            chunk_hash,
-            part_data.part_size,
-            chunk_size,
-        )
+            f"chunk validation:\n"
+            f"failed user={current_user.id} file_id={file_record.file_id} part={part_data.part_number} \n"
+            f"expected_hash={part_data.part_hash} actual_hash={act_part_hash} \n"
+            f"expected_size={part_data.part_size} actual_size={act_part_size}")
         raise part_validation_failed_exception
 
     # 6. 保存分片到临时目录
@@ -413,13 +378,11 @@ async def upload_file_chunk( #todo 此函数有一个bug，是路径问题，可
         current_user.id,
         file_record.file_id,
         part_data.part_number,
-        chunk_size,
+        act_part_size,
     )
 
     try:
-        merge_success = await validate_and_merge_chunks(
-            session, file_record, current_user
-        )
+        merge_success = await validate_and_merge_chunks(session, file_record, current_user)
         if merge_success:
             # 合并成功，路径已在 merge_chunks_to_file 中更新，预检时已建立用户关联
             await session.commit()
@@ -534,13 +497,13 @@ async def upload_simple_file(
     
     功能:一次性接收完整文件，不做分片
     时机:在预检接口之后调用
-    适用场景:小文件上传（< 100MB）
+    适用场景:小文件上传(< 100MB)
     
     流程:
     1. 查询预检记录
-    2. 统一验证（存储类型、文件名、元数据、配额）
+    2. 统一验证(存储类型、文件名、元数据、配额)
     3. 保存文件到存储目录
-    4. 更新用户统计信息（file_ids、file_count、total_file_size）
+    4. 更新用户统计信息(file_ids、file_count、total_file_size)
     5. 如果是 ZIP 文件，触发后台任务提取实验文件
     
     后台任务:
@@ -564,7 +527,7 @@ async def upload_simple_file(
     if not pre_record:
         raise file_not_found_exception
 
-    # 统一验证（业务层）
+    # 统一验证(业务层)
     _, size = await validate_simple_upload(
         session, current_user, file,  pre_record
     )
@@ -586,7 +549,7 @@ async def upload_simple_file(
         await session.commit()
         raise file_persist_failed_exception from exc
 
-    # 更新文件记录的路径和大小（预检时已建立用户关联）
+    # 更新文件记录的路径和大小(预检时已建立用户关联)
     file_record = pre_record
     file_record.path = str(final_path)
     file_record.size = size
@@ -636,8 +599,8 @@ async def list_user_files(
     - 批量查询文件记录
     
     注意:
-    - 只返回用户拥有的文件（file_id 在 user.file_ids 中）
-    - 不包括预检记录（未完成上传的文件）
+    - 只返回用户拥有的文件(file_id 在 user.file_ids 中)
+    - 不包括预检记录(未完成上传的文件)
     """
     # 1. 快速返回:用户没有任何文件
     assert current_user.id is not None
@@ -649,7 +612,7 @@ async def list_user_files(
             user_id=current_user.id
         )
 
-    # 2. 批量查询文件记录（使用 IN 查询，效率高）
+    # 2. 批量查询文件记录(使用 IN 查询，效率高)
     statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
     all_results = (await session.exec(statement)).all()
 
@@ -678,16 +641,16 @@ async def delete_user_file(
     
     功能:删除当前用户的指定文件
     
-    删除策略（多用户共享文件）:
+    删除策略(多用户共享文件):
     1. 如果文件被多个用户共享:
        - 只解除当前用户与文件的关联
-       - 更新当前用户的统计信息（file_count、total_file_size）
+       - 更新当前用户的统计信息(file_count、total_file_size)
        - 从文件的 owners 列表中移除当前用户
        - 保留文件记录和物理文件
        - 返回状态:unlinked
     
     2. 如果文件只属于当前用户:
-       - 删除实验相关文件（如果有，如 imzML、ibd）
+       - 删除实验相关文件(如果有，如 imzML、ibd)
        - 删除文件物理文件
        - 删除所有分片记录和物理文件
        - 删除文件数据库记录
@@ -705,7 +668,7 @@ async def delete_user_file(
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
-    # 解除用户与文件的关联（业务层）
+    # 解除用户与文件的关联(业务层)
     has_other_owners = await unlink_user_from_file(session, current_user, file_record)
 
     if has_other_owners:
@@ -721,7 +684,7 @@ async def delete_user_file(
         return {"file_id": file_id, "status": "unlinked"}
 
     # 没有其他用户持有该文件，执行完全删除
-    # 删除实验相关文件（如果有）
+    # 删除实验相关文件(如果有)
     if file_record.experiment_type == "imzML":
         await delete_experiment_files(session, file_id)
 
@@ -747,13 +710,13 @@ async def get_download_file_metadata(
     时机:在实际下载文件之前调用
     
     流程:
-    1. 权限验证（用户是否拥有该文件）
-    2. 下载次数限制检查（非管理员用户）
-    3. 准备下载文件（处理实验文件ZIP打包）
-    4. 更新下载统计（文件下载次数、用户下载次数）
+    1. 权限验证(用户是否拥有该文件)
+    2. 下载次数限制检查(非管理员用户)
+    3. 准备下载文件(处理实验文件ZIP打包)
+    4. 更新下载统计(文件下载次数、用户下载次数)
     
     实验文件处理:
-    - 如果原始文件不存在，但实验文件（imzML、ibd）存在
+    - 如果原始文件不存在，但实验文件(imzML、ibd)存在
     - 动态创建 ZIP 包，包含 imzML 和 ibd 文件
     - ZIP 包保存在临时目录，供下载使用
     
@@ -785,10 +748,10 @@ async def get_download_file_metadata(
     if file_record.storage_type != "local":
         raise download_not_implemented_exception
 
-    # 准备下载文件（业务层处理）
+    # 准备下载文件(业务层处理)
     await prepare_download_file(session, file_record)
 
-    # 更新下载统计（业务层处理）
+    # 更新下载统计(业务层处理)
     await update_download_stats(session, file_record, current_user)
     await session.commit()
     await session.refresh(current_user)

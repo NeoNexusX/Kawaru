@@ -37,7 +37,7 @@ logger = get_logger("api.file_api_helper")
 
 def validate_file_metadata(filename: str) -> bool:
     """
-    验证文件元数据（文件名和类型）
+    验证文件元数据(文件名和类型)
 
     Args:
         filename: 文件名
@@ -95,7 +95,7 @@ async def build_zip_file(#todotodo
     compression: int | None = None,
 ) -> Path:
     """
-    创建ZIP文件（通用工具函数）
+    创建ZIP文件(通用工具函数)
 
     Args:
         files: 文件列表，每个元素是 (文件路径, ZIP中的文件名) 元组
@@ -135,9 +135,9 @@ async def merge_files_with_hash(
     合并多个文件并计算哈希
 
     Args:
-        source_files: 源文件列表（按顺序）
+        source_files: 源文件列表(按顺序)
         destination: 目标文件路径
-        expected_hash: 期望的哈希值（可选），如果提供则验证
+        expected_hash: 期望的哈希值(可选)，如果提供则验证
         buffer_size: 读取缓冲区大小
 
     Returns:
@@ -145,7 +145,7 @@ async def merge_files_with_hash(
 
     Raises:
         FileNotFoundError: 源文件不存在
-        ValueError: 哈希不匹配（如果提供了 expected_hash）
+        ValueError: 哈希不匹配(如果提供了 expected_hash)
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -206,8 +206,8 @@ def validate_filename(filename: str) -> bool:
     检查项：
     - 文件名非空
     - 长度不超过限制
-    - 不包含路径遍历攻击字符（../, ..\\ 等）
-    - 不包含危险字符（<, >, :, ", |, ?, *, 空字符）
+    - 不包含路径遍历攻击字符(../, ..\\ 等)
+    - 不包含危险字符(<, >, :, ", |, ?, *, 空字符)
     """
     if not filename or not filename.strip():
         return False
@@ -255,7 +255,7 @@ def validate_experiment_type(experiment_type: str) -> bool:
     校验实验类型是否在允许列表中
 
     Args:
-        experiment_type: 实验类型（如 imzML、raw 等）
+        experiment_type: 实验类型(如 imzML、raw 等)
 
     Returns:
         True 表示验证通过，False 表示验证失败
@@ -293,14 +293,13 @@ def prepare_temp_chunk_path(owner_id: int, file_hash: str, part_number: int) -> 
 
 async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, int]:
     """
-    计算上传文件的元数据（SHA256哈希和大小）
+    计算上传文件的元数据(SHA256哈希和大小)
 
     分片读取文件内容，避免一次性加载到内存
     读取完成后重置文件指针到开头，供后续写入使用
 
-    TODO: 后期应改为任务队列异步执行，避免在上传接口中计算导致响应变慢
-
     """
+    # TODO: 后期应改为任务队列异步执行，避免在上传接口中计算导致响应变慢
     sha256 = hashlib.sha256()
     size = 0
     await upload_file.seek(0)
@@ -322,6 +321,7 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     写入完成后关闭上传文件句柄
 
     """
+    #TODO: 理论上应该丢去异步任务队列执行，避免在上传接口中执行导致响应变慢
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
         while True:
@@ -342,7 +342,7 @@ def delete_local_file(path: str | Path) -> None:
     异常处理：不捕获，让异常传播到调用方
 
     Args:
-        path: 文件路径（字符串或 Path 对象）
+        path: 文件路径(字符串或 Path 对象)
     """
     # 验证路径不为空
     if not path:
@@ -382,7 +382,7 @@ def delete_file_by_storage(file_record) -> None:
     异常处理：不捕获，让异常传播到调用方
 
     Args:
-        file_record: 文件记录对象（FileInDB）
+        file_record: 文件记录对象(FileInDB)
 
     Raises:
         NotImplementedError: 不支持的存储类型
