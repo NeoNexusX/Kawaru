@@ -15,6 +15,8 @@ from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.file_api_helper import (
+    check_duplicate_filename,
+    check_user_duplicate_file_hash,
     delete_local_file,
     check_user_quota,
     validate_total_parts,
@@ -26,7 +28,6 @@ from api.file_api_helper import (
     delete_files_async,
 )
 from constants.file_constants import (
-    MAX_FILES_PER_USER,
     PREFLIGHT_TTL_MINUTES,
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -39,6 +40,7 @@ from exceptions import (
     user_file_limit_exception,
     file_content_missing_exception,
     invalid_request_parameters_exception,
+    file_not_found_exception,
 )
 from tools.logger import get_logger
 from models.file_models import FileInDB, PartInDB, now_local_timezone, FileCreate
@@ -52,16 +54,15 @@ if TYPE_CHECKING:
 logger = get_logger("api.file_api_business")
 
 
-async def get_experiment_by_file_id(
-    session: AsyncSession,
+async def get_imzml_experiment_by_file_id(
+    async_session: AsyncSession,
     file_id: int
 ) -> ExperimentImzMLInDB | None:
     """
-    根据文件ID查询实验记录
-
+    根据文件ID查询imzml实验记录
     """
     return (
-        await session.exec(
+        await async_session.exec(
             select(ExperimentImzMLInDB).where(
                 ExperimentImzMLInDB.source_file_id == file_id
             )
@@ -70,7 +71,7 @@ async def get_experiment_by_file_id(
 
 
 async def validate_chunk_metadata(
-    session: AsyncSession,
+    async_session: AsyncSession,
     file_id: int,
     part_number: int,
     owner_id: int,
@@ -88,7 +89,8 @@ async def validate_chunk_metadata(
             )
         ))
         # 返回布尔值
-    return (await session.exec(stmt)).one()
+    return (await async_session.exec(stmt)).one()
+
 
 def validate_upload_request(
     storage_type: str,
@@ -102,8 +104,8 @@ def validate_upload_request(
     Args:
         storage_type: 存储类型
         filename: 文件名
-        experiment_type: 实验类型（可选）
-        total_parts: 分片总数（可选,分片上传时需要）
+        experiment_type: 实验类型(可选)
+        total_parts: 分片总数(可选,分片上传时需要)
 
     Returns:
         True 表示验证通过,False 表示验证失败
@@ -116,11 +118,11 @@ def validate_upload_request(
     if not validate_file_metadata(filename):
         return False
 
-    # 3. 实验类型验证（如果提供）
+    # 3. 实验类型验证(如果提供)
     if experiment_type and not validate_experiment_type(experiment_type):
         return False
 
-    # 4. 分片数量验证（如果需要）
+    # 4. 分片数量验证(如果需要)
     if total_parts is not None and not validate_total_parts(total_parts):
         return False
 
@@ -146,10 +148,10 @@ async def prepare_download_file(
     if path and path.exists():
         return path
 
-    # 处理实验文件（imzML）
+    # 处理实验文件(imzML)
     if file_record.experiment_type == "imzML":
         assert file_record.file_id is not None
-        experiment = await get_experiment_by_file_id(session, file_record.file_id)
+        experiment = await get_imzml_experiment_by_file_id(session, file_record.file_id)
 
         if not experiment or experiment.status != ExperimentStatus.COMPLETED:
             logger.warning(
@@ -164,7 +166,7 @@ async def prepare_download_file(
             logger.warning("experiment files missing file_id=%s", file_record.file_id)
             raise file_content_missing_exception
 
-        # 创建 ZIP 包（存放在本地存储根目录下）
+        # 创建 ZIP 包(存放在本地存储根目录下)
         zip_filename = file_record.filename
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         zip_path = LOCAL_STORAGE_ROOT / zip_filename
@@ -216,8 +218,8 @@ async def unlink_user_from_file(
     解除用户与文件的关联
 
     Returns:
-        True 表示文件还有其他用户持有（只解除关联）
-        False 表示文件没有其他用户持有（需要完全删除）
+        True 表示文件还有其他用户持有(只解除关联)
+        False 表示文件没有其他用户持有(需要完全删除)
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None
@@ -242,7 +244,7 @@ async def unlink_user_from_file(
     return bool(owner_counts)
 
 
-async def assert_file_owner(session: AsyncSession, file_record: FileInDB, current_user: UserInDB) -> bool:
+async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, current_user: UserInDB) -> bool:
     """
     校验用户是否有权限操作该文件
 
@@ -252,8 +254,8 @@ async def assert_file_owner(session: AsyncSession, file_record: FileInDB, curren
        - UserFileLink 含有该用户与该文件的链接
 
     Args:
-        file_record: 文件记录对象（FileInDB）
-        current_user: 当前用户对象（UserInDB）
+        file_record: 文件记录对象(FileInDB)
+        current_user: 当前用户对象(UserInDB)
 
     Returns:
         True 表示有权限,False 表示无权限
@@ -263,7 +265,7 @@ async def assert_file_owner(session: AsyncSession, file_record: FileInDB, curren
         return True
 
     # 校验该文件属于该用户
-    is_owner = (await session.exec(
+    is_owner = (await async_session.exec(
         select(exists().where(
             and_(UserFileLink.user_id == current_user.id,
                  UserFileLink.file_id == file_record.file_id)))
@@ -272,9 +274,7 @@ async def assert_file_owner(session: AsyncSession, file_record: FileInDB, curren
     if is_owner:
         return True
 
-    logger.warning(
-        "permission denied user=%s file_id=%s", current_user.id, file_record.file_id
-    )
+    logger.warning("permission denied user=%s file_id=%s", current_user.id, file_record.file_id)
     return False
 
 
@@ -291,7 +291,7 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     """
     try:
-        # 只校验文件元数据（哈希和大小）
+        # 只校验文件元数据(哈希和大小)
         hash_sha256, size = await compute_upload_file_metadata(file)
         if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
             logger.error(
@@ -310,7 +310,6 @@ async def validate_simple_upload(
         await session.commit()
         await session.refresh(current_user)
         raise
-
 
 
 async def append_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> UserFileLink | None:
@@ -357,7 +356,7 @@ async def link_file_to_user(
     1. 添加文件和用户的 UserFileLinker 关联
     2. 增加用户的文件计数
     3. 增加用户的总存储空间
-    4. 将用户对象添加到会话（准备提交）
+    4. 将用户对象添加到会话(准备提交)
 
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
@@ -377,7 +376,7 @@ async def link_file_to_user(
 
 
 async def validate_and_try_reuse_file(
-    session: AsyncSession,
+    async_session: AsyncSession,
     current_user: UserInDB,
     file_data: FileCreate,
 ) -> FileInDB | None:
@@ -386,35 +385,35 @@ async def validate_and_try_reuse_file(
 
     这是文件上传的完整预检流程,包含验证和优化两部分：
 
-    验证部分（必须通过,否则抛出异常）：
+    验证部分(必须通过,否则抛出异常)：
     1. 用户配额检查 - 确保用户有足够的存储空间
     2. 重复文件名检查 - 确保用户没有同名文件
     3. 重复文件哈希检查 - 确保用户没有重复上传相同内容
 
     Raises:
-        user_file_limit_exception: 用户配额不足（文件数量或存储空间）
+        user_file_limit_exception: 用户配额不足(文件数量或存储空间)
         duplicate_file_exception: 文件名重复或用户已拥有该文件
     """
 
-    # 1. 用户配额检查（工具层）
+    # 1. 用户配额检查(工具层)
     if not check_user_quota(current_user, file_data.size):
         raise user_file_limit_exception
 
-    # 2. 重复文件名检查（业务层）
-    if await check_duplicate_filename(session, current_user, file_data.filename):
+    # 2. 重复文件名检查(业务层)
+    if await check_duplicate_filename(async_session, current_user, file_data.filename):
         raise duplicate_file_exception
 
-    # 3. 重复文件哈希检查（业务层）
+    # 3. 重复文件哈希检查(业务层)
     assert file_data.hash_sha256 is not None
-    if await check_user_duplicate_file_hash(session, current_user, file_data.hash_sha256):
+    if await check_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
         raise duplicate_file_exception
 
-    # 4. 尝试复用相同哈希的文件（业务层）
-    reused_file = await try_reuse_file_by_hash(session, current_user, file_data.hash_sha256)
+    # 4. 尝试复用相同哈希的文件(业务层)
+    reused_file = await try_reuse_file_by_hash(async_session, current_user, file_data.hash_sha256)
     return reused_file
 
 
-async def remove_file_link(session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
+async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
     """
     删除文件时调用,解除用户与文件的关联关系
 
@@ -424,7 +423,7 @@ async def remove_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
 
-    user_file_linkers = (await session.exec(
+    user_file_linkers = (await async_session.exec(
         select(UserFileLink).where(
             and_(UserFileLink.user_id==user.id,
                  UserFileLink.file_id==file.file_id)
@@ -432,16 +431,16 @@ async def remove_file_link(session: AsyncSession, user: UserInDB, file: FileInDB
     )).all()
 
     for linker in user_file_linkers:
-        await session.delete(linker)
-    session.expire(user, ["files"])
-    session.expire(file, ["owners"])
+        await async_session.delete(linker)
+    async_session.expire(user, ["files"])
+    async_session.expire(file, ["owners"])
 
 
-async def get_file_record(
+async def get_file_record_by_id(
     file_id: int,
-    session: AsyncSession,
+    async_session: AsyncSession,
     load_parts: bool = False
-) -> FileInDB | None:
+) -> FileInDB:
     """
     根据文件ID查询文件记录
 
@@ -450,12 +449,20 @@ async def get_file_record(
 
     Returns:
         文件记录对象,不存在则返回 None
+    Raises:
+        file_not_found_exception: 文件记录不存在
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
     if load_parts:
         statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
-    file_record = (await session.exec(statement)).first()
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found file_id=%s", file_id)
+        raise file_not_found_exception
+
     return file_record
+
 
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int|None]:
     """获取用户所有文件 ID,不加载文件对象"""
@@ -486,7 +493,7 @@ async def safe_cleanup_preflight_record(
             pre_record.file_id,
         )
     else:
-        # 没有其他用户持有,删除记录（包括物理文件和分片）
+        # 没有其他用户持有,删除记录(包括物理文件和分片)
         assert pre_record.file_id is not None
         await delete_file_and_parts(session, pre_record.file_id, current_user)
         logger.debug(
@@ -502,9 +509,9 @@ async def cleanup_stale_preflights(
     """
     清理当前用户过期且未完成的预检记录
 
-    清理条件（需同时满足）：
+    清理条件(需同时满足)：
     1. 记录 owners 中包含当前用户
-    2. 文件物理路径不存在（说明为预检记录,未完成上传）
+    2. 文件物理路径不存在(说明为预检记录,未完成上传)
     3. file_id 不在用户 file_ids 中
     4. uploaded_at 超过 TTL
 
@@ -528,7 +535,7 @@ async def cleanup_stale_preflights(
 
 
     for rec in records:
-        # 只要 path 不为空字符串,直接跳过（不再检查物理文件是否存在）
+        # 只要 path 不为空字符串,直接跳过(不再检查物理文件是否存在)
         if rec.path:
             continue
 
@@ -557,7 +564,7 @@ async def validate_and_merge_chunks(
 
     合并流程：
     1. 查询该文件的所有分片记录
-    2. 检查分片完整性（数量和序列）
+    2. 检查分片完整性(数量和序列)
     3. 如果分片不完整,返回 False 等待更多分片
     4. 如果所有分片已上传,执行分片合并
     5. 合并成功后清理分片临时文件
@@ -591,7 +598,7 @@ async def validate_and_merge_chunks(
         logger.error("total_parts not set for file_id=%s", file_record.file_id)
         return False
 
-    # 2. 检查分片完整性（数量和序列）
+    # 2. 检查分片完整性(数量和序列)
     uploaded_parts = sorted([chunk.part_number for chunk in chunks])
     expected_parts = list(range(1, expected_total_parts + 1))
 
@@ -606,7 +613,7 @@ async def validate_and_merge_chunks(
     if len(uploaded_parts) < expected_total_parts:
         return False
 
-    # 分片序列不连续（这是正常的中间状态,等待缺失的分片）
+    # 分片序列不连续(这是正常的中间状态,等待缺失的分片)
     if uploaded_parts != expected_parts:
         logger.warning(f"chunk sequence incomplete file_id={file_record.file_id} uploaded={uploaded_parts} expected={expected_parts}")
         return False
@@ -623,7 +630,7 @@ async def validate_and_merge_chunks(
 
 
 async def merge_chunks_to_file(
-    session: AsyncSession,
+    async_session: AsyncSession,
     file_record: FileInDB,
     chunks: list[PartInDB],
     current_user: UserInDB,
@@ -634,7 +641,7 @@ async def merge_chunks_to_file(
     使用 helper 层的 merge_files_with_hash 函数进行合并和哈希验证
     如果哈希不匹配,删除错误文件和所有相关记录
 
-    事务管理：不 commit,由调用方（API 层）统一管理
+    事务管理：不 commit,由调用方(API 层)统一管理
     """
     final_path = Path(file_record.path)
     chunk_paths = [Path(chunk.temp_path) for chunk in chunks]
@@ -643,96 +650,23 @@ async def merge_chunks_to_file(
 
     try:
         # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_with_hash(chunk_paths,
-                                    final_path,
-                                    file_record.hash_sha256)
+        await merge_files_with_hash(chunk_paths,final_path,file_record.hash_sha256)
+
     except FileNotFoundError as exc:
         # 分片文件丢失
         logger.error(f"chunk file missing file_id={file_record.file_id} error={exc}")
         delete_local_file(final_path)
-        await delete_file_and_parts(session, file_record.file_id, current_user)
+        await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise chunk_file_missing_exception from exc
 
     except ValueError as exc:
         # 哈希不匹配
         logger.error(f"merged file hash mismatch file_id={file_record.file_id} error={exc}")
-        await delete_file_and_parts(session, file_record.file_id, current_user)
+        await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise merged_file_hash_mismatch_exception from exc
 
     # 合并成功,清理分片临时文件和记录
-    await delete_parts_by_file_id(session, file_record.file_id)
-
-#TODO：转移到 helper 层
-async def check_duplicate_filename(
-    async_session: AsyncSession, user: UserInDB, filename: str
-) -> bool:
-    """
-    检查用户是否已有同名文件
-
-    事务管理：只读查询,无需 commit
-    异常处理：不抛出异常,返回检查结果
-
-    Returns:
-        True 表示存在重复文件名,False 表示不重复
-    """
-
-    # 通过 SQL 的 exists() 直接判断数据库是否存在重复文件名文件
-    stmt = select(
-        exists().where(
-            and_(
-                UserFileLink.user_id == user.id,
-                FileInDB.file_id == UserFileLink.file_id,
-                FileInDB.filename == filename,
-            )
-        )
-    )
-
-    has_duplicate_file = (await async_session.exec(stmt)).one()
-
-    if has_duplicate_file:
-        logger.warning(
-            "duplicate filename found user=%s filename=%s",
-            user.id,
-            filename,
-        )
-        return True
-
-    return False
-
-#TODO：转移到 helper 层
-async def check_user_duplicate_file_hash(
-    session: AsyncSession, user: UserInDB, hash_sha256: str
-) -> bool:
-    """
-    检查用户是否已拥有该哈希的文件（只针对本用户）
-
-    Returns:
-        True 表示用户已拥有该文件,False 表示未拥有
-    """
-
-    # 通过预加载获取当前用户文件列表中和传入哈希相同的文件列表
-    # 直接 exist 子句高效获取布尔值
-    has_same_hash_file = (await session.exec(
-        select(
-            exists().where(
-                and_(
-                    (UserFileLink.user_id == user.id),
-                    (UserFileLink.file_id == FileInDB.file_id),
-                    (FileInDB.hash_sha256 == hash_sha256)
-                )
-            )
-        )
-    )).one()
-
-    if has_same_hash_file:
-        logger.warning(
-            "duplicate file hash found user=%s hash=%s",
-            user.id,
-            hash_sha256,
-        )
-        return True
-
-    return False
+    await delete_parts_by_file_id(async_session, file_record.file_id)
 
 
 async def try_reuse_file_by_hash(
@@ -747,8 +681,8 @@ async def try_reuse_file_by_hash(
 
     处理逻辑：
     1. 查询相同哈希的文件记录
-    2. 跳过用户已拥有的文件（调用方应该先检查）
-    3. 如果文件不存在,将用户添加到 owners 但返回记录（等待上传）
+    2. 跳过用户已拥有的文件(调用方应该先检查)
+    3. 如果文件不存在,将用户添加到 owners 但返回记录(等待上传)
 
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
@@ -773,7 +707,7 @@ async def try_reuse_file_by_hash(
     if not same_hash_file:
         return None
 
-    # 直接复用数据库中相同哈希的记录（不检查物理路径是否存在）
+    # 直接复用数据库中相同哈希的记录(不检查物理路径是否存在)
     assert same_hash_file.file_id is not None
     await link_file_to_user(async_session, user, same_hash_file, same_hash_file.size or 0)
     logger.info(f"reused existing file record user={user.id} file_id={same_hash_file.file_id} hash={hash_sha256}")
@@ -786,11 +720,11 @@ async def delete_parts_by_file_id(
     file_id: int,
 ) -> int:
     """
-    根据 file_id 删除分片记录（物理文件 + 数据库记录）
+    根据 file_id 删除分片记录(物理文件 + 数据库记录)
 
     删除流程：
     1. 查询该文件的所有分片记录
-    2. 删除每个分片的物理文件（调用 delete_local_file）
+    2. 删除每个分片的物理文件(调用 delete_local_file)
     3. 删除数据库中的分片记录
 
     Returns:
@@ -846,27 +780,24 @@ async def delete_file_and_parts(
     current_user: UserInDB,
 ) -> None:
     """
-    根据 file_id 删除文件记录及其所有分片（物理文件 + 数据库记录）
+    根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
 
     删除流程：
     1. 查询文件记录,同时预加载对应的分片记录
-    2. 删除分片物理文件（数据库记录会在删除文件时自动级联删除）
+    2. 删除分片物理文件(数据库记录会在删除文件时自动级联删除)
     3. 删除文件的物理文件
     4. 从所有关联用户的 file_ids 中移除该文件ID
-    5. 更新所有关联用户的统计信息（file_count、total_file_size）
-    6. 删除文件数据库记录（数据库会自动级联删除分片记录）
+    5. 更新所有关联用户的统计信息(file_count、total_file_size)
+    6. 删除文件数据库记录(数据库会自动级联删除分片记录)
     Raises:
         ValueError: 文件不存在
         PermissionError: 用户无权限删除该文件
         OSError: 物理文件删除失败时
     """
     # 1. 查询文件记录,同时预加载对应的分片记录
-    file_record = await get_file_record(file_id, session, load_parts=True)
-    if not file_record:
-        logger.error("file not found file_id=%s", file_id)
-        raise ValueError(f"File not found: file_id={file_id}")
+    file_record = await get_file_record_by_id(file_id, session, load_parts=True)
 
-    # 2. 删除分片物理文件（数据库记录会在删除文件记录时自动级联删除）
+    # 2. 删除分片物理文件(数据库记录会在删除文件记录时自动级联删除)
     deleted_parts_count = 0
     for part in file_record.parts:
         delete_local_file(part.temp_path)
@@ -885,7 +816,7 @@ async def delete_file_and_parts(
         file_id
     )
 
-    # 5. 删除文件数据库记录（数据库会自动级联删除分片记录）
+    # 5. 删除文件数据库记录(数据库会自动级联删除分片记录)
     await session.delete(file_record)
 
     logger.info(
@@ -900,21 +831,21 @@ async def delete_experiment_files(
     file_id: int,
 ) -> None:
     """
-    删除与文件关联的实验文件（imzML、ibd 等）及数据库记录
+    删除与文件关联的实验文件(imzML、ibd 等)及数据库记录
     
     用于用户主动删除文件时,完整删除实验相关的所有内容
 
     处理逻辑：
     1. 查询与 source_file_id 关联的实验记录
-    2. 删除实验相关的物理文件（imzml_path、ibd_path）
-    3. 删除实验目录（如果为空）
+    2. 删除实验相关的物理文件(imzml_path、ibd_path)
+    3. 删除实验目录(如果为空)
     4. 删除实验数据库记录
 
     Raises:
         OSError: 物理文件删除失败时
     """
     # 查询 imzML 实验记录
-    experiment = await get_experiment_by_file_id(session, file_id)
+    experiment = await get_imzml_experiment_by_file_id(session, file_id)
 
     if not experiment:
         logger.debug("no experiment found for file_id=%s", file_id)
@@ -932,7 +863,7 @@ async def delete_experiment_files(
         deleted_count = await delete_files_async(files_to_delete)
         logger.info("deleted %s experiment files for file_id=%s", deleted_count, file_id)
 
-    # 删除实验目录（如果为空）
+    # 删除实验目录(如果为空)
     if experiment.imzml_path:
         experiment_dir = Path(experiment.imzml_path).parent
 

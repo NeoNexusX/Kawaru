@@ -21,19 +21,19 @@ sample_config = config.sample_info
 def now_local_timezone() -> datetime:
     """
     返回当前UTC时间(无时区信息)统一使用格林威治时间(UTC)
-    所有时间戳都应该是UTC时间，不做时区转换
+    所有时间戳都应该是UTC时间,不做时区转换
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class FileBase(SQLModel):
-    """公共字段，供数据库与返回模型复用"""
+    """公共字段,供数据库与返回模型复用"""
 
     filename: str = Field(max_length=storage_config.max_filename_length)
     file_type: str = Field(default="", max_length=storage_config.max_file_type_length)
-    # 【实验类型字段】用于定位对应的实验表(如 imzML/raw 等)，由前端上传时指定
+    # 【实验类型字段】用于定位对应的实验表(如 imzML/raw 等),由前端上传时指定
     experiment_type: str = Field(default="",
-                                 description="实验类型(imzml/raw等)，用于定位实验表",
+                                 description="实验类型(imzml/raw等),用于定位实验表",
                                  max_length=sample_config.max_experiment_type_length,)
     size: int = Field(default=0)
     storage_type: str = Field(default="local", max_length=64)
@@ -71,7 +71,7 @@ class PartBase(SQLModel):
 
 
 class PartCreate(PartBase):
-    """上传单个分片时的请求模型，所有字段都从 PartBase 继承"""
+    """上传单个分片时的请求模型,所有字段都从 PartBase 继承"""
     pass # pylint: disable=unnecessary-pass
 
 
@@ -108,18 +108,18 @@ class FileInDB(FileBase, table=True):
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
 
-    # 与 PartInDB 的一对多关系，配置级联删除
+    # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(
         back_populates="file",
         sa_relationship_kwargs={
             "cascade": "all, delete-orphan",  # ORM层：删除父记录时自动删除子记录 这个可以不需要
-            "passive_deletes": True  # ORM层：让数据库处理级联删除，避免ORM额外查询
+            "passive_deletes": True  # ORM层：让数据库处理级联删除,避免ORM额外查询
         }
     )
 
 
 class FileStreamingResponse(StreamingResponse):  # 是响应类模型 不能使用依赖注入
-    """文件流式响应，继承自 StreamingResponse，使用 FileBase 的字段"""
+    """文件流式响应,继承自 StreamingResponse,使用 FileBase 的字段"""
 
     def __init__(
         self,
@@ -172,7 +172,7 @@ class PartInDB(PartBase, table=True):
     temp_path: str = Field(max_length=getattr(storage_config, "max_path_length", 128), description="临时存储路径")
     owner_id: int = Field(index=True, description="分片所属用户ID")
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)
-    # 外键关联 FileInDB，数据库层面配置级联删除
+    # 外键关联 FileInDB,数据库层面配置级联删除
     file_id: int = Field(
         sa_column=Column(
             Integer,

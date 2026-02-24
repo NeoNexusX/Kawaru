@@ -12,7 +12,11 @@ from pathlib import Path
 
 import aiofiles
 from fastapi import UploadFile
+from sqlmodel import and_, exists, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from api.file_api_business import logger
+from models.file_models import FileInDB,UserFileLink
 from models.user_models import UserInDB
 from constants.file_constants import (
     STORAGE_ROOT,
@@ -29,7 +33,6 @@ from constants.file_constants import (
     MAX_CHUNKS_PER_UPLOAD,
 )
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
-
 from tools.logger import get_logger
 
 logger = get_logger("api.file_api_helper")
@@ -268,6 +271,7 @@ def validate_experiment_type(experiment_type: str) -> bool:
 
     return True
 
+
 def prepare_local_storage_path(filename: str) -> Path:
     """
     为简单上传准备最终保存路径
@@ -337,7 +341,7 @@ def delete_local_file(path: str | Path) -> None:
     删除本地文件
 
     同步操作，因为文件删除只是删除元数据
-    使用 missing_ok=True，文件不存在时不会抛出异常
+    使用 missing_ok=True,文件不存在时不会抛出异常
 
     异常处理：不捕获，让异常传播到调用方
 
@@ -357,7 +361,7 @@ def delete_local_file(path: str | Path) -> None:
     path_str = str(path).strip()
 
     # 验证路径不是特殊值
-    if not path_str or path_str in ('.', '..', '/', '\\'):
+    if not path_str or any(x in path_str for x in ('..', '/', '\\')):
         logger.warning("invalid path for deletion: %r, skipping", path_str)
         return
 
@@ -373,9 +377,10 @@ def delete_local_file(path: str | Path) -> None:
     path_obj.unlink(missing_ok=True)
 
 
+#TODO:替换为 delete_file_by_storage，支持分布式存储删除
 def delete_file_by_storage(file_record) -> None:
     """
-    根据存储类型删除文件 #TODO 后面再调用
+    根据存储类型删除文件
 
     目前仅支持 local 存储类型，分布式存储待实现
 
@@ -439,3 +444,75 @@ def validate_total_parts(total_parts: int) -> bool:
         True 表示分片数量合法，False 表示不合法
     """
     return 0 < total_parts <= MAX_CHUNKS_PER_UPLOAD
+
+
+async def check_duplicate_filename(
+    async_session: AsyncSession, user: UserInDB, filename: str
+) -> bool:
+    """
+    检查用户是否已有同名文件
+
+    事务管理：只读查询,无需 commit
+    异常处理：不抛出异常,返回检查结果
+
+    Returns:
+        True 表示存在重复文件名,False 表示不重复
+    """
+
+    # 通过 SQL 的 exists() 直接判断数据库是否存在重复文件名文件
+    stmt = select(
+        exists().where(
+            and_(
+                UserFileLink.user_id == user.id,
+                FileInDB.file_id == UserFileLink.file_id,
+                FileInDB.filename == filename,
+            )
+        )
+    )
+
+    has_duplicate_file = (await async_session.exec(stmt)).one()
+
+    if has_duplicate_file:
+        logger.warning(
+            "duplicate filename found user=%s filename=%s",
+            user.id,
+            filename,
+        )
+        return True
+
+    return False
+
+
+async def check_user_duplicate_file_hash(
+    session: AsyncSession, user: UserInDB, hash_sha256: str
+) -> bool:
+    """
+    检查用户是否已拥有该哈希的文件(只针对本用户)
+
+    Returns:
+        True 表示用户已拥有该文件,False 表示未拥有
+    """
+
+    # 通过预加载获取当前用户文件列表中和传入哈希相同的文件列表
+    # 直接 exist 子句高效获取布尔值
+    has_same_hash_file = (await session.exec(
+        select(
+            exists().where(
+                and_(
+                    (UserFileLink.user_id == user.id),
+                    (UserFileLink.file_id == FileInDB.file_id),
+                    (FileInDB.hash_sha256 == hash_sha256)
+                )
+            )
+        )
+    )).one()
+
+    if has_same_hash_file:
+        logger.warning(
+            "duplicate file hash found user=%s hash=%s",
+            user.id,
+            hash_sha256,
+        )
+        return True
+
+    return False
