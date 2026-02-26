@@ -4,7 +4,7 @@ from models.file_models import FilePublic, ChunkedUploadStatus
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
-    ChunkedPreflightDep, ChunkUploadDep, ChunkedStatusDep
+    ChunkUploadDep, ChunkedStatusDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -42,12 +42,6 @@ async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数
 async def delete_file(result: DeleteFileDep):
     """删除文件"""
     return result
-
-
-@file_router.post("/chunked/preflight", response_model=FilePublic)
-async def preflight_chunked_file(file_record: ChunkedPreflightDep):
-    """分片上传预检"""
-    return file_record
 
 
 @file_router.post("/chunked/upload", response_model=PartPublic)  # 分片上传

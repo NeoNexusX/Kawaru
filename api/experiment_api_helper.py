@@ -86,7 +86,7 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tup
         if not validate_imzml_files(imzml_path, ibd_path):
             logger.error("imzML file validation failed")
             raise AssertionError("Invalid imzML or ibd file")
-    #todo: 此处需要测试
+
     except Exception as e:
         logger.error("invalid zip file: %s", e)
         shutil.rmtree(target_dir, ignore_errors=True)

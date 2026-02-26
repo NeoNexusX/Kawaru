@@ -107,11 +107,6 @@ invalid_request_parameters_exception = HTTPException(
     detail=format_exception_detail("invalid request parameters")
 )
 
-# 文件已复用异常（其他用户已上传相同文件）
-file_reused_exception = HTTPException(
-    status_code=status.HTTP_200_OK,
-    detail=format_exception_detail("其他用户已经上传该文件，已自动复用，无需重复上传")
-)
 
 __all__ = [
     "invalid_user_for_file_list_sync_exception",
@@ -131,5 +126,4 @@ __all__ = [
     "chunk_file_missing_exception",
     "chunk_merge_failed_exception",
     "invalid_request_parameters_exception",
-    "file_reused_exception",
 ]

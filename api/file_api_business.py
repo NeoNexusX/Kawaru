@@ -1,7 +1,7 @@
 #########################
 # File API Business - 业务逻辑层
-# 职责：业务逻辑处理,数据库操作,但不直接暴露API
-# 包含：用户文件关联管理、文件记录查询、权限校验、清理逻辑、分片合并
+# 职责:业务逻辑处理,数据库操作,但不直接暴露API
+# 包含:用户文件关联管理、文件记录查询、权限校验、清理逻辑、分片合并
 #########################
 from __future__ import annotations
 
@@ -15,35 +15,26 @@ from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.file_api_helper import (
-    check_duplicate_filename,
-    check_user_duplicate_file_hash,
     delete_local_file,
-    check_user_quota,
-    validate_total_parts,
     compute_upload_file_metadata,
-    validate_file_metadata,
-    validate_experiment_type,
     build_zip_file,
     merge_files_with_hash,
     delete_files_async,
 )
 from constants.file_constants import (
     PREFLIGHT_TTL_MINUTES,
-    ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
 )
 from exceptions import (
     chunk_file_missing_exception,
-    duplicate_file_exception,
     invalid_user_for_file_list_sync_exception,
     merged_file_hash_mismatch_exception,
-    user_file_limit_exception,
     file_content_missing_exception,
     invalid_request_parameters_exception,
     file_not_found_exception,
 )
 from tools.logger import get_logger
-from models.file_models import FileInDB, PartInDB, now_local_timezone, FileCreate
+from models.file_models import FileInDB, PartInDB, now_local_timezone
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
@@ -92,43 +83,6 @@ async def validate_chunk_metadata(
     return (await async_session.exec(stmt)).one()
 
 
-def validate_upload_request(
-    storage_type: str,
-    filename: str,
-    experiment_type: str = "",
-    total_parts: int | None = None
-) -> bool:
-    """
-    统一验证上传请求参数
-
-    Args:
-        storage_type: 存储类型
-        filename: 文件名
-        experiment_type: 实验类型(可选)
-        total_parts: 分片总数(可选,分片上传时需要)
-
-    Returns:
-        True 表示验证通过,False 表示验证失败
-    """
-    # 1. 存储类型验证
-    if storage_type not in ALLOWED_STORAGE_TYPES:
-        return False
-
-    # 2. 文件名和类型验证
-    if not validate_file_metadata(filename):
-        return False
-
-    # 3. 实验类型验证(如果提供)
-    if experiment_type and not validate_experiment_type(experiment_type):
-        return False
-
-    # 4. 分片数量验证(如果需要)
-    if total_parts is not None and not validate_total_parts(total_parts):
-        return False
-
-    return True
-
-
 async def prepare_download_file(
     session: AsyncSession,
     file_record: FileInDB,
@@ -171,7 +125,7 @@ async def prepare_download_file(
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
-        # 准备文件列表：(文件路径, ZIP中的文件名)
+        # 准备文件列表:(文件路径, ZIP中的文件名)
         files_to_zip = [
             (imzml_path, imzml_path.name),
             (ibd_path, ibd_path.name),
@@ -248,9 +202,9 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     """
     校验用户是否有权限操作该文件
 
-    权限判断逻辑：
+    权限判断逻辑:
     1. 管理员拥有所有文件的权限
-    2. 普通用户需要满足：
+    2. 普通用户需要满足:
        - UserFileLink 含有该用户与该文件的链接
 
     Args:
@@ -352,7 +306,7 @@ async def link_file_to_user(
     """
     将文件关联到用户,并更新用户的文件统计信息
 
-    完整的文件关联流程：
+    完整的文件关联流程:
     1. 添加文件和用户的 UserFileLinker 关联
     2. 增加用户的文件计数
     3. 增加用户的总存储空间
@@ -373,44 +327,6 @@ async def link_file_to_user(
     # 3. 将用户对象和链接器对象添加到会话
     async_session.add(new_linker)
     async_session.add(user)
-
-
-async def validate_and_try_reuse_file(
-    async_session: AsyncSession,
-    current_user: UserInDB,
-    file_data: FileCreate,
-) -> FileInDB | None:
-    """
-    【文件上传预检】验证上传条件并尝试秒传优化
-
-    这是文件上传的完整预检流程,包含验证和优化两部分：
-
-    验证部分(必须通过,否则抛出异常)：
-    1. 用户配额检查 - 确保用户有足够的存储空间
-    2. 重复文件名检查 - 确保用户没有同名文件
-    3. 重复文件哈希检查 - 确保用户没有重复上传相同内容
-
-    Raises:
-        user_file_limit_exception: 用户配额不足(文件数量或存储空间)
-        duplicate_file_exception: 文件名重复或用户已拥有该文件
-    """
-
-    # 1. 用户配额检查(工具层)
-    if not check_user_quota(current_user, file_data.size):
-        raise user_file_limit_exception
-
-    # 2. 重复文件名检查(业务层)
-    if await check_duplicate_filename(async_session, current_user, file_data.filename):
-        raise duplicate_file_exception
-
-    # 3. 重复文件哈希检查(业务层)
-    assert file_data.hash_sha256 is not None
-    if await check_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
-        raise duplicate_file_exception
-
-    # 4. 尝试复用相同哈希的文件(业务层)
-    reused_file = await try_reuse_file_by_hash(async_session, current_user, file_data.hash_sha256)
-    return reused_file
 
 
 async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
@@ -444,7 +360,7 @@ async def get_file_record_by_id(
     """
     根据文件ID查询文件记录
 
-    可选参数：
+    可选参数:
     load_parts: bool 是否同时加载分片信息
 
     Returns:
@@ -477,10 +393,10 @@ async def safe_cleanup_preflight_record(
     """
     安全清理预检记录
     
-    处理逻辑：
+    处理逻辑:
     - 使用 unlink_user_from_file 解除用户关联并更新统计信息
-    - 如果文件属于多个用户：只移除当前用户的关联,保留记录
-    - 如果文件只属于当前用户：删除整条记录
+    - 如果文件属于多个用户:只移除当前用户的关联,保留记录
+    - 如果文件只属于当前用户:删除整条记录
     """
     # 解除用户与文件的关联,并更新用户统计信息
     has_other_owners = await unlink_user_from_file(session, current_user, pre_record)
@@ -509,13 +425,13 @@ async def cleanup_stale_preflights(
     """
     清理当前用户过期且未完成的预检记录
 
-    清理条件(需同时满足)：
+    清理条件(需同时满足):
     1. 记录 owners 中包含当前用户
     2. 文件物理路径不存在(说明为预检记录,未完成上传)
     3. file_id 不在用户 file_ids 中
     4. uploaded_at 超过 TTL
 
-    更正清理条件：
+    更正清理条件:
     在多对多设计的情况下,简化为满足条件2和4即可清理
 
     Returns:
@@ -562,7 +478,7 @@ async def validate_and_merge_chunks(
     每次上传分片后调用,检查是否所有分片都已上传完成
     如果完成则执行合并操作
 
-    合并流程：
+    合并流程:
     1. 查询该文件的所有分片记录
     2. 检查分片完整性(数量和序列)
     3. 如果分片不完整,返回 False 等待更多分片
@@ -641,7 +557,7 @@ async def merge_chunks_to_file(
     使用 helper 层的 merge_files_with_hash 函数进行合并和哈希验证
     如果哈希不匹配,删除错误文件和所有相关记录
 
-    事务管理：不 commit,由调用方(API 层)统一管理
+    事务管理:不 commit,由调用方(API 层)统一管理
     """
     final_path = Path(file_record.path)
     chunk_paths = [Path(chunk.temp_path) for chunk in chunks]
@@ -669,20 +585,19 @@ async def merge_chunks_to_file(
     await delete_parts_by_file_id(async_session, file_record.file_id)
 
 
-async def try_reuse_file_by_hash(
+async def get_reuse_file_by_hash(
     async_session: AsyncSession,
     user: UserInDB,
     hash_sha256: str,
 ) -> FileInDB | None:
     """
-    尝试复用已存在的相同哈希文件
+    查询是否存在可复用的相同哈希文件(不建立关联)
 
-    注意：调用此函数前,应先调用 check_user_duplicate_file_hash 检查是否重复
+    注意:调用此函数前,应先完成上传预检校验(配额/参数/去重)
 
-    处理逻辑：
+    处理逻辑:
     1. 查询相同哈希的文件记录
-    2. 跳过用户已拥有的文件(调用方应该先检查)
-    3. 如果文件不存在,将用户添加到 owners 但返回记录(等待上传)
+    2. 跳过用户已拥有的文件
 
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
@@ -703,14 +618,8 @@ async def try_reuse_file_by_hash(
             )
     ).first()
 
-    # 没有找到相同哈希的文件
-    if not same_hash_file:
-        return None
-
-    # 直接复用数据库中相同哈希的记录(不检查物理路径是否存在)
-    assert same_hash_file.file_id is not None
-    await link_file_to_user(async_session, user, same_hash_file, same_hash_file.size or 0)
-    logger.info(f"reused existing file record user={user.id} file_id={same_hash_file.file_id} hash={hash_sha256}")
+    if same_hash_file:
+        logger.info(f"found reusable file record user={user.id} file_id={same_hash_file.file_id} hash={hash_sha256}")
 
     return same_hash_file
 
@@ -722,7 +631,7 @@ async def delete_parts_by_file_id(
     """
     根据 file_id 删除分片记录(物理文件 + 数据库记录)
 
-    删除流程：
+    删除流程:
     1. 查询该文件的所有分片记录
     2. 删除每个分片的物理文件(调用 delete_local_file)
     3. 删除数据库中的分片记录
@@ -782,7 +691,7 @@ async def delete_file_and_parts(
     """
     根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
 
-    删除流程：
+    删除流程:
     1. 查询文件记录,同时预加载对应的分片记录
     2. 删除分片物理文件(数据库记录会在删除文件时自动级联删除)
     3. 删除文件的物理文件
@@ -835,7 +744,7 @@ async def delete_experiment_files(
     
     用于用户主动删除文件时,完整删除实验相关的所有内容
 
-    处理逻辑：
+    处理逻辑:
     1. 查询与 source_file_id 关联的实验记录
     2. 删除实验相关的物理文件(imzml_path、ibd_path)
     3. 删除实验目录(如果为空)

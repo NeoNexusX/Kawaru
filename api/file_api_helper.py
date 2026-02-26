@@ -1,6 +1,6 @@
 #########################
 # File API Helper - 底层工具函数
-# 职责：纯工具函数，无业务逻辑，无数据库依赖
+# 职责：纯工具函数,无业务逻辑,无数据库依赖
 # 包含：文件校验、路径准备、文件IO操作
 #########################
 from __future__ import annotations
@@ -14,10 +14,9 @@ import aiofiles
 from fastapi import UploadFile
 from sqlmodel import and_, exists, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-
-from api.file_api_business import logger
-from models.file_models import FileInDB,UserFileLink
+from models.file_models import FileInDB, UserFileLink, FileCreate
 from models.user_models import UserInDB
+from exceptions import duplicate_file_exception, user_file_limit_exception
 from constants.file_constants import (
     STORAGE_ROOT,
     LOCAL_STORAGE_ROOT,
@@ -46,7 +45,7 @@ def validate_file_metadata(filename: str) -> bool:
         filename: 文件名
 
     Returns:
-        True 表示验证通过，False 表示验证失败
+        True 表示验证通过,False 表示验证失败
     """
     return validate_filename(filename) and validate_file_type(filename)
 
@@ -67,13 +66,13 @@ def validate_upload_params(
         expected_filename: 期望的文件名
 
     Returns:
-        True 表示验证通过，False 表示验证失败
+        True 表示验证通过,False 表示验证失败
     """
     # 1. 存储类型验证
     if storage_type not in ALLOWED_STORAGE_TYPES:
         return False
 
-    # 2. 提供了预检的存储类型，进行比较
+    # 2. 提供了预检的存储类型,进行比较
     if expected_storage_type and storage_type != expected_storage_type:
         return False
 
@@ -81,7 +80,7 @@ def validate_upload_params(
     if not filename:
         return False
 
-    # 4. 提供了预检的文件名，进行比较
+    # 4. 提供了预检的文件名,进行比较
     if expected_filename and filename != expected_filename:
         return False
 
@@ -101,9 +100,9 @@ async def build_zip_file(#todotodo
     创建ZIP文件(通用工具函数)
 
     Args:
-        files: 文件列表，每个元素是 (文件路径, ZIP中的文件名) 元组
+        files: 文件列表,每个元素是 (文件路径, ZIP中的文件名) 元组
         output_path: 输出ZIP文件路径
-        compression: 压缩级别，默认为 ZIP_DEFLATED
+        compression: 压缩级别,默认为 ZIP_DEFLATED
 
     Returns:
         创建的ZIP文件路径
@@ -140,7 +139,7 @@ async def merge_files_with_hash(
     Args:
         source_files: 源文件列表(按顺序)
         destination: 目标文件路径
-        expected_hash: 期望的哈希值(可选)，如果提供则验证
+        expected_hash: 期望的哈希值(可选),如果提供则验证
         buffer_size: 读取缓冲区大小
 
     Returns:
@@ -196,7 +195,7 @@ async def delete_files_async(file_paths: list[str | Path]) -> int:
 def ensure_storage_dirs() -> None:
     """
     确保存储目录存在
-    在上传操作前调用，创建必要的存储目录结构
+    在上传操作前调用,创建必要的存储目录结构
     """
     for path in (STORAGE_ROOT, LOCAL_STORAGE_ROOT, TEMP_CHUNKS_ROOT):
         path.mkdir(parents=True, exist_ok=True)
@@ -237,7 +236,7 @@ def validate_file_type(filename: str) -> bool:
     """
     校验文件类型是否在允许列表中
 
-    通过文件扩展名判断，必须有扩展名且在 ALLOWED_FILE_TYPES 中
+    通过文件扩展名判断,必须有扩展名且在 ALLOWED_FILE_TYPES 中
     """
     if not filename:
         return False
@@ -261,22 +260,19 @@ def validate_experiment_type(experiment_type: str) -> bool:
         experiment_type: 实验类型(如 imzML、raw 等)
 
     Returns:
-        True 表示验证通过，False 表示验证失败
+        True 表示验证通过,False 表示验证失败
     """
-    if not experiment_type:
-        return False
+    if experiment_type and (experiment_type in ALLOWED_EXPERIMENT_TYPES):
+        return True
 
-    if experiment_type not in ALLOWED_EXPERIMENT_TYPES:
-        return False
-
-    return True
+    return False
 
 
 def prepare_local_storage_path(filename: str) -> Path:
     """
     为简单上传准备最终保存路径
 
-    文件直接保存在 LOCAL_STORAGE_ROOT 下，不按用户ID分文件夹
+    文件直接保存在 LOCAL_STORAGE_ROOT 下,不按用户ID分文件夹
     """
     LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
     return LOCAL_STORAGE_ROOT / filename
@@ -299,11 +295,11 @@ async def compute_upload_file_metadata(upload_file: UploadFile) -> tuple[str, in
     """
     计算上传文件的元数据(SHA256哈希和大小)
 
-    分片读取文件内容，避免一次性加载到内存
-    读取完成后重置文件指针到开头，供后续写入使用
+    分片读取文件内容,避免一次性加载到内存
+    读取完成后重置文件指针到开头,供后续写入使用
 
     """
-    # TODO: 后期应改为任务队列异步执行，避免在上传接口中计算导致响应变慢
+    # TODO: 后期应改为任务队列异步执行,避免在上传接口中计算导致响应变慢
     sha256 = hashlib.sha256()
     size = 0
     await upload_file.seek(0)
@@ -321,11 +317,11 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     将上传文件保存到指定路径
 
-    使用 aiofiles 异步写入，分片读取避免内存占用过大
+    使用 aiofiles 异步写入,分片读取避免内存占用过大
     写入完成后关闭上传文件句柄
 
     """
-    #TODO: 理论上应该丢去异步任务队列执行，避免在上传接口中执行导致响应变慢
+    #TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
         while True:
@@ -340,10 +336,10 @@ def delete_local_file(path: str | Path) -> None:
     """
     删除本地文件
 
-    同步操作，因为文件删除只是删除元数据
+    同步操作,因为文件删除只是删除元数据
     使用 missing_ok=True,文件不存在时不会抛出异常
 
-    异常处理：不捕获，让异常传播到调用方
+    异常处理：不捕获,让异常传播到调用方
 
     Args:
         path: 文件路径(字符串或 Path 对象)
@@ -377,14 +373,14 @@ def delete_local_file(path: str | Path) -> None:
     path_obj.unlink(missing_ok=True)
 
 
-#TODO:替换为 delete_file_by_storage，支持分布式存储删除
+#TODO:替换为 delete_file_by_storage,支持分布式存储删除
 def delete_file_by_storage(file_record) -> None:
     """
     根据存储类型删除文件
 
-    目前仅支持 local 存储类型，分布式存储待实现
+    目前仅支持 local 存储类型,分布式存储待实现
 
-    异常处理：不捕获，让异常传播到调用方
+    异常处理：不捕获,让异常传播到调用方
 
     Args:
         file_record: 文件记录对象(FileInDB)
@@ -441,7 +437,7 @@ def validate_total_parts(total_parts: int) -> bool:
     验证分片数量是否合法
 
     Returns:
-        True 表示分片数量合法，False 表示不合法
+        True 表示分片数量合法,False 表示不合法
     """
     return 0 < total_parts <= MAX_CHUNKS_PER_UPLOAD
 
@@ -516,3 +512,51 @@ async def check_user_duplicate_file_hash(
         return True
 
     return False
+
+
+async def validate_upload_request(
+    async_session: AsyncSession,
+    current_user: UserInDB,
+    file_data: FileCreate,
+) -> bool:
+    """
+    统一验证上传请求参数
+
+    Args:
+        session: 数据库会话
+        current_user: 当前用户
+        file_data: 上传预检请求模型
+
+    Returns:
+        True 表示验证通过,False 表示验证失败
+    """
+    # 1. 存储类型验证
+    if file_data.storage_type not in ALLOWED_STORAGE_TYPES:
+        return False
+
+    # 2. 文件名和类型验证
+    if not validate_file_metadata(file_data.filename):
+        return False
+
+    # 3. 实验类型验证(如果提供)
+    if file_data.experiment_type and not validate_experiment_type(file_data.experiment_type):
+        return False
+
+    # 4. 分片数量验证(如果需要)
+    if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
+        return False
+
+    # 5. 用户配额检查
+    if not check_user_quota(current_user, file_data.size):
+        raise user_file_limit_exception
+
+    # 6. 重复文件名检查
+    if await check_duplicate_filename(async_session, current_user, file_data.filename):
+        raise duplicate_file_exception
+
+    # 7. 重复文件哈希检查
+    assert file_data.hash_sha256 is not None
+    if await check_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
+        raise duplicate_file_exception
+
+    return True

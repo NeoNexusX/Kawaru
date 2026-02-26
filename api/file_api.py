@@ -9,7 +9,6 @@ from sqlmodel import select, and_
 from api.experiment_api import process_imzml_experiment_background
 from api.file_api_business import (
     assert_file_owner,
-    cleanup_stale_preflights,
     delete_experiment_files,
     delete_file_and_parts,
     get_file_record_by_id,
@@ -17,13 +16,12 @@ from api.file_api_business import (
     link_file_to_user,
     prepare_download_file,
     safe_cleanup_preflight_record,
+    get_reuse_file_by_hash,
     unlink_user_from_file,
     update_download_stats,
     validate_and_merge_chunks,
-    validate_and_try_reuse_file,
     validate_chunk_metadata,
     validate_simple_upload,
-    validate_upload_request,
 )
 from api.file_api_helper import (
     compute_upload_file_metadata,
@@ -32,6 +30,7 @@ from api.file_api_helper import (
     prepare_local_storage_path,
     prepare_temp_chunk_path,
     save_upload_file,
+    validate_upload_request,
 )
 from api.experiment_api_business import is_file_uploaded
 from api.user_api import token_authen
@@ -42,7 +41,6 @@ from exceptions.file_exceptions import (
     download_not_implemented_exception,
     file_not_found_exception,
     file_persist_failed_exception,
-    file_reused_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
     part_already_exists_exception,
@@ -70,7 +68,7 @@ logger = get_logger("api.file_api")
 async def preflight_create_file(
     file_data: FileCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
+    async_session: AsyncSessionDep,
 ) -> FilePublic:
     """
     【预检接口 - 简单上传】
@@ -94,166 +92,35 @@ async def preflight_create_file(
     """
     ensure_storage_dirs()
 
-    # 此部分要删除
-    try:
-        await cleanup_stale_preflights(session, current_user)
-    except (OSError, IOError) as exc:
-        # 清理失败不影响主流程,记录日志即可
-        logger.warning(
-            "cleanup stale preflights failed user=%s error=%s",
-            current_user.id,
-            exc,
-        )
-
-    logger.info(
-        "preflight start user=%s filename=%s storage=%s size=%s",
-        current_user.id,
-        file_data.filename,
-        file_data.storage_type,
-        file_data.size,
-    )
-    # TODO:此部分往上要删除
-
     # 参数验证
-    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.experiment_type):
-        logger.warning(
-            "validation failed user=%s filename=%s storage=%s size=%s experiment_type=%s",
-            current_user.id,
-            file_data.filename,
-            file_data.storage_type,
-            file_data.size,
-            file_data.experiment_type
-        )
+    if not await validate_upload_request(async_session, current_user, file_data):
+        logger.error(f"validation failed user={current_user.id} filename={file_data.filename}")
         raise invalid_request_parameters_exception
 
-    # 验证文件并尝试复用(配额检查、重复检查、哈希复用)
-    reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
+    # 尝试复用同哈希文件,否则创建新记录
+    assert file_data.hash_sha256 is not None
+    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.hash_sha256)
+
     if reused_file:
-        # 不需要检查物理文件是否存在,直接提交事务后抛出复用异常
-        await session.commit()
-        await session.refresh(reused_file)
-        await session.refresh(current_user)
-        logger.info(f"preflight reused existing file user={current_user.id} file_id={reused_file.file_id}")
-        raise file_reused_exception
-
-    # 创建新的文件记录(预检状态,路径为空)
-    file_data_dict = file_data.model_dump()
-    file_record = FileInDB(
-        **file_data_dict,
-        path="",  # 预检时设置为空字符串,上传成功后再更新
-    )
-    session.add(file_record)
-    await session.flush()  # 获取 file_id
-
-    # 立即建立用户关联
-    await link_file_to_user(session, current_user, file_record, file_data.size)
-
-    await session.commit()
-    await session.refresh(file_record)
-    await session.refresh(current_user)
-    logger.info(f"preflight created new file record user={current_user.id} file_id={file_record.file_id} filename={file_record.filename}")
-
-    return file_record # type: ignore
-
-
-async def preflight_create_chunked_file(
-    file_data: FileCreate,
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
-) -> FilePublic:
-    """
-    【预检接口 - 分片上传】
-
-    功能:为分片上传创建文件记录,准备接收分片
-    时机:在分片上传之前调用
-    目的:提前验证、预分配文件ID、支持秒传(哈希复用)
-
-    流程:
-    1. 清理过期的预检记录
-    2. 参数验证(存储类型、文件名、文件类型、分片数量)
-    3. 用户配额检查
-    4. 重复文件检查(文件名、哈希)
-    5. 尝试复用已存在的相同哈希文件(秒传)
-    6. 如果无法复用,创建新的文件记录(预检状态)
-
-    与简单上传的区别:
-    - 需要验证 total_parts 参数
-    - 复用文件时需要更新 total_parts
-
-    注意:
-    - 此时文件记录已创建,但用户的 file_ids 和统计信息尚未更新
-    - 只有在所有分片上传并合并成功后,才会更新用户计数与 file_ids
-    """
-    ensure_storage_dirs()
-
-    try:
-        await cleanup_stale_preflights(session, current_user)
-    except (OSError, IOError) as exc:
-        # 清理失败不影响主流程,记录日志即可
-        logger.warning(
-            "cleanup stale records failed user=%s error=%s",
-            current_user.id,
-            exc,
+        file_record = reused_file
+    else:
+        file_record = FileInDB(
+            **file_data.model_dump(),
+            path="",  # 预检时设置为空字符串,上传成功后再更新
         )
-    await session.refresh(current_user)
+        async_session.add(file_record)
+        await async_session.flush()  # 获取 file_id
+
+    # 统一建立用户关联
+    await link_file_to_user(async_session, current_user, file_record, file_data.size)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+    await async_session.refresh(current_user)
 
     logger.info(
-        "chunked preflight start , upload file info:    \nuser=%s filename=%s storage=%s size=%s parts=%s",
-        current_user.id,
-        file_data.filename,
-        file_data.storage_type,
-        file_data.size,
-        file_data.total_parts,
-    )
+        f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
+        f"storage={file_data.storage_type} size={file_data.size} parts={file_data.total_parts} experiment_type={file_data.experiment_type}")
 
-    # 参数验证
-    if not validate_upload_request(file_data.storage_type, file_data.filename, file_data.experiment_type, file_data.total_parts):
-        logger.warning(
-            "validation failed user=%s filename=%s storage=%s size=%s parts=%s experiment_type=%s",
-            current_user.id,
-            file_data.filename,
-            file_data.storage_type,
-            file_data.size,
-            file_data.total_parts,
-            file_data.experiment_type
-        )
-        raise invalid_request_parameters_exception
-
-    # 验证文件并尝试复用(配额检查、重复检查、哈希复用)
-    reused_file = await validate_and_try_reuse_file(session, current_user, file_data)
-    if reused_file:
-        # 更新 total_parts(分片上传特有)
-        reused_file.total_parts = file_data.total_parts
-        session.add(reused_file)
-
-        # 不需要文件是否存在,提交事务后抛出复用异常
-        await session.commit()
-        await session.refresh(reused_file)
-        await session.refresh(current_user)
-        logger.info(f"chunked preflight reused existing file user={current_user.id} "
-                    f"file_id={reused_file.file_id} "
-                    f"parts={file_data.total_parts}")
-        raise file_reused_exception
-
-    # 创建新的文件记录(预检状态,路径为空)
-    file_data_dict = file_data.model_dump()
-    file_record = FileInDB(
-        **file_data_dict,
-        path="",  # 预检时设置为空字符串,合并成功后再更新
-    )
-    session.add(file_record)
-    await session.flush()  # 获取 file_id
-
-    # 立即建立用户关联
-    await link_file_to_user(session, current_user, file_record, file_data.size)
-
-    await session.commit()
-    await session.refresh(file_record)
-    await session.refresh(current_user)
-
-    logger.info(f"chunked preflight created new record user={current_user.id} "
-                f"file_id={file_record.file_id} filename={file_record.filename} "
-                f"parts={file_data.total_parts}")
     return file_record # type: ignore
 
 
@@ -735,6 +602,5 @@ SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
 ListFilesDep = Annotated[FileListResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
-ChunkedPreflightDep = Annotated[FilePublic, Depends(preflight_create_chunked_file)]
 ChunkUploadDep = Annotated[PartPublic, Depends(upload_file_chunk)]
 ChunkedStatusDep = Annotated[ChunkedUploadStatus, Depends(get_chunked_upload_status)]
