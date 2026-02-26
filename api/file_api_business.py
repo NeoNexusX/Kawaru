@@ -233,7 +233,7 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
 
 
 async def validate_simple_upload(
-    session: AsyncSession,
+    async_session: AsyncSession,
     current_user: UserInDB,
     file: "UploadFile",
     pre_record: FileInDB,
@@ -244,26 +244,34 @@ async def validate_simple_upload(
     Raises:
         HTTPException: 验证失败时抛出异常
     """
-    try:
-        # 只校验文件元数据(哈希和大小)
-        hash_sha256, size = await compute_upload_file_metadata(file)
-        if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
-            logger.error(
-                "metadata mismatch user=%s expected_hash=%s actual_hash=%s expected_size=%s actual_size=%s",
-                current_user.id,
-                pre_record.hash_sha256,
-                hash_sha256,
-                pre_record.size,
-                size,
-            )
-            raise invalid_request_parameters_exception
-        return hash_sha256, size
-    except Exception:
-        # 统一的清理逻辑
-        await safe_cleanup_preflight_record(session, current_user, pre_record)
-        await session.commit()
-        await session.refresh(current_user)
-        raise
+    hash_sha256, size = await compute_upload_file_metadata(file)
+    if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
+        logger.error(
+            f"metadata mismatch user={current_user.id}\n"
+            f"expected_hash={pre_record.hash_sha256} actual_hash={hash_sha256}\n"
+            f"expected_size={pre_record.size} actual_size={size}")
+        raise invalid_request_parameters_exception
+    return hash_sha256, size
+
+
+async def rollback_simple_upload(
+    async_session: AsyncSession,
+    current_user: UserInDB,
+    pre_record: FileInDB,
+    final_path: "Path | None" = None,
+) -> None:
+    """
+    简单上传失败时的统一回滚清理
+
+    处理逻辑:
+    1. 删除已写入的物理文件(如果有)
+    2. 清理预检记录和用户关联
+    3. 提交事务,使清理生效
+    """
+    if final_path:
+        delete_local_file(final_path)
+    await safe_cleanup_preflight_record(async_session, current_user, pre_record)
+    await async_session.commit()
 
 
 async def append_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> UserFileLink | None:

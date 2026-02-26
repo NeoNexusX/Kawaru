@@ -11,7 +11,7 @@ import hashlib
 from pathlib import Path
 
 import aiofiles
-from fastapi import UploadFile
+from fastapi import BackgroundTasks, UploadFile
 from sqlmodel import and_, exists, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from models.file_models import FileInDB, UserFileLink, FileCreate
@@ -33,6 +33,7 @@ from constants.file_constants import (
 )
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from tools.logger import get_logger
+from background.file_background import process_imzml_experiment_background  # noqa: avoid circular import
 
 logger = get_logger("api.file_api_helper")
 
@@ -422,7 +423,7 @@ def check_user_quota(user: UserInDB, file_size: int) -> bool:
     current_count = user.file_count
     projected_total_size = user.total_file_size + file_size
     if current_count >= MAX_FILES_PER_USER or file_size > MAX_FILE_SIZE or projected_total_size > MAX_TOTAL_STORAGE_PER_USER:
-        logger.warning(f"user quota exceeded user={user.id}:\n"
+        logger.error(f"user quota exceeded user={user.id}:\n"
                        f"current={current_count}: limit={MAX_FILES_PER_USER},{current_count >= MAX_FILES_PER_USER}\n"
                        f"current={file_size}: limit={MAX_FILE_SIZE},{file_size > MAX_FILE_SIZE}\n"
                        f"current={projected_total_size}: limit={MAX_TOTAL_STORAGE_PER_USER},{projected_total_size > MAX_TOTAL_STORAGE_PER_USER}"
@@ -560,3 +561,31 @@ async def validate_upload_request(
         raise duplicate_file_exception
 
     return True
+
+#todo:需要针对特定类型来做提取
+def trigger_experiment_extraction(
+    background_tasks: BackgroundTasks,
+    file_record: FileInDB,
+    current_user: UserInDB,
+    experiment_type: str,
+) -> None:
+    """
+    根据实验类型触发后台实验文件提取任务
+
+    触发条件: experiment_type == "imzml"
+    """
+    if experiment_type != "imzml":
+        return
+
+    if not current_user.id or not file_record.file_id:
+        logger.warning(f"skip experiment extraction: missing user_id :{current_user.id} or file_id {file_record.file_id}")
+        return
+
+    experiment_name = Path(file_record.filename).stem
+    background_tasks.add_task(
+        process_imzml_experiment_background,
+        current_user.id,
+        file_record.file_id,
+        experiment_name,
+    )
+    logger.info(f"auto extraction triggered user={current_user.id} file_id={file_record.file_id}")

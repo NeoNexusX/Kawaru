@@ -2,11 +2,9 @@
 # File API - API入口层
 #########################
 import json
-from pathlib import Path
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import select, and_
-from api.experiment_api import process_imzml_experiment_background
 from api.file_api_business import (
     assert_file_owner,
     delete_experiment_files,
@@ -15,7 +13,7 @@ from api.file_api_business import (
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file,
-    safe_cleanup_preflight_record,
+    rollback_simple_upload,
     get_reuse_file_by_hash,
     unlink_user_from_file,
     update_download_stats,
@@ -30,6 +28,7 @@ from api.file_api_helper import (
     prepare_local_storage_path,
     prepare_temp_chunk_path,
     save_upload_file,
+    trigger_experiment_extraction,
     validate_upload_request,
 )
 from api.experiment_api_business import is_file_uploaded
@@ -87,8 +86,7 @@ async def preflight_create_file(
     
     注意:
     - 此时文件记录已创建,但用户的 file_ids 和统计信息尚未更新
-    - 只有在后续上传接口中校验通过后,才会更新用户计数与 file_ids
-    - 如果上传失败,预检记录会在下次预检时被清理
+    - 只有在后续上传接口中校验通过后,才会更新用户计数
     """
     ensure_storage_dirs()
 
@@ -173,8 +171,7 @@ async def upload_file_chunk(
         part_data = PartCreate(**part_data_dict)
 
     except Exception as exc:
-        logger.error(
-            f"invalid part_data user={current_user.id} error={exc}")
+        logger.error(f"invalid part_data user={current_user.id} error={exc}")
         raise invalid_part_data_exception from exc
 
     logger.info(f"chunk upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
@@ -245,12 +242,10 @@ async def upload_file_chunk(
             await async_session.refresh(file_record)
             logger.info(f"chunked upload completed user={current_user.id} file_id={file_record.file_id}")
 
-            if file_record.experiment_type == "imzml":
-                background_tasks.add_task(process_imzml_experiment_background,
-                                          current_user.id,
-                                          file_record.file_id,
-                                          Path(file_record.filename).stem)
-                logger.info(f"auto extraction triggered for chunked ZIP user={current_user.id} file_id={file_record.file_id}")
+            trigger_experiment_extraction(
+                background_tasks, file_record, current_user,
+                file_record.experiment_type,
+            )
 
             # 合并成功,返回分片信息
             return part_record # type: ignore
@@ -326,7 +321,7 @@ async def get_chunked_upload_status(
 
 async def upload_simple_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
+    async_session: AsyncSessionDep,
     background_tasks: BackgroundTasks,
     storage_type: str = Form("local"),
     pre_file_id: int = Form(...),
@@ -337,7 +332,6 @@ async def upload_simple_file(
     
     功能:一次性接收完整文件,不做分片
     时机:在预检接口之后调用
-    适用场景:小文件上传(< 100MB)
     
     流程:
     1. 查询预检记录
@@ -354,68 +348,43 @@ async def upload_simple_file(
     - 文件哈希和大小必须与预检记录匹配,否则上传失败
     - 上传失败时会清理预检记录
     """
-    ensure_storage_dirs()
-    logger.info(
-        "simple upload start user=%s filename=%s storage=%s",
-        current_user.id,
-        file.filename,
-        storage_type,
-    )
+    logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
 
     # 查询预检记录
-    pre_record = await get_file_record_by_id(pre_file_id, session)
+    pre_record = await get_file_record_by_id(pre_file_id, async_session)
 
     # 统一验证(业务层)
-    _, size = await validate_simple_upload(
-        session, current_user, file,  pre_record
-    )
+    _, size = await validate_simple_upload(async_session, current_user, file, pre_record)
 
-    # 保存文件
-    assert file.filename is not None
+    # 文件名校验(显式检查,避免 assert 在 -O 模式下被跳过)
+    if not file.filename:
+        raise invalid_request_parameters_exception
+
     final_path = prepare_local_storage_path(file.filename)
+
     try:
+        # 保存文件 → 更新记录 → 提交,统一 try 保护
         await save_upload_file(file, final_path)
+
+        # 更新预检记录的路径和大小(预检时已建立用户关联)
+        pre_record.path = str(final_path)
+        pre_record.size = size
+        async_session.add(pre_record)
+
+        await async_session.commit()
+        await async_session.refresh(pre_record)
+        await async_session.refresh(current_user)
+
     except Exception as exc:
-        logger.error(f"save upload file failed user={current_user.id} filename={file.filename} error={exc}")
-        delete_local_file(final_path)
-        await safe_cleanup_preflight_record(session, current_user, pre_record)# todo 做了任务队列之后可以删除
-        await session.commit()
+        logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
+        await rollback_simple_upload(async_session, current_user, pre_record, final_path)
         raise file_persist_failed_exception from exc
 
-    # 更新文件记录的路径和大小(预检时已建立用户关联)
-    file_record = pre_record
-    file_record.path = str(final_path)
-    file_record.size = size
-    session.add(file_record)
+    logger.info(f"simple upload completed user={current_user.id} file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
-    await session.commit()
-    await session.refresh(file_record)
-    await session.refresh(current_user)
-    logger.info(
-        "simple upload completed user=%s file_id=%s filename=%s size=%s",
-        current_user.id,
-        file_record.file_id,
-        file_record.filename,
-        file_record.size,
-    )
+    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
 
-    if file_record.file_type == "zip":
-        experiment_name = Path(file_record.filename).stem
-        assert current_user.id is not None
-        assert file_record.file_id is not None
-        background_tasks.add_task(
-            process_imzml_experiment_background,
-            current_user.id,
-            file_record.file_id,
-            experiment_name,
-        )
-        logger.info(
-            "auto extraction triggered for ZIP user=%s file_id=%s",
-            current_user.id,
-            file_record.file_id,
-        )
-
-    return file_record # type: ignore
+    return pre_record # type: ignore
 
 
 async def list_user_files(
