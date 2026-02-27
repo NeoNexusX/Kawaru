@@ -3,53 +3,47 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
 from sqlmodel import select, and_
+from api.experiment_api_helper import trigger_experiment_extraction
 from api.file_api_business import (
     assert_file_owner,
-    delete_experiment_files,
     delete_file_and_parts,
+    get_file_record_by_hash,
     get_file_record_by_id,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file,
     rollback_simple_upload,
     get_reuse_file_by_hash,
+    save_and_persist_part,
     unlink_user_from_file,
     update_download_stats,
-    validate_and_merge_chunks,
-    validate_chunk_metadata,
+    validate_and_merge_parts,
+    validate_part_upload,
     validate_simple_upload,
 )
 from api.file_api_helper import (
-    compute_upload_file_metadata,
-    delete_local_file,
     ensure_storage_dirs,
     prepare_local_storage_path,
-    prepare_temp_chunk_path,
     save_upload_file,
-    trigger_experiment_extraction,
     validate_upload_request,
 )
-from api.experiment_api_business import is_file_uploaded
+from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
 from constants.file_constants import MAX_DOWNLOADS_PER_USER
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
-    chunk_merge_failed_exception,
+    part_merge_failed_exception,
     download_not_implemented_exception,
-    file_not_found_exception,
     file_persist_failed_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
-    part_already_exists_exception,
-    part_number_out_of_range_exception,
-    part_validation_failed_exception,
     permission_denied_exception,
     user_download_limit_exception,
 )
 from models.file_models import (
-    ChunkedUploadStatus,
+    PartUploadStatus,
     FileCreate,
     FileDownloadMeta,
     FileInDB,
@@ -122,152 +116,74 @@ async def preflight_create_file(
     return file_record # type: ignore
 
 
-async def upload_file_chunk(
+async def upload_file_part(
     part_data_json: Annotated[str, Form(alias="part_data_json")],
-    chunk: Annotated[UploadFile, File()],
+    part: Annotated[UploadFile, File()],
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
     background_tasks: BackgroundTasks,
 ) -> PartPublic:
     """
     【分片上传接口】
-    
+
     功能:上传单个文件分片,每次上传后验证并尝试合并
     时机:在预检接口之后,逐个上传分片
-    
-    请求格式:multipart/form-data
-    - part_data: JSON 字符串,包含分片元数据,对应模型为PartCreate
-    - chunk: 分片文件内容
-    
-    流程:
-    1. 解析分片元数据(从 JSON 字符串)
-    2. 根据 file_id 查询文件记录
-    3. 验证分片编号范围
-    4. 检查分片是否已上传(防止重复)
-    5. 验证分片哈希和大小
-    6. 保存分片到临时目录
-    7. 创建分片记录
-    8. 尝试合并分片(如果所有分片都已上传)
-    9. 如果合并成功,更新用户统计信息并触发后台任务
-    
-    合并时机:
-    - 每次上传分片后都会检查是否所有分片都已上传
-    - 如果是最后一个分片,会自动触发合并
-    
-    后台任务:
-    - 如果是 ZIP 文件,合并成功后会自动触发实验文件提取
-    
-    注意:
-    - 分片保存在临时目录,合并成功后会被删除
-    - 合并失败时会清理所有分片和文件记录
-    - part_data 必须是有效的 JSON 字符串
-    """
 
+    请求格式:multipart/form-data
+    - part_data_json: JSON 字符串,包含分片元数据,对应模型为 PartCreate
+    - part: 分片文件内容
+
+    流程:
+    1. 解析分片元数据
+    2. 查询文件记录
+    3. 验证分片(编号范围、重复、哈希大小)
+    4. 保存分片并创建记录
+    5. 尝试合并,合并成功则触发后台任务
+    """
     ensure_storage_dirs()
 
-    # 1. 解析 JSON 字符串为 PartCreate 对象
+    # 1. 解析分片元数据
     try:
-        part_data_dict = json.loads(part_data_json)
-        part_data = PartCreate(**part_data_dict)
-
+        part_data = PartCreate(**json.loads(part_data_json))
     except Exception as exc:
         logger.error(f"invalid part_data user={current_user.id} error={exc}")
         raise invalid_part_data_exception from exc
 
-    logger.info(f"chunk upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
+    logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
 
-    # 2. 根据 file_hash 查询文件记录
-    file_record = (
-        await async_session.exec(
-            select(FileInDB)
-            .where(FileInDB.hash_sha256 == part_data.file_hash))
-            ).first()
-    if not file_record:
-        raise file_not_found_exception
+    # 2. 查询文件记录(业务层)
+    file_record = await get_file_record_by_hash(async_session, part_data.file_hash)
 
-    # 3. 验证分片编号范围:1 <= part_number <= total_parts
-    assert part_data.part_number is not None and file_record.total_parts is not None
-    if not 1 <= part_data.part_number <= file_record.total_parts:
-        logger.error(f"part_number out of range:\n"
-                     f"{part_data.part_number} not in [1, {file_record.total_parts}] file_id={file_record.file_id} user={current_user.id}")
-        raise part_number_out_of_range_exception
+    # 3. 统一验证(业务层:编号范围 + 重复 + 哈希大小)
+    _, act_part_size = await validate_part_upload(async_session, file_record, current_user, part_data, part)
 
-    # 4. 检查分片是否已上传(防止重复)- 调用业务层
-    assert file_record.file_id is not None and current_user.id is not None
-    if await validate_chunk_metadata(async_session, file_record.file_id, part_data.part_number, current_user.id):
-        logger.warning(f"chunk already exists user={current_user.id} file_id={file_record.file_id} part={part_data.part_number}")
-        raise part_already_exists_exception
+    # 4. 保存分片并持久化记录(业务层)
+    part_record = await save_and_persist_part(
+        async_session, file_record, current_user, part_data, part, act_part_size)
 
-    # 5. 验证分片哈希和大小
-    act_part_hash, act_part_size = await compute_upload_file_metadata(chunk)
-    if act_part_hash != part_data.part_hash or act_part_size != part_data.part_size:
-        logger.error(
-            f"chunk validation:\n"
-            f"failed user={current_user.id} file_id={file_record.file_id} part={part_data.part_number} \n"
-            f"expected_hash={part_data.part_hash} actual_hash={act_part_hash} \n"
-            f"expected_size={part_data.part_size} actual_size={act_part_size}")
-        raise part_validation_failed_exception
-
-    # 6. 保存分片到临时目录
-    assert file_record.hash_sha256 is not None
-    temp_path = prepare_temp_chunk_path(current_user.id, file_record.hash_sha256, part_data.part_number)
+    # 5. 尝试合并
     try:
-        await save_upload_file(chunk, temp_path)
-    except Exception as exc:
-        logger.error(f"save chunk failed user={current_user.id} file_id={file_record.file_id} part={part_data.part_number} error={exc}")
-        delete_local_file(temp_path)
-        raise file_persist_failed_exception from exc
-
-    part_record = PartInDB(
-        **part_data.model_dump(),
-        temp_path=str(temp_path),
-        owner_id=current_user.id,
-        file_id=file_record.file_id,
-        total_file_size=file_record.size,
-        total_parts=file_record.total_parts,
-    )
-    async_session.add(part_record)
-    await async_session.commit()
-    await async_session.refresh(part_record)
-    await async_session.refresh(current_user)
-    await async_session.refresh(file_record)
-    logger.info(f"chunk saved user={current_user.id} file_id={file_record.file_id} part={part_data.part_number} size={act_part_size}")
-
-    try:
-        merge_success = await validate_and_merge_chunks(async_session, file_record, current_user)
-        if merge_success:
-            # 合并成功,路径已在 merge_chunks_to_file 中更新,预检时已建立用户关联
+        if await validate_and_merge_parts(async_session, file_record, current_user):
             await async_session.commit()
             await async_session.refresh(current_user)
             await async_session.refresh(file_record)
-            logger.info(f"chunked upload completed user={current_user.id} file_id={file_record.file_id}")
-
-            trigger_experiment_extraction(
-                background_tasks, file_record, current_user,
-                file_record.experiment_type,
-            )
-
-            # 合并成功,返回分片信息
-            return part_record # type: ignore
-
-    except HTTPException:
-        raise
+            logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
+            trigger_experiment_extraction( background_tasks, file_record, current_user, file_record.experiment_type)
 
     except Exception as exc:
-        logger.error(f"unexpected error during chunk upload:\n"
-                     f"user={current_user.id} file_id={file_record.file_id} part={part_data.part_number}\n"
-                     f"error={exc}")
-        raise chunk_merge_failed_exception from exc
+        logger.error(
+            f"merge failed user={current_user.id} file_id={file_record.file_id} "
+            f"part={part_data.part_number} error={exc}")
+        raise part_merge_failed_exception from exc
 
-    # 上传成功但未合并,返回分片信息
-    return part_record # type: ignore
+    return part_record  # type: ignore
 
 
-async def get_chunked_upload_status(
+async def get_part_upload_status(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: AsyncSessionDep,
-) -> ChunkedUploadStatus:
+) -> PartUploadStatus:
     """
     【分片上传状态查询接口】
     
@@ -289,7 +205,7 @@ async def get_chunked_upload_status(
     file_record = await get_file_record_by_id(file_id, session)
 
     # 创建基础状态对象
-    status = ChunkedUploadStatus(
+    status = PartUploadStatus(
         file_hash=file_record.hash_sha256 or "",
         filename=file_record.filename,
         total_parts=file_record.total_parts or 0,
@@ -307,7 +223,7 @@ async def get_chunked_upload_status(
         return status
 
     # 查询已上传的分片
-    uploaded_chunks = (
+    uploaded_parts = (
         await session.exec(
             select(PartInDB)
             .where(and_(PartInDB.file_id == file_id, PartInDB.owner_id == current_user.id))
@@ -315,7 +231,7 @@ async def get_chunked_upload_status(
         )
     ).all()
 
-    status.uploaded_parts = [chunk.part_number for chunk in uploaded_chunks]
+    status.uploaded_parts = [part.part_number for part in uploaded_parts]
     return status
 
 
@@ -354,7 +270,7 @@ async def upload_simple_file(
     pre_record = await get_file_record_by_id(pre_file_id, async_session)
 
     # 统一验证(业务层)
-    _, size = await validate_simple_upload(async_session, current_user, file, pre_record)
+    _, size = await validate_simple_upload(current_user, file, pre_record)
 
     # 文件名校验(显式检查,避免 assert 在 -O 模式下被跳过)
     if not file.filename:
@@ -421,7 +337,7 @@ async def list_user_files(
     # 只保留真正上传的文件
     filtered_results = []
     for file_record in all_results:
-        if await is_file_uploaded(session, file_record):
+        if await valid_file_uploaded(session, file_record):
             filtered_results.append(file_record)
 
     logger.debug("list user files user=%s count=%s", current_user.id, len(filtered_results))
@@ -571,5 +487,5 @@ SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
 ListFilesDep = Annotated[FileListResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
-ChunkUploadDep = Annotated[PartPublic, Depends(upload_file_chunk)]
-ChunkedStatusDep = Annotated[ChunkedUploadStatus, Depends(get_chunked_upload_status)]
+PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
+PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]

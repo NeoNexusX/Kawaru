@@ -8,13 +8,12 @@ from typing import Annotated
 
 from fastapi import Depends
 from sqlmodel import select
-from database.db import AsyncSessionDep
+from api.experiment_api_business import delete_experiment_files, get_imzml_experiment_by_file_id
 from api.user_api import token_authen
 from api.file_api_business import (
-    get_imzml_experiment_by_file_id,
-    assert_file_owner,
-    delete_experiment_files
+    assert_file_owner
 )
+from database.db import AsyncSessionDep
 from tools.logger import get_logger
 from models.user_models import UserInDB
 from models.file_models import FileInDB, now_local_timezone
@@ -49,7 +48,7 @@ async def cleanup_failed_experiments(
     完整的清理流程:
     1. 查询过期的失败实验记录
     2. 手动更新所有相关用户的 file_count 和 total_file_size
-    3. 删除实验文件（imzML、ibd）物理文件
+    3. 删除实验文件(imzML、ibd)物理文件
     4. 删除文件表记录
     5. 数据库自动级联删除关联的 UserFileLink 和 ExperimentImzMLInDB 记录
     
@@ -120,7 +119,7 @@ async def cleanup_failed_experiments(
                         user_record.total_file_size,
                     )
 
-            # 2. 删除实验文件（imzML、ibd）物理文件
+            # 2. 删除实验文件(imzML、ibd)物理文件
             # delete_experiment_files 只处理物理文件删除，不操作数据库
             await delete_experiment_files(session, exp.source_file_id)
 
@@ -146,12 +145,6 @@ async def cleanup_failed_experiments(
         logger.error("failed to commit cleanup changes error=%s", e)
 
     return cleaned
-
-
-#########################
-# 后台处理函数（供 BackgroundTasks 调用）
-#########################
-
 
 #########################
 # 异步查询函数

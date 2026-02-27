@@ -9,32 +9,18 @@ import zipfile
 import shutil
 from pathlib import Path
 
+from fastapi import BackgroundTasks
+
+from api.file_api_helper import logger
+from background.file_background import process_imzml_experiment_background
 from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT
+from constants.file_constants import ALLOWED_EXPERIMENT_TYPES
+from models.file_models import FileInDB
+from models.user_models import UserInDB
 from tools.logger import get_logger
 
 
 logger = get_logger("api.experiment_api_helper")
-
-
-def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool:
-    """
-    验证 imzML 和 ibd 文件是否为有效可读的 MSI 实验数据
-    
-    Args:
-        imzml_path: imzML 文件路径
-        ibd_path: ibd 文件路径
-    
-    Returns:
-        True 表示验证通过，False 表示验证失败
-    
-    TODO: 后续扩展验证逻辑
-    - 检查文件格式是否正确
-    - 验证文件完整性
-    - 检查文件大小是否合理
-    - 验证 imzML 和 ibd 文件的关联性
-    """
-    # 目前直接返回 True，后续扩展
-    return True
 
 
 # operation part
@@ -109,3 +95,68 @@ def create_experiment_directories(experiment_id: int) -> Path:
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     return processed_dir
+
+
+def trigger_experiment_extraction(
+    background_tasks: BackgroundTasks,
+    file_record: FileInDB,
+    current_user: UserInDB,
+    experiment_type: str,
+) -> None:
+    """
+    根据实验类型触发后台实验文件提取任务
+
+    触发条件: experiment_type == "imzml"
+    """
+    if experiment_type != "imzml":
+        return
+
+    if not current_user.id or not file_record.file_id:
+        logger.warning(f"skip experiment extraction: missing user_id :{current_user.id} or file_id {file_record.file_id}")
+        return
+
+    experiment_name = Path(file_record.filename).stem
+    background_tasks.add_task(
+        process_imzml_experiment_background,
+        current_user.id,
+        file_record.file_id,
+        experiment_name,
+    )
+    logger.info(f"auto extraction triggered user={current_user.id} file_id={file_record.file_id}")
+
+
+def validate_experiment_type(experiment_type: str) -> bool:
+    """
+    校验实验类型是否在允许列表中
+
+    Args:
+        experiment_type: 实验类型(如 imzML、raw 等)
+
+    Returns:
+        True 表示验证通过,False 表示验证失败
+    """
+    if experiment_type and (experiment_type in ALLOWED_EXPERIMENT_TYPES):
+        return True
+
+    return False
+
+
+def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool:
+    """
+    验证 imzML 和 ibd 文件是否为有效可读的 MSI 实验数据
+    
+    Args:
+        imzml_path: imzML 文件路径
+        ibd_path: ibd 文件路径
+    
+    Returns:
+        True 表示验证通过，False 表示验证失败
+    
+    TODO: 后续扩展验证逻辑
+    - 检查文件格式是否正确
+    - 验证文件完整性
+    - 检查文件大小是否合理
+    - 验证 imzML 和 ibd 文件的关联性
+    """
+    # 目前直接返回 True，后续扩展
+    return True

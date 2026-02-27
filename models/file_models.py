@@ -189,7 +189,7 @@ class PartInDB(PartBase, table=True):
     file: Optional["FileInDB"] = Relationship(back_populates="parts")
 
 
-class ChunkedUploadStatus(SQLModel):
+class PartUploadStatus(SQLModel):
     """分片上传状态响应模型"""
 
     file_hash: str

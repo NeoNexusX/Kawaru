@@ -62,7 +62,7 @@ user_download_limit_exception = HTTPException(
 # 分片验证失败异常（哈希或大小不匹配）
 part_validation_failed_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("uploaded chunk hash or size does not match expected values")
+    detail=format_exception_detail("uploade part hash or size does not match expected values")
 )
 
 # 分片数据格式无效异常
@@ -90,15 +90,15 @@ merged_file_hash_mismatch_exception = HTTPException(
 )
 
 # 分片文件缺失异常
-chunk_file_missing_exception = HTTPException(
+part_file_missing_exception = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
-    detail=format_exception_detail("chunk file missing from storage")
+    detail=format_exception_detail("part file missing from storage")
 )
 
 # 分片合并失败异常
-chunk_merge_failed_exception = HTTPException(
+part_merge_failed_exception = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("failed to merge chunks")
+    detail=format_exception_detail("failed to merge parts")
 )
 
 # 参数验证失败异常
@@ -123,7 +123,7 @@ __all__ = [
     "part_number_out_of_range_exception",
     "part_already_exists_exception",
     "merged_file_hash_mismatch_exception",
-    "chunk_file_missing_exception",
-    "chunk_merge_failed_exception",
+    "part_file_missing_exception",
+    "part_merge_failed_exception",
     "invalid_request_parameters_exception",
 ]

@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
-from models.file_models import FilePublic, ChunkedUploadStatus
+from models.file_models import FilePublic, PartUploadStatus
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
-    ChunkUploadDep, ChunkedStatusDep
+    PartUploadDep, PartStatusDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -45,12 +45,12 @@ async def delete_file(result: DeleteFileDep):
 
 
 @file_router.post("/chunked/upload", response_model=PartPublic)  # 分片上传
-async def upload_chunk(chunk_result: ChunkUploadDep):
+async def upload_chunk(chunk_result: PartUploadDep):
     """分片上传"""
     return chunk_result
 
 
-@file_router.get("/chunked/{file_id}/status", response_model=ChunkedUploadStatus)
-async def get_upload_status(status: ChunkedStatusDep):
+@file_router.get("/chunked/{file_id}/status", response_model=PartUploadStatus)
+async def get_upload_status(status: PartStatusDep):
     """查询分片上传状态"""
     return status

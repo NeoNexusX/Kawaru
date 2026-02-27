@@ -1,16 +1,22 @@
+from datetime import timedelta
 import zipfile
 from pathlib import Path
 
 from fastapi import HTTPException
+from sqlmodel import and_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.experiment_api import logger
 from api.experiment_api_business import create_experiment_record, delete_source_file_and_clear_path, mark_experiment
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
-from api.file_api_business import get_file_record_by_id
+from api.file_api_business import get_file_record_by_id, safe_cleanup_preflight_record
+from constants.file_constants import PREFLIGHT_TTL_MINUTES
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
+from models.file_models import FileInDB, now_local_timezone
+from models.link_models import UserFileLink
+from models.user_models import UserInDB
 
 
 async def process_imzml_experiment_background(
@@ -77,3 +83,54 @@ async def process_imzml_experiment_background(
             if source_file:
                 await delete_source_file_and_clear_path(async_session, source_file)
                 await async_session.commit()
+
+
+async def cleanup_stale_preflights(
+    session: AsyncSession,
+    current_user: UserInDB,
+    ttl_minutes: int = PREFLIGHT_TTL_MINUTES,
+) -> int:
+    """
+    清理当前用户过期且未完成的预检记录
+
+    清理条件(需同时满足):
+    1. 记录 owners 中包含当前用户
+    2. 文件物理路径不存在(说明为预检记录,未完成上传)
+    3. file_id 不在用户 file_ids 中
+    4. uploaded_at 超过 TTL
+
+    更正清理条件:
+    在多对多设计的情况下,简化为满足条件2和4即可清理
+
+    Returns:
+        清理的记录数量
+    """
+    # 代表 uploaded_at 超过 TTL 的时间点
+    now = now_local_timezone()
+    cutoff_time = now - timedelta(minutes=ttl_minutes)
+    cleaned = 0
+
+    # 数据库层面先过滤出owners包含当前用户的所有文件记录
+    records = (await session.exec(
+        select(FileInDB)
+        .join(UserFileLink, and_(FileInDB.file_id == UserFileLink.file_id))
+        .where(UserFileLink.user_id == current_user.id)
+    )).all()
+
+    for rec in records:
+        # 只要 path 不为空字符串,直接跳过(不再检查物理文件是否存在)
+        if rec.path:
+            continue
+
+        # TTL 判断 - 所有时间都是UTC时间,直接比较
+        if not rec.uploaded_at < cutoff_time:
+            continue
+
+        # 满足所有条件,清理预检记录
+        await safe_cleanup_preflight_record(session, current_user, rec)
+        cleaned += 1
+
+    if cleaned:
+        await session.commit()
+
+    return cleaned
