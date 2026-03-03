@@ -20,6 +20,7 @@ from api.file_api_helper import (
     merge_files_and_get_hash,
     prepare_part_temp_path,
     save_upload_file,
+    delete_file_by_storage
 )
 from constants.file_constants import (
     LOCAL_STORAGE_ROOT,
@@ -132,8 +133,11 @@ async def get_file_record_by_id(
         文件记录对象,不存在则返回 None
     Raises:
         file_not_found_exception: 文件记录不存在
+
+    2026.3.3 Neo checked
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
+
     if load_parts:
         statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
     file_record = (await async_session.exec(statement)).first()
@@ -156,6 +160,7 @@ async def get_file_record_by_hash(
         文件记录对象
     Raises:
         file_not_found_exception: 文件记录不存在
+        2026.3.3 Neo checked
     """
     file_record = (
         await async_session.exec(
@@ -181,7 +186,6 @@ async def get_reuse_file_by_hash(
 ) -> FileInDB | None:
     """
     查询是否存在可复用的相同哈希文件(不建立关联)
-
     注意:调用此函数前,应先完成上传预检校验(配额/参数/去重)
 
     处理逻辑:
@@ -318,17 +322,26 @@ async def validate_simple_upload(
     pre_record: FileInDB,
 ) -> tuple[str, int]:
     """
-    验证简单上传的所有条件
+    验证简单上传的所有条件：
+    包含、哈希、大小、名字
+    确保上传的文件内容与预检记录一致
 
     Raises:
         HTTPException: 验证失败时抛出异常
+    2026.3.3 Neo checked
     """
     hash_sha256, size = await compute_upload_file_hash(file)
+    #哈希等检查
     if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
         logger.error(f"metadata mismatch user={current_user.id}\n"
                      f"expected_hash={pre_record.hash_sha256} actual_hash={hash_sha256}\n"
                      f"expected_size={pre_record.size} actual_size={size}")
         raise invalid_request_parameters_exception
+    # 文件名检查
+    if not file.filename:
+        logger.error(f"filename missing user={current_user.id}")
+        raise invalid_request_parameters_exception
+
     return hash_sha256, size
 
 
@@ -353,6 +366,46 @@ async def update_download_stats(
 #########################
 # File  - 删
 #########################
+async def delete_file_and_parts(
+    async_session: AsyncSession,
+    file_id: int,
+    current_user: UserInDB,
+) -> None:
+    """
+    根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
+
+    删除流程:
+    1. 查询文件记录,同时预加载对应的分片记录
+    2. 删除分片物理文件(数据库记录会在删除文件时自动级联删除)
+    3. 删除文件的物理文件
+    4. 从所有关联用户的 file_ids 中移除该文件ID
+    5. 更新所有关联用户的统计信息(file_count、total_file_size)
+    6. 删除文件数据库记录(数据库会自动级联删除分片记录)
+    Raises:
+        ValueError: 文件不存在
+        PermissionError: 用户无权限删除该文件
+        OSError: 物理文件删除失败时
+        
+        2026.3.3 Neo checked
+    """
+    # 1. 查询文件记录,同时预加载对应的分片记录
+    file_record = await get_file_record_by_id(file_id, async_session, load_parts=True)
+
+    # 2. 删除分片物理文件(数据库记录会在删除文件记录时自动级联删除)
+    for part in file_record.parts:
+        delete_local_file(part.temp_path)
+        logger.debug(f"deleted part file part_id={part.part_id} temp_path={part.temp_path}")
+
+    # 3. 删除文件的物理文件
+    delete_local_file(file_record.path)
+    logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
+
+    # 5. 删除文件数据库记录(数据库会自动级联删除分片记录)
+    await async_session.delete(file_record)
+
+    logger.info(f"deleted file and all parts file_id={file_id} user={current_user.id}")
+
+
 async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
     """
     删除文件时调用,解除用户与文件的关联关系
@@ -387,6 +440,7 @@ async def unlink_user_from_file(
     Returns:
         True 表示文件还有其他用户持有(只解除关联)
         False 表示文件没有其他用户持有(需要完全删除)
+        2026.3.3 Neo checked
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None
@@ -395,9 +449,7 @@ async def unlink_user_from_file(
 
     # 2. 更新统计信息
     user.file_count = max(0, (user.file_count or 0) - 1)
-    user.total_file_size = max(
-        0, (user.total_file_size or 0) - file_record.size
-    )
+    user.total_file_size = max(0, (user.total_file_size or 0) - file_record.size)
     session.add(user)
 
     # 3. 刷新事务
@@ -412,7 +464,7 @@ async def unlink_user_from_file(
 
 
 async def safe_cleanup_preflight_record(
-    session: AsyncSession, current_user: UserInDB, pre_record: FileInDB
+    async_session: AsyncSession, current_user: UserInDB, pre_record: FileInDB
 ) -> None:
     """
     安全清理预检记录
@@ -421,24 +473,19 @@ async def safe_cleanup_preflight_record(
     - 使用 unlink_user_from_file 解除用户关联并更新统计信息
     - 如果文件属于多个用户:只移除当前用户的关联,保留记录
     - 如果文件只属于当前用户:删除整条记录
+        2026.3.3 Neo checked
     """
     # 解除用户与文件的关联,并更新用户统计信息
-    has_other_owners = await unlink_user_from_file(session, current_user, pre_record)
+    has_other_owners = await unlink_user_from_file(async_session, current_user, pre_record)
 
     if has_other_owners:
         # 还有其他用户持有,只更新 owners
-        logger.debug(
-            "preflight cleanup: removed user=%s from file_id=%s owners",
-            current_user.id,
-            pre_record.file_id,
-        )
+        logger.debug(f"preflight cleanup: removed user={current_user.id} from file_id={pre_record.file_id} owners")
     else:
         # 没有其他用户持有,删除记录(包括物理文件和分片)
         assert pre_record.file_id is not None
-        await delete_file_and_parts(session, pre_record.file_id, current_user)
-        logger.debug(
-            "preflight cleanup: deleted file_id=%s completely", pre_record.file_id
-        )
+        await delete_file_and_parts(async_session, pre_record.file_id, current_user)
+        logger.debug(f"preflight cleanup: deleted file_id={pre_record.file_id} completely")
 
 
 async def rollback_simple_upload(
@@ -454,6 +501,8 @@ async def rollback_simple_upload(
     1. 删除已写入的物理文件(如果有)
     2. 清理预检记录和用户关联
     3. 提交事务,使清理生效
+
+        2026.3.3 Neo checked
     """
     if final_path:
         delete_local_file(final_path)
@@ -461,56 +510,16 @@ async def rollback_simple_upload(
     await async_session.commit()
 
 
-async def delete_file_and_parts(
-    session: AsyncSession,
-    file_id: int,
-    current_user: UserInDB,
-) -> None:
+async def rollback_part_upload(async_session: AsyncSession,
+                               part_record:PartInDB,
+                               file_record:FileInDB) -> None:
     """
-    根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
-
-    删除流程:
-    1. 查询文件记录,同时预加载对应的分片记录
-    2. 删除分片物理文件(数据库记录会在删除文件时自动级联删除)
-    3. 删除文件的物理文件
-    4. 从所有关联用户的 file_ids 中移除该文件ID
-    5. 更新所有关联用户的统计信息(file_count、total_file_size)
-    6. 删除文件数据库记录(数据库会自动级联删除分片记录)
-    Raises:
-        ValueError: 文件不存在
-        PermissionError: 用户无权限删除该文件
-        OSError: 物理文件删除失败时
+    分片上传失败时的统一回滚清理
     """
-    # 1. 查询文件记录,同时预加载对应的分片记录
-    file_record = await get_file_record_by_id(file_id, session, load_parts=True)
+    if part_record and file_record:
+        delete_file_by_storage(part_record.temp_path, file_record.storage_type)
+    await async_session.rollback()
 
-    # 2. 删除分片物理文件(数据库记录会在删除文件记录时自动级联删除)
-    deleted_parts_count = 0
-    for part in file_record.parts:
-        delete_local_file(part.temp_path)
-        deleted_parts_count += 1
-        logger.debug(
-            "deleted part file part_id=%s temp_path=%s",
-            part.part_id,
-            part.temp_path
-        )
-
-    # 3. 删除文件的物理文件
-    delete_local_file(file_record.path)
-    logger.debug(
-        "deleted file physical file path=%s file_id=%s",
-        file_record.path,
-        file_id
-    )
-
-    # 5. 删除文件数据库记录(数据库会自动级联删除分片记录)
-    await session.delete(file_record)
-
-    logger.info(
-        "deleted file and all parts file_id=%s user=%s",
-        file_id,
-        current_user.id
-    )
 
 
 #########################
@@ -522,8 +531,8 @@ async def save_and_persist_part(
     async_session: AsyncSession,
     file_record: FileInDB,
     current_user: UserInDB,
-    part_data: "PartCreate",
-    part: "UploadFile",
+    part_data: PartCreate,
+    part: UploadFile,
     act_part_size: int,
 ) -> PartInDB:
     """
@@ -532,7 +541,7 @@ async def save_and_persist_part(
     流程:
     1. 保存分片到临时目录
     2. 创建 PartInDB 记录
-    3. commit + refresh
+    3. flush + refresh
 
     Returns:
         持久化后的 PartInDB 记录
@@ -543,15 +552,13 @@ async def save_and_persist_part(
     if not file_record.hash_sha256 or not current_user.id or not file_record.file_id:
         raise invalid_request_parameters_exception
 
-    temp_path = prepare_part_temp_path(
-        current_user.id, file_record.hash_sha256, part_data.part_number
-    )
+    temp_path = prepare_part_temp_path(current_user.id, file_record.hash_sha256, part_data.part_number)
+
     try:
         await save_upload_file(part, temp_path)
     except Exception as exc:
-        logger.error(
-            f"save part failed user={current_user.id} "
-            f"file_id={file_record.file_id} part={part_data.part_number} error={exc}")
+        logger.error(f"save part failed user={current_user.id} "
+                     f"file_id={file_record.file_id} part={part_data.part_number} error={exc}")
         delete_local_file(temp_path)
         raise file_persist_failed_exception from exc
 
@@ -561,17 +568,14 @@ async def save_and_persist_part(
         owner_id=current_user.id,
         file_id=file_record.file_id,
         total_file_size=file_record.size,
-        total_parts=file_record.total_parts or 0,
+        total_parts=file_record.total_parts, #type:ignore
     )
     async_session.add(part_record)
-    await async_session.commit()
-    await async_session.refresh(part_record)
-    await async_session.refresh(current_user)
-    await async_session.refresh(file_record)
+    await async_session.flush()
 
-    logger.info(
-        f"part saved user={current_user.id} file_id={file_record.file_id} "
-        f"part={part_data.part_number} size={act_part_size}")
+    logger.info(f"part saved user={current_user.id} file_id={file_record.file_id} "
+                f"part={part_data.part_number} size={act_part_size}")
+
     return part_record
 
 
@@ -622,8 +626,8 @@ async def validate_part_upload(
     async_session: AsyncSession,
     file_record: FileInDB,
     current_user: UserInDB,
-    part_data: "PartCreate",
-    part: "UploadFile",
+    part_data: PartCreate,
+    part: UploadFile,
 ) -> tuple[str, int]:
     """
     分片上传前置验证(编号范围 + 重复检查 + 哈希大小校验)
@@ -635,11 +639,14 @@ async def validate_part_upload(
         part_number_out_of_range_exception: 分片编号越界
         part_already_exists_exception: 分片已上传
         part_validation_failed_exception: 哈希或大小不匹配
+
+    2026.3.3 Neo checked
     """
     act_hash, act_size = None, None
     # 1. 分片编号范围校验
     if not part_data.part_number or not file_record.total_parts:
         raise part_number_out_of_range_exception
+
     if not 1 <= part_data.part_number <= file_record.total_parts:
         raise part_number_out_of_range_exception
 

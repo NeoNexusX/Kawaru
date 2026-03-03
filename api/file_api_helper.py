@@ -60,7 +60,7 @@ def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> P
 
     使用 user_{owner_id}_{file_hash}_part_{part_number} 格式命名
     避免不同用户、不同文件的分片冲突
-
+    2026.3.3 Neo checked
     """
     TEMP_PARTS_ROOT.mkdir(parents=True, exist_ok=True)
     part_filename = f"user_{owner_id}_{file_hash}_part_{part_number:06d}"
@@ -70,15 +70,14 @@ def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> P
 ########
 # file 增
 ########
+#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     将上传文件保存到指定路径
+    使用 aiofiles 异步写入,分片读取避免内存占用过大 写入完成后关闭上传文件句柄
 
-    使用 aiofiles 异步写入,分片读取避免内存占用过大
-    写入完成后关闭上传文件句柄
-
+        2026.3.3 Neo checked
     """
-    #TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
     await upload_file.seek(0)
     async with aiofiles.open(destination, "wb") as buffer:
         while True:
@@ -88,8 +87,8 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
             await buffer.write(chunk)
     await upload_file.close()
 
-
-async def build_zip_file(#todotodo
+#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
+async def build_zip_file(
     files: list[tuple[Path, str]],
     output_path: Path,
     compression: int | None = None,
@@ -128,6 +127,7 @@ async def build_zip_file(#todotodo
 ########
 # file 删
 ########
+#TODO:替换为 delete_file_by_storage,支持分布式存储删除
 def delete_local_file(path: str | Path) -> None:
     """
     删除本地文件
@@ -144,6 +144,7 @@ def delete_local_file(path: str | Path) -> None:
     if not path:
         logger.warning("empty path for deletion, skipping")
         return
+
     # 跳过特殊占位符路径
     if str(path) == SOURCE_FILE_PATH_CLEARED:
         logger.debug("skip deletion for SOURCE_FILE_PATH_CLEARED placeholder")
@@ -187,8 +188,7 @@ async def delete_files_async(file_paths: list[str | Path]) -> int:
     return deleted_count
 
 
-#TODO:替换为 delete_file_by_storage,支持分布式存储删除
-def delete_file_by_storage(file_record) -> None:
+def delete_file_by_storage(path,storage_type) -> None:
     """
     根据存储类型删除文件
 
@@ -203,21 +203,14 @@ def delete_file_by_storage(file_record) -> None:
         NotImplementedError: 不支持的存储类型
         OSError: 文件删除失败时
     """
-    if file_record.storage_type == "local":
-        delete_local_file(file_record.path)
-    elif file_record.storage_type == "distributed":
-        logger.warning(
-            "distributed storage delete not implemented for file_id=%s",
-            getattr(file_record, 'file_id', 'unknown')
-        )
+    if storage_type == "local":
+        delete_local_file(path)
+
+    elif storage_type == "oss":
         raise NotImplementedError("Distributed storage delete not implemented")
+
     else:
-        logger.warning(
-            "unsupported storage type %s for file_id=%s",
-            file_record.storage_type,
-            getattr(file_record, 'file_id', 'unknown')
-        )
-        raise NotImplementedError(f"Unsupported storage type: {file_record.storage_type}")
+        raise NotImplementedError(f"Unsupported storage type: {storage_type.storage_type}")
 
 
 ########
@@ -448,6 +441,8 @@ async def validate_upload_request(
 
     Returns:
         True 表示验证通过,False 表示验证失败
+
+        2026.3.3 Neo checked
     """
     # 1. 存储类型验证
     if file_data.storage_type not in ALLOWED_STORAGE_TYPES:

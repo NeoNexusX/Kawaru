@@ -105,8 +105,6 @@ def trigger_experiment_extraction(
 ) -> None:
     """
     根据实验类型触发后台实验文件提取任务
-
-    触发条件: experiment_type == "imzml"
     """
     if experiment_type != "imzml":
         return

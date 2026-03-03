@@ -22,6 +22,7 @@ from api.file_api_business import (
     validate_and_merge_parts,
     validate_part_upload,
     validate_simple_upload,
+    rollback_part_upload
 )
 from api.file_api_helper import (
     ensure_storage_dirs,
@@ -34,7 +35,6 @@ from api.user_api import token_authen
 from constants.file_constants import MAX_DOWNLOADS_PER_USER
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
-    part_merge_failed_exception,
     download_not_implemented_exception,
     file_persist_failed_exception,
     invalid_part_data_exception,
@@ -64,20 +64,18 @@ async def preflight_create_file(
     async_session: AsyncSessionDep,
 ) -> FilePublic:
     """
-    【预检接口 - 简单上传】
-    
+    【预检接口】
+
     功能:根据前端提供的元数据创建文件记录,但不写入用户 file_ids 与计数。
     时机:在实际文件上传之前调用
     目的:提前验证、预分配文件ID、支持秒传(哈希复用)
-    
+
     流程:
-    1. 清理过期的预检记录
-    2. 参数验证(存储类型、文件名、文件类型)
-    3. 用户配额检查
-    4. 重复文件检查(文件名、哈希)
-    5. 尝试复用已存在的相同哈希文件(秒传)
-    6. 如果无法复用,创建新的文件记录(预检状态)
-    
+    1. 参数验证(存储类型、文件名、文件类型、用户配额检查)
+    2. 重复文件检查(文件名、哈希)
+    3. 尝试复用已存在的相同哈希文件(秒传)
+    4. 如果无法复用,创建新的文件记录(预检状态)
+
     注意:
     - 此时文件记录已创建,但用户的 file_ids 和统计信息尚未更新
     - 只有在后续上传接口中校验通过后,才会更新用户计数
@@ -140,41 +138,35 @@ async def upload_file_part(
     4. 保存分片并创建记录
     5. 尝试合并,合并成功则触发后台任务
     """
-    ensure_storage_dirs()
-
+    part_record = None
+    file_record = None
     # 1. 解析分片元数据
     try:
+        ensure_storage_dirs()
+
         part_data = PartCreate(**json.loads(part_data_json))
-    except Exception as exc:
-        logger.error(f"invalid part_data user={current_user.id} error={exc}")
-        raise invalid_part_data_exception from exc
+        logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
 
-    logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
+        # 2. 查询文件记录(业务层)
+        file_record = await get_file_record_by_hash(async_session, part_data.file_hash)
 
-    # 2. 查询文件记录(业务层)
-    file_record = await get_file_record_by_hash(async_session, part_data.file_hash)
+        # 3. 统一验证(业务层:编号范围 + 重复 + 哈希大小)
+        _, act_part_size = await validate_part_upload(async_session, file_record, current_user, part_data, part)
 
-    # 3. 统一验证(业务层:编号范围 + 重复 + 哈希大小)
-    _, act_part_size = await validate_part_upload(async_session, file_record, current_user, part_data, part)
+        # 4. 保存分片并持久化记录(业务层)
+        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size)
 
-    # 4. 保存分片并持久化记录(业务层)
-    part_record = await save_and_persist_part(
-        async_session, file_record, current_user, part_data, part, act_part_size)
-
-    # 5. 尝试合并
-    try:
+        # 5. 尝试合并
         if await validate_and_merge_parts(async_session, file_record, current_user):
             await async_session.commit()
             await async_session.refresh(current_user)
             await async_session.refresh(file_record)
             logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
-            trigger_experiment_extraction( background_tasks, file_record, current_user, file_record.experiment_type)
-
+            trigger_experiment_extraction(background_tasks, file_record, current_user, file_record.experiment_type)
+        
     except Exception as exc:
-        logger.error(
-            f"merge failed user={current_user.id} file_id={file_record.file_id} "
-            f"part={part_data.part_number} error={exc}")
-        raise part_merge_failed_exception from exc
+        await rollback_part_upload(async_session, part_record, file_record)
+        raise invalid_part_data_exception from exc
 
     return part_record  # type: ignore
 
@@ -272,11 +264,7 @@ async def upload_simple_file(
     # 统一验证(业务层)
     _, size = await validate_simple_upload(current_user, file, pre_record)
 
-    # 文件名校验(显式检查,避免 assert 在 -O 模式下被跳过)
-    if not file.filename:
-        raise invalid_request_parameters_exception
-
-    final_path = prepare_local_storage_path(file.filename)
+    final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
 
     try:
         # 保存文件 → 更新记录 → 提交,统一 try 保护

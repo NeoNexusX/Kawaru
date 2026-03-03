@@ -95,11 +95,6 @@ part_file_missing_exception = HTTPException(
     detail=format_exception_detail("part file missing from storage")
 )
 
-# 分片合并失败异常
-part_merge_failed_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("failed to merge parts")
-)
 
 # 参数验证失败异常
 invalid_request_parameters_exception = HTTPException(
@@ -124,6 +119,5 @@ __all__ = [
     "part_already_exists_exception",
     "merged_file_hash_mismatch_exception",
     "part_file_missing_exception",
-    "part_merge_failed_exception",
     "invalid_request_parameters_exception",
 ]
