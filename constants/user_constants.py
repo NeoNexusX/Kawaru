@@ -1,6 +1,6 @@
 """存储和用户相关的常量定义"""
 import json
-from envset.config import REGION_PATH, get_config
+from boot.config import REGION_PATH, get_config
 
 config = get_config()
 user_config = config.user

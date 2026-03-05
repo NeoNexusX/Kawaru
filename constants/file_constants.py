@@ -1,6 +1,6 @@
 """存储和文件相关的常量定义"""
 from pathlib import Path
-from envset.config import get_config
+from boot.config import get_config
 
 # 字节单位常量
 BYTES_IN_KB = 1024
@@ -17,14 +17,14 @@ storage_config = config.storage
 # 存储路径常量
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
-TEMP_CHUNKS_ROOT = STORAGE_ROOT / "temp_chunks"
+TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
 CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB
 
 # 单次上传最大允许分片数限制
-MAX_CHUNKS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
+MAX_PARTS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
 
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
@@ -52,7 +52,7 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_TB",
     "STORAGE_ROOT",
     "LOCAL_STORAGE_ROOT",
-    "TEMP_CHUNKS_ROOT",
+    "TEMP_PARTS_ROOT",
     "MAX_FILE_SIZE",
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",

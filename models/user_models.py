@@ -1,8 +1,8 @@
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from sqlmodel import Field, SQLModel, Relationship,Column, String
-from logger import get_logger
-from envset.config import get_config
+from tools.logger import get_logger
+from boot.config import get_config
 from models.link_models import UserFileLink
 
 # 防止循环引用报错
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from models.file_models import FileInDB
 
 # 获取服务器状态模块的日志器
-logger = get_logger("main.user_control")
+logger = get_logger("models.user_models")
 
 # 模型字段配置来自 config
 config = get_config()
@@ -25,11 +25,12 @@ class UserBase(SQLModel):
     position: str = Field(default="", max_length=user_config.max_position_length)
     research_field: str | None = Field(max_length=user_config.max_research_field_length)
     region: str | None = Field(max_length=user_config.max_region_length)
-    orcid: str | None = Field(max_length=user_config.max_orcid_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(max_length=user_config.max_homepage_length)
     active: bool = Field(default=True)
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
     email: str = Field(sa_column=Column(String(user_config.max_useremail_length), unique=True), description="用户邮箱")
+
 
 class UserInDB(UserBase, table=True):
     """
@@ -43,6 +44,7 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
+
 
 class UserCreate(UserBase):
     """新用户创建模型，包括邮箱、密码、验证码"""

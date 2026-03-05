@@ -1,7 +1,7 @@
 """存储和实验相关的异常定义"""
 from starlette import status
 from fastapi import HTTPException
-from exceptions.exception_utils import format_exception_detail
+from exceptions.utils_exception import format_exception_detail
 
 
 # 实验不存在异常

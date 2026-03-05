@@ -6,9 +6,6 @@ class ServerSettings(BaseModel):
     name: str
     port: int
     host: str
-    log_level: str
-    log_dir: str
-    admin_email: str
 
 class TokenSettings(BaseModel):
     """令牌配置模型"""
@@ -20,6 +17,10 @@ class DatabaseSettings(BaseModel):
     db_username: str
     db_name: str
     db_type: str
+    pool_size: int
+    pool_recycle: int
+    max_overflow: int
+    echo_pool: bool
     host: str
     port: int
 
@@ -85,6 +86,7 @@ class SampleInfoSettings(BaseModel):
 # Initial admin user's information 初始管理员信息
 class AdminInfo(BaseModel):
     """初始管理员信息配置模型"""
+    username: str
     institution: str
     position: str
     research_field: str

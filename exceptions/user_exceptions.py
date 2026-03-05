@@ -1,15 +1,15 @@
 from starlette import status
 from fastapi import HTTPException
-from exceptions.exception_utils import format_exception_detail
+from exceptions.utils_exception import format_exception_detail
 
 
 user_already_exists_exception = HTTPException(
     status_code=status.HTTP_409_CONFLICT,#提示用户已经存在
-    detail=format_exception_detail("Username already exists")
+    detail=format_exception_detail("User already exists")
 )
 
 email_already_exists_exception = HTTPException(
-    status_code=status.HTTP_409_CONFLICT,#提示用户没激活
+    status_code=status.HTTP_409_CONFLICT,#提示邮箱已经注册
     detail=format_exception_detail("Email already registered")
 )
 

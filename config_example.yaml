@@ -1,10 +1,7 @@
 server:
-  name: bionet
+  name: Kawaru
   port: 8000
   host: 0.0.0.0
-  log_level: debug
-  log_dir: logs
-  admin_email: examplr@example.com
 
 token:
   token_expire_minutes: 30
@@ -46,6 +43,7 @@ storage:
   chunk_ttl_minutes: 30
 
 admin_info:
+  username: bionet
   institution: Xiamen University
   position: Researcher
   research_field: Massflow

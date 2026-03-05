@@ -123,7 +123,7 @@ class TestFileUpload:
                 }
 
                 rs = await client.post(
-                    "/files/chunked/preflight",
+                    "/files/preflight",
                     headers={"Authorization": f"{token_type.title()} {token}"},
                     json=json_data
                 )
