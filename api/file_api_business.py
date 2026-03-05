@@ -18,7 +18,6 @@ from api.file_api_helper import (
     delete_local_file,
     build_zip_file,
     merge_files_and_get_hash,
-    prepare_part_temp_path,
     save_upload_file,
     delete_file_by_storage
 )
@@ -29,7 +28,6 @@ from exceptions import (
     part_file_missing_exception,
     file_not_found_exception,
     file_content_missing_exception,
-    file_persist_failed_exception,
     invalid_request_parameters_exception,
     invalid_user_for_file_list_sync_exception,
     merged_file_hash_mismatch_exception,
@@ -511,13 +509,14 @@ async def rollback_simple_upload(
 
 
 async def rollback_part_upload(async_session: AsyncSession,
-                               part_record:PartInDB,
-                               file_record:FileInDB) -> None:
+                               path: Path | None,
+                               file_record:FileInDB | None) -> None:
     """
     分片上传失败时的统一回滚清理
     """
-    if part_record and file_record:
-        delete_file_by_storage(part_record.temp_path, file_record.storage_type)
+    if path and file_record:
+        delete_file_by_storage(path, file_record.storage_type)
+
     await async_session.rollback()
 
 
@@ -534,6 +533,7 @@ async def save_and_persist_part(
     part_data: PartCreate,
     part: UploadFile,
     act_part_size: int,
+    temp_path: Path,
 ) -> PartInDB:
     """
     保存分片临时文件并创建数据库记录
@@ -549,26 +549,15 @@ async def save_and_persist_part(
     Raises:
         file_persist_failed_exception: 文件保存失败
     """
-    if not file_record.hash_sha256 or not current_user.id or not file_record.file_id:
-        raise invalid_request_parameters_exception
-
-    temp_path = prepare_part_temp_path(current_user.id, file_record.hash_sha256, part_data.part_number)
-
-    try:
-        await save_upload_file(part, temp_path)
-    except Exception as exc:
-        logger.error(f"save part failed user={current_user.id} "
-                     f"file_id={file_record.file_id} part={part_data.part_number} error={exc}")
-        delete_local_file(temp_path)
-        raise file_persist_failed_exception from exc
+    await save_upload_file(part, temp_path)
 
     part_record = PartInDB(
         **part_data.model_dump(),
         temp_path=str(temp_path),
-        owner_id=current_user.id,
-        file_id=file_record.file_id,
+        owner_id=current_user.id, #type:ignore 使用的时候需要提前判断
+        file_id=file_record.file_id, #type:ignore 使用的时候需要提前判断
         total_file_size=file_record.size,
-        total_parts=file_record.total_parts, #type:ignore
+        total_parts=file_record.total_parts, #type:ignore 使用的时候需要提前判断
     )
     async_session.add(part_record)
     await async_session.flush()

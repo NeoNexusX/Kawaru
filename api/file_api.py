@@ -29,13 +29,13 @@ from api.file_api_helper import (
     prepare_local_storage_path,
     save_upload_file,
     validate_upload_request,
+    prepare_part_temp_path
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
 from constants.file_constants import MAX_DOWNLOADS_PER_USER
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
-    download_not_implemented_exception,
     file_persist_failed_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
@@ -140,6 +140,7 @@ async def upload_file_part(
     """
     part_record = None
     file_record = None
+    temp_path = None
     # 1. 解析分片元数据
     try:
         ensure_storage_dirs()
@@ -153,19 +154,27 @@ async def upload_file_part(
         # 3. 统一验证(业务层:编号范围 + 重复 + 哈希大小)
         _, act_part_size = await validate_part_upload(async_session, file_record, current_user, part_data, part)
 
+        # 4 获取保存路径
+        if not file_record.hash_sha256 or not current_user.id or not file_record.file_id:
+            raise invalid_request_parameters_exception
+
+        temp_path = prepare_part_temp_path(current_user.id, file_record.hash_sha256, part_data.part_number)
+
         # 4. 保存分片并持久化记录(业务层)
-        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size)
+        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size, temp_path)
 
         # 5. 尝试合并
         if await validate_and_merge_parts(async_session, file_record, current_user):
-            await async_session.commit()
-            await async_session.refresh(current_user)
-            await async_session.refresh(file_record)
-            logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
             trigger_experiment_extraction(background_tasks, file_record, current_user, file_record.experiment_type)
-        
+
+        await async_session.commit()
+        await async_session.refresh(current_user)
+        await async_session.refresh(file_record)
+
+        logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
+
     except Exception as exc:
-        await rollback_part_upload(async_session, part_record, file_record)
+        await rollback_part_upload(async_session, temp_path, file_record)
         raise invalid_part_data_exception from exc
 
     return part_record  # type: ignore
@@ -264,6 +273,7 @@ async def upload_simple_file(
     # 统一验证(业务层)
     _, size = await validate_simple_upload(current_user, file, pre_record)
 
+    #TODO：这里应该是根据存储类型动态处理不同的存储逻辑,目前只实现了本地存储,后续可以扩展其他存储类型(如 S3、Azure Blob 等)
     final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
 
     try:
@@ -311,30 +321,25 @@ async def list_user_files(
     # 1. 快速返回:用户没有任何文件
     assert current_user.id is not None
     user_file_ids = await get_user_file_ids(session=session, user_id=current_user.id)
+
     if not user_file_ids:
-        return FileListResponse(
-            total=0,
-            files=[],
-            user_id=current_user.id
-        )
+        return FileListResponse(total=0,files=[],user_id=current_user.id)
 
     # 2. 批量查询文件记录(使用 IN 查询,效率高)
     statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
     all_results = (await session.exec(statement)).all()
 
-    # 只保留真正上传的文件
+    # 3. 只保留真正上传的文件
     filtered_results = []
     for file_record in all_results:
         if await valid_file_uploaded(session, file_record):
             filtered_results.append(file_record)
 
-    logger.debug("list user files user=%s count=%s", current_user.id, len(filtered_results))
+    logger.debug(f"list user files user={current_user.id} count={len(filtered_results)}")
 
-    return FileListResponse(
-        total=len(filtered_results),
-        files=list(filtered_results), # type: ignore
-        user_id=current_user.id
-    )
+    return FileListResponse(total=len(filtered_results),
+                            files=list(filtered_results), # type: ignore
+                            user_id=current_user.id)
 
 
 async def delete_user_file(
@@ -380,11 +385,7 @@ async def delete_user_file(
         await session.commit()
         await session.refresh(current_user)
         await session.refresh(file_record)
-        logger.info(
-            "unlinked file reference only user=%s file_id=%s ",
-            current_user.id,
-            file_id,
-        )
+        logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
         return {"file_id": file_id, "status": "unlinked"}
 
     # 没有其他用户持有该文件,执行完全删除
@@ -397,9 +398,8 @@ async def delete_user_file(
 
     await session.commit()
     await session.refresh(current_user)
-    logger.info(
-        "deleted file completely user=%s file_id=%s", current_user.id, file_id
-    )
+    logger.info(f"deleted file completely user={current_user.id} file_id={file_id}")
+
     return {"file_id": file_id, "status": "deleted"}
 
 
@@ -439,17 +439,13 @@ async def get_download_file_metadata(
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
-    logger.debug("download request user=%s file_id=%s", current_user.id, file_id)
+    logger.debug(f"download request user={current_user.id} file_id={file_id}")
 
     # 下载次数限制检查
     if current_user.identity != "admin":
         used = current_user.download_used or 0
         if used >= MAX_DOWNLOADS_PER_USER:
             raise user_download_limit_exception
-
-    # 存储类型检查
-    if file_record.storage_type != "local":
-        raise download_not_implemented_exception
 
     # 准备下载文件(业务层处理)
     await prepare_download_file(session, file_record)
@@ -460,12 +456,7 @@ async def get_download_file_metadata(
     await session.refresh(current_user)
     await session.refresh(file_record)
 
-    logger.info(
-        "download success user=%s file_id=%s filename=%s",
-        current_user.id,
-        file_id,
-        file_record.filename,
-    )
+    logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
 
     return FileDownloadMeta.from_record(file_record)
 
