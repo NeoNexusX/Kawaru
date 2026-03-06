@@ -20,9 +20,13 @@ email:
 
 database:
   host: kawaru-test.cpes2okukxkj.ap-southeast-1.rds.amazonaws.com
-  db_name: kawaru_test_1
+  db_name: kawaru_test_new_year
   db_type: mariadb
   db_username: kawaru
+  pool_size: 1000
+  max_overflow: 20
+  echo_pool: false
+  pool_recycle: 3600
   port: 3306
 
 storage:
@@ -32,7 +36,7 @@ storage:
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
   allowed_storage_types: ["local"]
-  allowed_file_types: ["imzML","ibd","IBD"]
+  allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
   max_path_length: 255
   max_filename_length: 100
@@ -43,7 +47,7 @@ storage:
   chunk_ttl_minutes: 30
 
 admin_info:
-  username: bionet
+  username: kawaru
   institution: Xiamen University
   position: Researcher
   research_field: Massflow

@@ -12,12 +12,12 @@ from pathlib import Path
 
 import aiofiles
 from fastapi import UploadFile
+from sqlalchemy.orm import selectinload
 from sqlmodel import and_, exists, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from api.experiment_api_helper import validate_experiment_type
-from models.file_models import FileInDB, UserFileLink, FileCreate
+from models.file_models import FileInDB, UserFileLink
 from models.user_models import UserInDB
-from exceptions import duplicate_file_exception, user_file_limit_exception
+from exceptions import file_not_found_exception
 from constants.file_constants import (
     STORAGE_ROOT,
     LOCAL_STORAGE_ROOT,
@@ -32,8 +32,8 @@ from constants.file_constants import (
     MAX_PARTS_PER_UPLOAD,
 )
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
-from tools.logger import get_logger
 
+from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
 
 
@@ -45,6 +45,7 @@ def ensure_storage_dirs() -> None:
     for path in (STORAGE_ROOT, LOCAL_STORAGE_ROOT, TEMP_PARTS_ROOT):
         path.mkdir(parents=True, exist_ok=True)
 
+
 def prepare_local_storage_path(filename: str) -> Path:
     """
     为简单上传准备最终保存路径
@@ -53,6 +54,7 @@ def prepare_local_storage_path(filename: str) -> Path:
     """
     LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
     return LOCAL_STORAGE_ROOT / filename
+
 
 def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> Path:
     """
@@ -86,6 +88,7 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
                 break
             await buffer.write(chunk)
     await upload_file.close()
+
 
 #TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
 async def build_zip_file(
@@ -426,56 +429,6 @@ def validate_upload_params(
     return True
 
 
-async def validate_upload_request(
-    async_session: AsyncSession,
-    current_user: UserInDB,
-    file_data: FileCreate,
-) -> bool:
-    """
-    统一验证上传请求参数
-
-    Args:
-        session: 数据库会话
-        current_user: 当前用户
-        file_data: 上传预检请求模型
-
-    Returns:
-        True 表示验证通过,False 表示验证失败
-
-        2026.3.3 Neo checked
-    """
-    # 1. 存储类型验证
-    if file_data.storage_type not in ALLOWED_STORAGE_TYPES:
-        return False
-
-    # 2. 文件名和类型验证
-    if not validate_file_metadata(file_data.filename):
-        return False
-
-    # 3. 实验类型验证(如果提供)
-    if file_data.experiment_type and not validate_experiment_type(file_data.experiment_type):
-        return False
-
-    # 4. 分片数量验证(如果需要)
-    if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
-        return False
-
-    # 5. 用户配额检查
-    if not check_user_quota(current_user, file_data.size):
-        raise user_file_limit_exception
-
-    # 6. 重复文件名检查
-    if await valid_duplicate_filename(async_session, current_user, file_data.filename):
-        raise duplicate_file_exception
-
-    # 7. 重复文件哈希检查
-    assert file_data.hash_sha256 is not None
-    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
-        raise duplicate_file_exception
-
-    return True
-
-
 async def valid_duplicate_filename(
     async_session: AsyncSession, user: UserInDB, filename: str
 ) -> bool:
@@ -546,3 +499,34 @@ async def valid_user_duplicate_file_hash(
         return True
 
     return False
+
+
+async def get_file_record_by_id(
+    file_id: int,
+    async_session: AsyncSession,
+    load_parts: bool = False
+) -> FileInDB:
+    """
+    根据文件ID查询文件记录
+
+    可选参数:
+    load_parts: bool 是否同时加载分片信息
+
+    Returns:
+        文件记录对象,不存在则返回 None
+    Raises:
+        file_not_found_exception: 文件记录不存在
+
+    2026.3.3 Neo checked
+    """
+    statement = select(FileInDB).where(FileInDB.file_id == file_id)
+
+    if load_parts:
+        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found file_id=%s", file_id)
+        raise file_not_found_exception
+
+    return file_record

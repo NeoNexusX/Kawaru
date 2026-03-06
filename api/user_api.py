@@ -26,11 +26,11 @@ from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W040
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from boot.config import get_config
-from tools.logger import get_logger
 from models.auth import Token, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
 
+from tools.logger import get_logger
 logger = get_logger("api.user_api")
 
 
