@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
@@ -42,6 +43,12 @@ app.include_router(user_router)
 app.include_router(file_router)
 app.include_router(experiment_router)
 
+# Celery 配置
+celery_app = Celery('celery_app')
+celery_app.config_from_object('boot.celeryconfig')
+# TODO: 此时celery还没启动，需要通过终端运行
+# celery -A main.celery_app worker -l info
+# 或通过在lifespan中创建subprocess等方式启动
 
 # update ：uvicorn run config
 if __name__ == "__main__":

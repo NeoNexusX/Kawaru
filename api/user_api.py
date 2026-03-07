@@ -244,42 +244,6 @@ async def login(
         raise
 
 
-async def logout(token: Annotated[str, Depends(oauth2_scheme)], db: SessionDep):
-    """用户登出，返回登出的用户信息"""
-    try:
-        payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[get_config().token.algorithm]
-        )
-        username = payload.get("sub")
-        if username is None:
-            raise token_invalid_exception
-
-        # Retrieve login status
-        login_key = f"login_token:{token}"
-        login_data = await redis_client.hgetall(login_key) # type:ignore
-
-        # 1. Check if login data exists
-        if not login_data:
-            raise login_expired_exception
-        login_data = RedisLoginData(**(login_data))
-
-        # 2. Check if login data correspond to current user
-        if login_data.username != username:
-            raise login_expired_exception
-
-        await redis_client.delete(login_key)
-
-    except ExpiredSignatureError as exc:
-        raise token_expired_exception from exc
-
-    except InvalidTokenError as exc:
-        raise token_invalid_exception from exc
-
-    user = await get_activate_user(username, db)
-
-    return user
-
-
 async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
     """用户登出，返回登出的用户信息"""
     try:

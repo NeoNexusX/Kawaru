@@ -45,7 +45,10 @@ def bootstrap():
     init_logging()
 
     #log part
-    from tools.logger import get_logger   # pylint: disable=import-outside-toplevel
+    from tools.logger import get_logger, LOG_LEVELS   # pylint: disable=import-outside-toplevel
+
+    logger = get_logger("watchfiles")
+    logger.setLevel(LOG_LEVELS['warning'])  # watchfiles 监控文件变化时会输出大量日志，提升到 warning 级别以上以减少干扰
 
     logger = get_logger("bootstrap")
     logger.info("runtime environment initialized")

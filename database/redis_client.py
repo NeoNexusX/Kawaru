@@ -1,8 +1,8 @@
 import os
 from redis.asyncio.connection import ConnectionPool
 from redis.asyncio import Redis
-from envset.config import get_config
-from logger import get_logger
+from boot.config import get_config
+from tools.logger import get_logger
 
 logger = get_logger("main.redis")
 
