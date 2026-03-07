@@ -8,12 +8,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import selectinload
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.experiment_api_business import get_imzml_experiment_by_file_id
+from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
+    check_user_quota,
+    get_file_record_by_id,
+    valid_duplicate_filename,
+    valid_user_duplicate_file_hash,
+    validate_file_metadata,
+    validate_total_parts,
     compute_upload_file_hash,
     delete_local_file,
     build_zip_file,
@@ -22,9 +28,11 @@ from api.file_api_helper import (
     delete_file_by_storage
 )
 from constants.file_constants import (
+    ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
 )
 from exceptions import (
+    duplicate_file_exception,
     part_file_missing_exception,
     file_not_found_exception,
     file_content_missing_exception,
@@ -34,9 +42,10 @@ from exceptions import (
     part_already_exists_exception,
     part_number_out_of_range_exception,
     part_validation_failed_exception,
+    user_file_limit_exception,
 )
 from tools.logger import get_logger
-from models.file_models import FileInDB, PartInDB
+from models.file_models import FileCreate, FileInDB, PartInDB
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus
@@ -116,37 +125,6 @@ async def link_file_to_user(
 #########################
 # File  - 查
 #########################
-async def get_file_record_by_id(
-    file_id: int,
-    async_session: AsyncSession,
-    load_parts: bool = False
-) -> FileInDB:
-    """
-    根据文件ID查询文件记录
-
-    可选参数:
-    load_parts: bool 是否同时加载分片信息
-
-    Returns:
-        文件记录对象,不存在则返回 None
-    Raises:
-        file_not_found_exception: 文件记录不存在
-
-    2026.3.3 Neo checked
-    """
-    statement = select(FileInDB).where(FileInDB.file_id == file_id)
-
-    if load_parts:
-        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
-    file_record = (await async_session.exec(statement)).first()
-
-    if not file_record:
-        logger.warning("file record not found file_id=%s", file_id)
-        raise file_not_found_exception
-
-    return file_record
-
-
 async def get_file_record_by_hash(
     async_session: AsyncSession,
     file_hash: str,
@@ -804,3 +782,53 @@ async def delete_parts_by_file_id(
     )
 
     return deleted_count
+
+
+async def validate_upload_request(
+    async_session: AsyncSession,
+    current_user: UserInDB,
+    file_data: FileCreate,
+) -> bool:
+    """
+    统一验证上传请求参数
+
+    Args:
+        session: 数据库会话
+        current_user: 当前用户
+        file_data: 上传预检请求模型
+
+    Returns:
+        True 表示验证通过,False 表示验证失败
+
+        2026.3.3 Neo checked
+    """
+    # 1. 存储类型验证
+    if file_data.storage_type not in ALLOWED_STORAGE_TYPES:
+        return False
+
+    # 2. 文件名和类型验证
+    if not validate_file_metadata(file_data.filename):
+        return False
+
+    # 3. 实验类型验证(如果提供)
+    if file_data.experiment_type and not validate_experiment_type(file_data.experiment_type):
+        return False
+
+    # 4. 分片数量验证(如果需要)
+    if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
+        return False
+
+    # 5. 用户配额检查
+    if not check_user_quota(current_user, file_data.size):
+        raise user_file_limit_exception
+
+    # 6. 重复文件名检查
+    if await valid_duplicate_filename(async_session, current_user, file_data.filename):
+        raise duplicate_file_exception
+
+    # 7. 重复文件哈希检查
+    assert file_data.hash_sha256 is not None
+    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
+        raise duplicate_file_exception
+
+    return True

@@ -5,12 +5,11 @@ import json
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
 from sqlmodel import select, and_
-from api.experiment_api_helper import trigger_experiment_extraction
+from background.experiment_background import trigger_experiment_extraction
 from api.file_api_business import (
     assert_file_owner,
     delete_file_and_parts,
     get_file_record_by_hash,
-    get_file_record_by_id,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file,
@@ -22,13 +21,14 @@ from api.file_api_business import (
     validate_and_merge_parts,
     validate_part_upload,
     validate_simple_upload,
-    rollback_part_upload
+    rollback_part_upload,
+    validate_upload_request
 )
 from api.file_api_helper import (
     ensure_storage_dirs,
+    get_file_record_by_id,
     prepare_local_storage_path,
     save_upload_file,
-    validate_upload_request,
     prepare_part_temp_path
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
@@ -54,6 +54,7 @@ from models.file_models import (
     PartPublic,
 )
 from models.user_models import UserInDB
+
 from tools.logger import get_logger
 logger = get_logger("api.file_api")
 
@@ -288,13 +289,13 @@ async def upload_simple_file(
         await async_session.commit()
         await async_session.refresh(pre_record)
         await async_session.refresh(current_user)
+        logger.info(f"simple upload completed user={current_user.id} user name = {current_user.username}\n"
+                    f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
         await rollback_simple_upload(async_session, current_user, pre_record, final_path)
         raise file_persist_failed_exception from exc
-
-    logger.info(f"simple upload completed user={current_user.id} file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
     trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
 

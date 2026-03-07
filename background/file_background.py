@@ -6,10 +6,10 @@ from fastapi import HTTPException
 from sqlmodel import and_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from api.experiment_api import logger
 from api.experiment_api_business import create_experiment_record, delete_source_file_and_clear_path, mark_experiment
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
-from api.file_api_business import get_file_record_by_id, safe_cleanup_preflight_record
+from api.file_api_helper import get_file_record_by_id
+from api.file_api_business import safe_cleanup_preflight_record
 from constants.file_constants import PREFLIGHT_TTL_MINUTES
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
@@ -18,6 +18,8 @@ from models.file_models import FileInDB, now_local_timezone
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 
+from tools.logger import get_logger
+logger = get_logger("background.file_background")
 
 async def process_imzml_experiment_background(
     user_id: int,
