@@ -263,7 +263,7 @@ class LoggerManager:
                 handler.setLevel(level)
 
 # 获取日志器的便捷函数
-def get_logger(name="app"):
+def get_logger(name="app") -> logging.Logger:
     """Get logger by name."""
 
     if LOGGER_MANAGER is None:

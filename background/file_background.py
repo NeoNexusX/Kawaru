@@ -34,10 +34,10 @@ async def process_imzml_experiment_background(
     - 正式目录:experiments/processed/exp_{id}/
     """
     source_file = None
-    try:
-        logger.info(f"starting imzml experiment processing user={user_id} file={source_file_id}")
+    async with AsyncSession(get_async_engine()) as async_session:
+        try:
+            logger.info(f"starting imzml experiment processing user={user_id} file={source_file_id}")
 
-        async with AsyncSession(get_async_engine()) as async_session:
             # 阶段1: 查询文件记录并创建实验记录
             # 查询源文件
             source_file = await get_file_record_by_id(source_file_id, async_session)
@@ -56,16 +56,16 @@ async def process_imzml_experiment_background(
             await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
 
             # 删除原始 ZIP 文件并修改文件表中的 path 字段（helper 层）
+            await delete_source_file_and_clear_path(async_session, source_file, is_successful=True)
             await async_session.commit()
 
             logger.info(f"deleted source zip file {source_file_id} and completed imzml experiment processing exp_id={experiment_record.id}")
 
-    except HTTPException as e:
-        logger.error(e)
-        raise e
+        except HTTPException as e:
+            logger.error(e)
+            raise e
 
-    except (zipfile.BadZipFile, FileNotFoundError) as e:
-        async with AsyncSession(get_async_engine()) as async_session:
+        except (zipfile.BadZipFile, FileNotFoundError) as e:
             #此处理论上experiment_record一定存在，直接使用即可
             await mark_experiment(async_session = async_session,
                                     experiment=experiment_record.id, #type:ignore
@@ -75,16 +75,16 @@ async def process_imzml_experiment_background(
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 
-    except Exception as e:
-        logger.error("imzml experiment processing failed error=%s", e)
-        raise
-
-    finally:
-        async with AsyncSession(get_async_engine()) as async_session:
-            # 删除原始zip，清理记录的file的path信息
-            if source_file:
-                await delete_source_file_and_clear_path(async_session, source_file)
-                await async_session.commit()
+        except Exception as e:
+            # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
+            await async_session.rollback()
+            async with AsyncSession(get_async_engine()) as async_session:
+                # 删除原始zip，清理记录的file的path信息
+                if source_file:
+                    await delete_source_file_and_clear_path(async_session, source_file, is_successful=False)
+                    await async_session.commit()
+            logger.error("imzml experiment processing failed error=%s", e)
+            raise e
 
 
 async def cleanup_stale_preflights(

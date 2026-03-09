@@ -10,6 +10,7 @@ class ServerSettings(BaseModel):
 class TokenSettings(BaseModel):
     """令牌配置模型"""
     token_expire_minutes: int
+    login_expire_minutes: int
     algorithm: str
 
 class DatabaseSettings(BaseModel):
@@ -23,6 +24,17 @@ class DatabaseSettings(BaseModel):
     echo_pool: bool
     host: str
     port: int
+
+class RedisSettings(BaseModel):
+    """Redis服务器配置模型"""
+    username: str
+    host: str
+    port: int
+    max_connection: int
+    token_db_index: int
+    celery_broker_db_index: int
+    celery_backend_db_index: int
+
 
 class EmailSettings(BaseModel):
     """邮件配置模型"""
@@ -100,6 +112,7 @@ class Config(BaseModel):
     server: ServerSettings
     email: EmailSettings
     database: DatabaseSettings
+    redis: RedisSettings
     storage: StorageSettings
     user: UserSettings
     token: TokenSettings

@@ -11,7 +11,7 @@ CONFIG: "ConfigCreate | None" = None
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "config.yaml"))  # 从环境变量获取配置文件路径，默认为当前目录下的 config.yaml
 
-REGION_PATH = Path( os.getenv("REGION_PATH", "external/countries-states-cities-database/json/countries.json")
+REGION_PATH = Path(os.getenv("REGION_PATH", "external/countries-states-cities-database/json/countries.json")
 )  # 引入 REGION_PATH，存放世界所有国家或地区的信息，用于校验用户地区合法性。
 
 def format_value(v):

@@ -1,4 +1,4 @@
-from datetime import datetime,timezone
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 import aiofiles
@@ -9,6 +9,7 @@ from tools.logger import get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
+from tools.time_tools import now_local_timezone
 
 # 获取服务器状态模块的日志器
 logger = get_logger("models.file_models")
@@ -17,13 +18,6 @@ logger = get_logger("models.file_models")
 config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
-
-def now_local_timezone() -> datetime:
-    """
-    返回当前UTC时间(无时区信息)统一使用格林威治时间(UTC)
-    所有时间戳都应该是UTC时间,不做时区转换
-    """
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class FileBase(SQLModel):

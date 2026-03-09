@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from database.db import get_async_session
 from api.experiment_api_business import get_imzml_experiment_by_file_id
 from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
@@ -467,23 +468,29 @@ async def safe_cleanup_preflight_record(
 async def rollback_simple_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
-    pre_record: FileInDB,
+    pre_record: FileInDB | None = None,
     final_path: "Path | None" = None,
 ) -> None:
     """
     简单上传失败时的统一回滚清理
 
     处理逻辑:
-    1. 删除已写入的物理文件(如果有)
-    2. 清理预检记录和用户关联
-    3. 提交事务,使清理生效
+    1. 回滚事务,撤销数据库中的预检记录和关联关系
+    2. 删除已写入的物理文件(如果有)
+    3. 开启新事务，安全清理预检记录和用户关联
+    4. 提交事务,使清理生效
 
         2026.3.3 Neo checked
     """
+    await async_session.rollback()  # 回滚事务，撤销已有的数据库操作
+
     if final_path:
         delete_local_file(final_path)
-    await safe_cleanup_preflight_record(async_session, current_user, pre_record)
-    await async_session.commit()
+    if pre_record:
+        session_gen = get_async_session()
+        async_session = await anext(session_gen)  # 开启新事务，安全清理预检记录和用户关联
+        await safe_cleanup_preflight_record(async_session, current_user, pre_record)
+        await async_session.commit() # 提交事务,使清理生效
 
 
 async def rollback_part_upload(async_session: AsyncSession,

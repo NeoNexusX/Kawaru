@@ -17,6 +17,13 @@ credentials_exception = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 
+# 登录状态过期
+login_expired_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="login status expired or user has logged out",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
 # 令牌过期
 token_expired_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,

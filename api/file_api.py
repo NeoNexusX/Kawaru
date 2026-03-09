@@ -268,16 +268,21 @@ async def upload_simple_file(
     """
     logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
 
-    # 查询预检记录
-    pre_record = await get_file_record_by_id(pre_file_id, async_session)
-
-    # 统一验证(业务层)
-    _, size = await validate_simple_upload(current_user, file, pre_record)
-
-    #TODO：这里应该是根据存储类型动态处理不同的存储逻辑,目前只实现了本地存储,后续可以扩展其他存储类型(如 S3、Azure Blob 等)
-    final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+    pre_record = None
+    final_path = None
 
     try:
+        ensure_storage_dirs()
+
+        # 查询预检记录
+        pre_record = await get_file_record_by_id(pre_file_id, async_session)
+
+        # 统一验证(业务层)
+        _, size = await validate_simple_upload(current_user, file, pre_record)
+
+        #TODO：这里应该是根据存储类型动态处理不同的存储逻辑,目前只实现了本地存储,后续可以扩展其他存储类型(如 S3、Azure Blob 等)
+        final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+
         # 保存文件 → 更新记录 → 提交,统一 try 保护
         await save_upload_file(file, final_path)
 

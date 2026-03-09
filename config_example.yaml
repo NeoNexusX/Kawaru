@@ -4,7 +4,8 @@ server:
   host: 0.0.0.0
 
 token:
-  token_expire_minutes: 30
+  token_expire_minutes: 1440
+  login_expire_minutes: 120
   algorithm: HS256
 
 email:
@@ -28,6 +29,12 @@ database:
   echo_pool: false
   pool_recycle: 3600
   port: 3306
+
+redis:
+  username: default
+  host: 127.0.0.1
+  port: 6379
+  max_connection: 50
 
 storage:
   root: ../

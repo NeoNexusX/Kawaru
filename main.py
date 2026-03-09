@@ -1,12 +1,14 @@
-import os
 from contextlib import asynccontextmanager
-import uvicorn
+import uvicorn, os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
+from tools.logger import get_logger
 from boot.config import get_config
+from boot.celery_boot import start_celery_worker, stop_celery_worker
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
@@ -20,10 +22,23 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     FastAPI lifespan context manager.
     initialize resources before the application starts
     """
+    # create database
     await create_db_and_tables()
     # admin create
     await create_admin_user()
+
+    # TODO: when using uvicorn reload, this may run in the reloader child process
+    # and cause duplicate workers.
+    # celery_proc = await start_celery_worker()
+    # save process object so other parts of app can inspect/terminate if needed
+    # app.state.celery_proc = celery_proc
+
     yield
+
+    # shutdown: terminate celery worker if started
+    # celery_proc = getattr(app.state, 'celery_proc', None)
+    # if celery_proc is not None:
+    #     await stop_celery_worker(celery_proc)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -42,6 +57,10 @@ app.include_router(user_router)
 app.include_router(file_router)
 app.include_router(experiment_router)
 
+# Celery 配置
+# TODO: 运行sudo apt install celery安装celery依赖
+celery_app = Celery('celery_app')
+celery_app.config_from_object('boot.celeryconfig')
 
 # update ：uvicorn run config
 if __name__ == "__main__":
