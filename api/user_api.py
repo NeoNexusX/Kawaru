@@ -201,7 +201,6 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_sess
         if login_data.username != username:
             raise login_expired_exception
 
-        #TODO: 极为罕见的情况即hget后刚好过期，是否需要考虑？
         await redis_client.expire(login_key, LOGIN_EXPIRE_SECONDS)
 
     except ExpiredSignatureError as exc:

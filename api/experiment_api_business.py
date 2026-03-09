@@ -97,20 +97,26 @@ async def delete_experiment_files(
 
 async def delete_source_file_and_clear_path(
         async_session: AsyncSession,
-        source: int | FileInDB
+        source: int | FileInDB,
+        is_successful: bool = True
         ):
     """
     删除源文件并清空数据库中的 path 字段
     Args:
+        async_session: 数据库会话
         source_file: 文件记录对象，必须具有 path 属性
+        is_successful: 是否成功处理实验文件，成功则保留占位符，失败则清空 path
     """
     source_file = await get_file_record_by_id(source,async_session) if isinstance(source, int) else source
 
     if source_file and source_file.path:
         # 删除物理文件
         Path(source_file.path).unlink(missing_ok=True)
-        # 将 path 置为占位常量
-        source_file.path = SOURCE_FILE_PATH_CLEARED
+        # 如果上传成功将 path 置为占位常量，否则清空path
+        if is_successful:
+            source_file.path = SOURCE_FILE_PATH_CLEARED
+        else:
+            source_file.path = ""
         async_session.add(source_file)
         logger.info(f"source file deleted and path cleared for file_id={source_file.id}") #type:ignore
     else:

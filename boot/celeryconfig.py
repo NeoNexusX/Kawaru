@@ -4,7 +4,7 @@ from boot.config import get_config
 redis_config = get_config().redis
 
 # List of modules to import when celery starts.
-CELERY_IMPORTS = ("tasks.user_tasks", )
+CELERY_IMPORTS = ("background", )
 ## Result store settings.
 CELERY_RESULT_BACKEND = "redis"
 REDIS_HOST = redis_config.host
@@ -25,7 +25,13 @@ BROKER_PASSWORD = os.getenv('REDIS_PASSWORD')
 ## but if mostly spending CPU, try to keep it close to the
 ## number of CPUs on your machine. If not set, the number of CPUs/cores
 ## available will be used.
-CELERYD_CONCURRENCY = 10
-CELERY_DISABLE_RATE_LIMITS = True
-CELERYD_LOG_LEVEL = "INFO"
-# CELERYD_LOG_FILE = "celeryd.log"
+celery_worker_config = {
+    "worker_concurrency": 10,
+    "worker_log_level": "INFO",
+    "worker_log_file": "logs/celeryd.log",
+    "worker_disable_rate_limits": True,
+}
+# CELERYD_CONCURRENCY = 10
+# CELERY_DISABLE_RATE_LIMITS = True
+# CELERYD_LOG_LEVEL = "INFO"
+# CELERYD_LOG_FILE = "logs/celeryd.log"
