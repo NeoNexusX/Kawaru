@@ -7,17 +7,20 @@ from boot.celeryconfig import celery_worker_config
 
 async def start_celery_worker():
     """启动 Celery worker 作为子进程，并返回进程对象"""
-    logger = get_logger("celery_boot")
+    logger = get_logger("bootstrap.celery_boot")
     celery_proc = None
 
-    CELERYD_CONCURRENCY = celery_worker_config.get("worker_concurrency", 10)
-    CELERY_DISABLE_RATE_LIMITS = celery_worker_config.get("worker_disable_rate_limits", True)
-    CELERYD_LOG_LEVEL = celery_worker_config.get("worker_log_level", "INFO")
-    CELERYD_LOG_FILE = celery_worker_config.get("worker_log_file", "logs/celeryd.log")
+    worker_concurrency = celery_worker_config["worker_concurrency"]
+    worker_log_level = celery_worker_config["worker_log_level"]
+    worker_log_file = celery_worker_config["worker_log_file"]
 
     try:
         celery_cmd = shutil.which("celery")
-        celery_args = ["-A", "main.celery_app", "worker", "-l", CELERYD_LOG_LEVEL, "--concurrency", str(CELERYD_CONCURRENCY)]
+        celery_args = ["-A", "main.celery_app", "worker",
+                       "--loglevel", worker_log_level,
+                       "--logfile", worker_log_file,
+                       "--without-gossip",
+                       "--concurrency", str(worker_concurrency)]
         if celery_cmd:
             # use system celery executable
             celery_proc = await asyncio.create_subprocess_exec(celery_cmd, *celery_args, stdout=None, stderr=None)
@@ -32,7 +35,8 @@ async def start_celery_worker():
     return celery_proc
 
 async def stop_celery_worker(celery_proc):
-    logger = get_logger("celery_stop")
+    """FastAPI程序退出时安全地终止 Celery worker 子进程"""
+    logger = get_logger("bootstrap.celery_stop")
     try:
         # try graceful termination
         celery_proc.terminate()
@@ -43,5 +47,5 @@ async def stop_celery_worker(celery_proc):
             logger.warning("Celery subprocess did not exit in time; killing")
             celery_proc.kill()
             await celery_proc.wait()
-    except Exception as exc:  # pragma: no cover - best-effort cleanup
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.exception("Error while terminating celery subprocess: %s", exc)

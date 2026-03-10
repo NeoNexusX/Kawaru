@@ -26,19 +26,17 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     await create_db_and_tables()
     # admin create
     await create_admin_user()
-
-    # TODO: when using uvicorn reload, this may run in the reloader child process
-    # and cause duplicate workers.
-    # celery_proc = await start_celery_worker()
+    # create celery worker subprocess
+    celery_proc = await start_celery_worker()
     # save process object so other parts of app can inspect/terminate if needed
-    # app.state.celery_proc = celery_proc
+    app.state.celery_proc = celery_proc
 
     yield
 
     # shutdown: terminate celery worker if started
-    # celery_proc = getattr(app.state, 'celery_proc', None)
-    # if celery_proc is not None:
-    #     await stop_celery_worker(celery_proc)
+    celery_proc = getattr(app.state, 'celery_proc', None)
+    if celery_proc is not None:
+        await stop_celery_worker(celery_proc)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -58,7 +56,7 @@ app.include_router(file_router)
 app.include_router(experiment_router)
 
 # Celery 配置
-# TODO: 运行sudo apt install celery安装celery依赖
+# TODO: 运行sudo apt install celery安装celery依赖或在docker中部署
 celery_app = Celery('celery_app')
 celery_app.config_from_object('boot.celeryconfig')
 
