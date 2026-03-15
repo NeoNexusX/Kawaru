@@ -1,12 +1,11 @@
 from contextlib import asynccontextmanager
-import uvicorn, os
+import os
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
-from tools.logger import get_logger
 from boot.config import get_config
 from boot.celery_boot import start_celery_worker, stop_celery_worker
 from database.db import create_db_and_tables
@@ -55,10 +54,6 @@ app.include_router(user_router)
 app.include_router(file_router)
 app.include_router(experiment_router)
 
-# Celery 配置
-# TODO: 运行sudo apt install celery安装celery依赖或在docker中部署
-celery_app = Celery('celery_app')
-celery_app.config_from_object('boot.celeryconfig')
 
 # update ：uvicorn run config
 if __name__ == "__main__":

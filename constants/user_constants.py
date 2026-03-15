@@ -17,6 +17,7 @@ ALLOWED_REGIONS = {
 # 无操作后登录自动过期时间
 LOGIN_EXPIRE_SECONDS = config.token.login_expire_minutes * 60
 
+
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "ALLOWED_POSITION_TYPES",
     "ALLOWED_REGIONS",

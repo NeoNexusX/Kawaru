@@ -215,3 +215,6 @@ config.yaml
 .vscode
 storage/
 .env.pytest
+
+# logs
+logs/

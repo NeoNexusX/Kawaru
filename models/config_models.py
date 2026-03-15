@@ -34,14 +34,14 @@ class RedisSettings(BaseModel):
     host: str
     port: int
     max_connection: int
-    token_db_index: int
+    default_db_index: int
     celery_broker_db_index: int
     celery_backend_db_index: int
+    celery_redbeat_db_index: int
 
 
 class CelerySettings(BaseModel):
     """Celery配置模型"""
-    imports: list[str]
     worker_concurrency: int
     worker_log_level: str
     worker_log_file: str
@@ -76,6 +76,7 @@ class StorageSettings(BaseModel):
     max_downloads_per_user: int
     max_files_per_user: int
     preflight_ttl_minutes: int
+    cleanup_preflights_interval_minutes: int
     chunk_ttl_minutes: int
 
 

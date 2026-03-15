@@ -35,13 +35,12 @@ redis:
   host: 127.0.0.1
   port: 6379
   max_connection: 50
-  token_db_index: 0
+  default_db_index: 0
   celery_broker_db_index: 1
   celery_backend_db_index: 2
-
+  celery_redbeat_db_index: 3
 
 celery:
-  imports: ["background"]
   worker_concurrency: 10
   worker_log_level: "INFO"
   worker_log_file: "logs/celery.log"
@@ -62,6 +61,7 @@ storage:
   max_files_per_user: 20
   max_downloads_per_user: 50
   preflight_ttl_minutes: 30
+  cleanup_preflights_interval_minutes: 60
   chunk_ttl_minutes: 30
 
 admin_info:
