@@ -45,6 +45,9 @@ MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 5
 PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
 CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))
 
+# 清理过期预检任务的间隔时间
+CLEANUP_PREFLIGHTS_INTERVAL_SECONDS = config.storage.cleanup_preflights_interval_minutes * 60
+
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
     "BYTES_IN_MB",
@@ -64,4 +67,5 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "MAX_DOWNLOADS_PER_USER",
     "PREFLIGHT_TTL_MINUTES",
     "CHUNK_TTL_MINUTES",
+    "CLEANUP_PREFLIGHTS_INTERVAL_SECONDS",
 ]

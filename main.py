@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-import uvicorn, os
+import os
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from celery import Celery
@@ -26,19 +27,17 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     await create_db_and_tables()
     # admin create
     await create_admin_user()
-
-    # TODO: when using uvicorn reload, this may run in the reloader child process
-    # and cause duplicate workers.
-    # celery_proc = await start_celery_worker()
+    # create celery worker subprocess
+    celery_proc = await start_celery_worker()
     # save process object so other parts of app can inspect/terminate if needed
-    # app.state.celery_proc = celery_proc
+    app.state.celery_proc = celery_proc
 
     yield
 
     # shutdown: terminate celery worker if started
-    # celery_proc = getattr(app.state, 'celery_proc', None)
-    # if celery_proc is not None:
-    #     await stop_celery_worker(celery_proc)
+    celery_proc = getattr(app.state, 'celery_proc', None)
+    if celery_proc is not None:
+        await stop_celery_worker(celery_proc)
 
 
 app = FastAPI(lifespan=lifespan)
