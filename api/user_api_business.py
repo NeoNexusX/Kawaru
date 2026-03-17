@@ -48,6 +48,7 @@ async def check_user_login_status(token: str) -> str | bool:
         str | bool: 如果 token 有效且用户登录状态正常，返回用户名；否则返回 False
     """
     secret_key = os.getenv("SECRET_KEY", SECRET_KEY) # 优先从子进程环境变量获取，确保和主进程一致
+    _redis_client = None
 
     try:
         payload = jwt.decode(
@@ -87,3 +88,10 @@ async def check_user_login_status(token: str) -> str | bool:
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error(f"Error while checking user login status: {exc}")
         return False
+
+    finally:
+        if _redis_client is not None:
+            try:
+                await _redis_client.aclose()
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to close Redis client after checking login status: %s", exc)

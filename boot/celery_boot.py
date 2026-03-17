@@ -114,6 +114,8 @@ def celery_summary(app: Celery, logger: Logger):
 async def clean_up_stale_task():
     """清理 RedBeat 存储的定时任务数据，防止过期任务积累"""
     logger = get_logger("bootstrap.redbeat_cleanup")
+    _redis_client = None
+
     try:
         # 获取所有 RedBeat 任务条目并删除
         redis_cfg = get_config().redis
@@ -129,3 +131,10 @@ async def clean_up_stale_task():
 
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to clean up RedBeat storage: %s", exc)
+
+    finally:
+        if _redis_client is not None:
+            try:
+                await _redis_client.aclose()
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to close Redis client after stale task cleanup: %s", exc)

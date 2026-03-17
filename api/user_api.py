@@ -199,7 +199,7 @@ async def login(
 
         # After user login, create a Celery task to clean up staled preflights
         task_name = f"cleanup_stale_preflights_{access_token[0:8]}"  # Use part of token to ensure uniqueness while avoiding too long task name
-        TaskManager.add_interval_task(task_name=task_name,
+        await TaskManager.add_interval_task(task_name=task_name,
                                       task_path="background.file_background.cleanup_stale_preflights",
                                       interval_seconds=CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
                                       # interval_seconds = 10, # for testing
@@ -239,8 +239,8 @@ async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: A
         await redis_client.delete(login_key)
 
         # 3. Remove corresponding tasks
-        TaskManager.remove_task(f"cleanup_stale_preflights_{token[0:8]}") # type:ignore
-        logger.warning(f"User {username} has logger out. Task has been removed from schedule.")
+        await TaskManager.remove_task(f"cleanup_stale_preflights_{token[0:8]}") # type:ignore
+        logger.warning(f"User {username} has logged out. Task has been removed from schedule.")
 
     except ExpiredSignatureError as exc:
         raise token_expired_exception from exc

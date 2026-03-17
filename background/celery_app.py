@@ -48,7 +48,7 @@ def celery_create(cfg: Config, _logger: Logger | None = None) -> Celery:
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
         'imports': ["background.file_background"],
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
-        'time_zone': 'UTC',
+        'timezone': 'UTC',
         'enable_utc': True,
         'worker_disable_rate_limits': cfg.celery.worker_disable_rate_limits,
         'beat_schedule': {
@@ -102,9 +102,8 @@ else:
 
 class TaskManager:
     """Celery 任务管理器，提供动态添加/修改定时任务的接口"""
-    # TODO：目前为同步版本任务管理器，redis服务器本身延迟会影响redbeat entry执行效率，后续考虑封装成异步操作
     @staticmethod
-    def add_interval_task(task_name: str,
+    async def add_interval_task(task_name: str,
                           task_path: str,
                           interval_seconds: int,
                           task_args: list | None = None,
@@ -120,7 +119,8 @@ class TaskManager:
                 kwargs = task_kwargs or {},
                 app = celery_app
             )
-            entry.save()
+            _loop = asyncio.get_running_loop()
+            await _loop.run_in_executor(None, entry.save)
             _logger.info(f"Added interval task '{task_name}' with path '{task_path}' to run every {interval_seconds} seconds.")
             return entry
         except Exception as exc: # pylint:disable = broad-exception-caught
@@ -128,14 +128,20 @@ class TaskManager:
             return None
 
     @staticmethod
-    def remove_task(task_name: str):
+    async def remove_task(task_name: str):
         """动态移除 Celery 定时任务"""
         _logger = _get_logger()
         key = f"redbeat:{task_name}"
+        _loop = asyncio.get_running_loop()
+
         try:
-            entry = Entry.from_key(key, app=celery_app)
+            def _load_entry() -> Entry | None:
+                return Entry.from_key(key, app=celery_app)
+
+            entry = await _loop.run_in_executor(None, _load_entry)
+
             if entry:
-                entry.delete()
+                await _loop.run_in_executor(None, entry.delete)
                 _logger.info(f"Removed task '{task_name}' from schedule.")
                 return True
         except KeyError:
@@ -144,4 +150,3 @@ class TaskManager:
             _logger.error(f"Cannot remove task due to error: {exc}")
 
         return False
-

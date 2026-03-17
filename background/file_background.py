@@ -86,7 +86,7 @@ async def process_imzml_experiment_background(
                     await delete_source_file_and_clear_path(async_session, source_file, is_successful=False)
                     await async_session.commit()
             logger.error("imzml experiment processing failed error=%s", e)
-            raise e
+            raise
 
 
 # TODO: 针对所有用户清理
