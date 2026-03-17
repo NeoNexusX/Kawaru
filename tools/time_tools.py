@@ -7,4 +7,4 @@ TIME_STR_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 def now_local_timezone() -> datetime:
     """返回格林威治时间（无时区信息，便于 SQLite 存储）"""
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
