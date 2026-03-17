@@ -83,3 +83,9 @@ class UserUpdate(BaseModel):
     username: str = Field(max_length=user_config.max_username_length) #强制提供
     email: str = Field(default=None,max_length=user_config.max_useremail_length, description="用户邮箱") #不强制提供
     password: str | None = None #不强制提供
+    institution: str | None = Field(default=None, max_length=user_config.max_institution_length)
+    position: str | None = Field(default=None, max_length=user_config.max_position_length)
+    research_field: str | None = Field(default=None, max_length=user_config.max_research_field_length)
+    region: str | None = Field(default=None, max_length=user_config.max_region_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
+    homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)

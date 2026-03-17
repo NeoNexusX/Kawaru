@@ -350,6 +350,24 @@ async def update_user(
     if user_data["username"] is None or user_past.username != user.username:
         raise user_name_bad_exception
 
+    # 校验 position
+    if "position" in user_data and user_data["position"] not in ALLOWED_POSITION_TYPES:
+        raise user_position_not_allowed_exception
+
+    # 校验 region
+    if "region" in user_data and user_data["region"] not in ALLOWED_REGIONS:
+        raise user_region_not_exist_exception
+
+    # 校验 orcid
+    if "orcid" in user_data and user_data["orcid"]:
+        if not await validate_orcid(user_data["orcid"]):
+            raise user_orcid_not_exist_exception
+
+    # 校验 homepage
+    if "homepage" in user_data and user_data["homepage"]:
+        if not validate_url(user_data["homepage"]):
+            raise user_homepage_invalid_exception
+
     # 处理密码更新
     if "password" in user_data and user_data["password"] is not None:
         user_past.hashed_password = hashed_password(user_data["password"])
