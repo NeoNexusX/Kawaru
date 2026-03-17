@@ -58,6 +58,7 @@ async def process_imzml_experiment_background(
             # 删除原始 ZIP 文件并修改文件表中的 path 字段（helper 层）
             await delete_source_file_and_clear_path(async_session, source_file, is_successful=True)
             await async_session.commit()
+            await async_session.refresh(experiment_record)
 
             logger.info(f"deleted source zip file {source_file_id} and completed imzml experiment processing exp_id={experiment_record.id}")
 

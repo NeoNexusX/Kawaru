@@ -171,7 +171,7 @@ async def upload_file_part(
         await async_session.commit()
         await async_session.refresh(current_user)
         await async_session.refresh(file_record)
-
+        await async_session.refresh(part_record) # TODO 这里合并时会删除part_record,但是refresh的话会报错
         logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
 
     except Exception as exc:
@@ -216,11 +216,10 @@ async def get_part_upload_status(
         is_complete=False,
     )
 
-    # 检查文件是否已完成上传
+    # 检查文件是否已完成上传(复用 valid_file_uploaded,对 imzML 类型额外验证实验状态)
     assert current_user.id is not None
     user_file_ids = await get_user_file_ids(session, current_user.id)
-    if file_record.file_id in user_file_ids:
-        status.total_parts = 0
+    if file_record.file_id in user_file_ids and await valid_file_uploaded(session, file_record):
         status.is_complete = True
         return status
 
@@ -302,8 +301,8 @@ async def upload_simple_file(
         await rollback_simple_upload(async_session, current_user, pre_record, final_path)
         raise file_persist_failed_exception from exc
 
-    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
-
+    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type) #todotodo这里没有触发解压
+    
     return pre_record # type: ignore
 
 
@@ -341,7 +340,7 @@ async def list_user_files(
         if await valid_file_uploaded(session, file_record):
             filtered_results.append(file_record)
 
-    logger.debug(f"list user files user={current_user.id} count={len(filtered_results)}")
+    logger.info(f"list user files user={current_user.id} count={len(filtered_results)}")
 
     return FileListResponse(total=len(filtered_results),
                             files=list(filtered_results), # type: ignore

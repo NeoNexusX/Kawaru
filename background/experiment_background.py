@@ -19,7 +19,7 @@ def trigger_experiment_extraction(
     """
     根据实验类型触发后台实验文件提取任务
     """
-    if experiment_type != "imzml":
+    if experiment_type != "imzML":
         return
 
     if not current_user.id or not file_record.file_id:
