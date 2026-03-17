@@ -64,6 +64,18 @@ class UserPublic(BaseModel):
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
 
 
+class UserDetailPublic(BaseModel):
+    """用于返回响应信息的用户模型"""
+    username: str = Field(max_length=user_config.max_username_length)
+    active: bool = Field(default=True)
+    identity: str = Field(default="user", max_length=user_config.max_identity_length)
+    institution: str = Field(default="", max_length=user_config.max_institution_length)
+    position: str = Field(default="", max_length=user_config.max_position_length)
+    research_field: str | None = Field(max_length=user_config.max_research_field_length)
+    region: str | None = Field(max_length=user_config.max_region_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
+    homepage: str | None = Field(max_length=user_config.max_homepage_length)
+
 class UserUpdate(BaseModel):
     """
     新用户信息模型，需要提供邮箱和密码，可选更新字段，不允许更新身份，名字字段
