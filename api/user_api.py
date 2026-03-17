@@ -202,7 +202,7 @@ async def login(
         TaskManager.add_interval_task(task_name=task_name,
                                       task_path="background.file_background.cleanup_stale_preflights",
                                       interval_seconds=CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
-                                      # interval_seconds = 20, # for testing
+                                      # interval_seconds = 10, # for testing
                                       task_kwargs={"user_token": access_token, "ttl_minutes": PREFLIGHT_TTL_MINUTES})
 
         # return Token

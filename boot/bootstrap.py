@@ -1,6 +1,5 @@
 import os
 from typing import Optional
-from celery import Celery
 
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
@@ -39,44 +38,15 @@ def init_config():
     return boot.config.CONFIG
 
 
-def celery_summary(app: Celery, logger):
-    """输出 Celery 配置摘要"""
+def init_celery():
+    """显式创建 celery app"""
+    import background.celery_app # pylint: disable=import-outside-toplevel
 
-    # 关键配置信息
-    broker = app.conf.get('broker_url', 'N/A')
-    backend = app.conf.get('result_backend', 'N/A')
-    redbeat_backend = app.conf.get('redbeat_redis_url', 'N/A')
-    timezone = app.conf.get('timezone', 'UTC')
+    if background.celery_app.celery_app is None:
+        from boot.config import get_config # pylint: disable=import-outside-toplevel
+        background.celery_app.celery_app = background.celery_app.celery_create(get_config())
 
-    # 任务模块
-    tasks = list(app.tasks.keys())
-    # 过滤掉 Celery 内部任务
-    user_tasks = [t for t in tasks if not t.startswith('celery.')]
-
-    # Beat 调度任务
-    beat_schedule = app.conf.get('beat_schedule', {})
-
-    logger.info("=" * 50)
-    logger.info("Celery Configuration Summary")
-    logger.info("-" * 50)
-    logger.info(f"Broker:     {broker}")
-    logger.info(f"Backend:    {backend}")
-    logger.info(f"Redbeat Backend: {redbeat_backend}")
-    logger.info(f"Timezone:   {timezone}")
-    logger.info(f"Tasks:      {len(user_tasks)} registered")
-    for task in sorted(user_tasks):
-        logger.info(f"            - {task}")
-
-    if beat_schedule:
-        logger.info(f"Beat Jobs:  {len(beat_schedule)} scheduled")
-        for name, conf in beat_schedule.items():
-            schedule = conf.get('schedule', 'N/A')
-            task_name = conf.get('task', 'N/A')
-            logger.info(f"            - {name}: {task_name} ({schedule})")
-    else:
-        logger.info("Beat Jobs:  None")
-
-    logger.info("=" * 50)
+    return background.celery_app.celery_app
 
 
 BOOTSTRAP_SUMMARIZED = False  # 标记是否已输出启动概要，防止重复输出启动概要
@@ -88,9 +58,12 @@ def bootstrap():
     ENV = init_env() # pylint: disable=C0103
     CONFIG = init_config() # pylint: disable=C0103
     init_logging()
+    CELERY_APP = init_celery() # pylint: disable=C0103
+
 
     #log part
     from tools.logger import get_logger, LOG_LEVELS   # pylint: disable=import-outside-toplevel
+    from boot.celery_boot import celery_summary # pylint: disable=import-outside-toplevel
 
     logger = get_logger("watchfiles")
     logger.setLevel(LOG_LEVELS['warning'])  # watchfiles 监控文件变化时会输出大量日志，提升到 warning 级别以上以减少干扰
@@ -101,10 +74,8 @@ def bootstrap():
     global BOOTSTRAP_SUMMARIZED # pylint: disable=global-statement
     if not BOOTSTRAP_SUMMARIZED:
         # 初始化 celery 实例必须在 config 初始化之后（因为 celeryconfig 依赖 config），
-        from background.celery_app import celery_app  # pylint: disable=import-outside-toplevel
-
         logger.info("Bootstrap summary:"+"="*60)
         ENV.summary()
         CONFIG.summary()
-        celery_summary(celery_app, logger)
+        celery_summary(CELERY_APP, logger)
         BOOTSTRAP_SUMMARIZED = True

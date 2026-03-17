@@ -1,9 +1,10 @@
 import sys
 import os
 import asyncio
+from celery import Celery
+from logging import Logger
 from database.redis_client import connect_new_redis
 from models.auth import SECRET_KEY
-from background.celeryconfig import celery_worker_config
 from boot.config import get_config
 
 from tools.logger import get_logger
@@ -15,15 +16,20 @@ async def start_celery_worker():
     logger = get_logger("bootstrap.celery_boot")
     celery_proc = None
 
-    worker_concurrency = celery_worker_config["worker_concurrency"]
-    worker_log_level = celery_worker_config["worker_log_level"]
-    worker_log_file = celery_worker_config["worker_log_file"]
+    ## If you're doing mostly I/O you can have more processes,
+    ## but if mostly spending CPU, try to keep it close to the
+    ## number of CPUs on your machine. If not set, the number of CPUs/cores
+    ## available will be used.
+    celery_worker_config = get_config().celery
+    worker_concurrency = celery_worker_config.worker_concurrency
+    worker_log_level = celery_worker_config.worker_log_level
+    worker_log_file = celery_worker_config.worker_log_file
 
-    # TODO: 运行sudo apt install celery安装celery依赖或在docker中部署
     try:
         # 拷贝主进程运行环境，确保worker子进程运行环境与主进程一致
         env = os.environ.copy()
         env["SECRET_KEY"] = SECRET_KEY  # 确保 Celery worker 子进程也能访问 SECRET_KEY 环境变量
+        env["CREATE_CELERY_SUB"] = "True" # 告知子进程在 import 时基于 config 创建子进程的 celery app
         celery_args = ["-A", "background.celery_app.celery_app", "worker",
                        "--beat",
                        "--loglevel", worker_log_level,
@@ -63,6 +69,46 @@ async def stop_celery_worker(celery_proc):
             await clean_up_stale_task() # 终止worker后清理过期任务数据
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.exception("Error while terminating celery subprocess: %s", exc)
+
+
+def celery_summary(app: Celery, logger: Logger):
+    """输出 Celery 配置摘要"""
+
+    # 关键配置信息
+    broker = app.conf.get('broker_url', 'N/A')
+    backend = app.conf.get('result_backend', 'N/A')
+    redbeat_backend = app.conf.get('redbeat_redis_url', 'N/A')
+    timezone = app.conf.get('timezone', 'UTC')
+
+    # 任务模块
+    tasks = list(app.tasks.keys())
+    # 过滤掉 Celery 内部任务
+    user_tasks = [t for t in tasks if not t.startswith('celery.')]
+
+    # Beat 调度任务
+    beat_schedule = app.conf.get('beat_schedule', {})
+
+    logger.info("=" * 50)
+    logger.info("Celery Configuration Summary")
+    logger.info("-" * 50)
+    logger.info(f"Broker:     {broker}")
+    logger.info(f"Backend:    {backend}")
+    logger.info(f"Redbeat Backend: {redbeat_backend}")
+    logger.info(f"Timezone:   {timezone}")
+    logger.info(f"Tasks:      {len(user_tasks)} registered")
+    for task in sorted(user_tasks):
+        logger.info(f"            - {task}")
+
+    if beat_schedule:
+        logger.info(f"Beat Jobs:  {len(beat_schedule)} scheduled")
+        for name, conf in beat_schedule.items():
+            schedule = conf.get('schedule', 'N/A')
+            task_name = conf.get('task', 'N/A')
+            logger.info(f"            - {name}: {task_name} ({schedule})")
+    else:
+        logger.info("Beat Jobs:  None")
+
+    logger.info("=" * 50)
 
 
 async def clean_up_stale_task():
