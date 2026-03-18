@@ -165,13 +165,15 @@ async def upload_file_part(
         part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size, temp_path)
 
         # 5. 尝试合并
-        if await validate_and_merge_parts(async_session, file_record, current_user):
+        is_merged = await validate_and_merge_parts(async_session, file_record, current_user)
+        if is_merged:
             trigger_experiment_extraction(background_tasks, file_record, current_user, file_record.experiment_type)
 
         await async_session.commit()
         await async_session.refresh(current_user)
         await async_session.refresh(file_record)
-        await async_session.refresh(part_record) # TODO 这里合并时会删除part_record,但是refresh的话会报错
+        if not is_merged:
+            await async_session.refresh(part_record)
         logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
 
     except Exception as exc:

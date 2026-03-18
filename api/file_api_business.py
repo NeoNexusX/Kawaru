@@ -432,7 +432,7 @@ async def unlink_user_from_file(
 
     # 3. 刷新事务
     await session.flush()
-
+    await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
