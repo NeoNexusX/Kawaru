@@ -33,12 +33,13 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
 from background.celery_app import TaskManager
-from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
-from tools.logger import get_logger
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
+
+from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
+from tools.logger import get_logger
 
 logger = get_logger("api.user_api")
 

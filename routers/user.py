@@ -2,7 +2,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from models.auth import Token
 from models.email_models import EmailConfirmRequest
-from models.user_models import UserInDB, UserPublic
+from models.user_models import UserInDB, UserPublic,UserDetailPublic
 from api.user_api import (UserLoginDep, token_authen, UserCreateDep,
                           AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep)
 from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
@@ -35,7 +35,7 @@ async def logout(user: UserLogoutDep) -> UserPublic:
     return user
 
 
-@user_router.get("/user", response_model=UserPublic)
+@user_router.get("/user", response_model=UserDetailPublic)
 async def get_current_usr(user: Annotated[UserInDB, Depends(token_authen)]):
     """
     Get current user:
