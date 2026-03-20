@@ -4,7 +4,6 @@
 import random
 from datetime import timedelta
 from typing import Annotated
-from urllib.parse import urlparse
 import jwt
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordRequestForm
@@ -18,15 +17,22 @@ from api.auth_api import (
     credentials_exception,
     create_access_token,
     hashed_password,
-    verify_password,
     login_expired_exception,
     token_invalid_exception,
     token_expired_exception,
 )
+from api.user_api_business import authenticate_user
+from api.user_api_helper import (
+    validate_url,
+    get_user,
+    get_user_by_email
+)
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
+from constants.file_constants import CLEANUP_PREFLIGHTS_INTERVAL_SECONDS, PREFLIGHT_TTL_MINUTES
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
+from background.celery_app import TaskManager
 from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
@@ -40,39 +46,6 @@ logger = get_logger("api.user_api")
 #########################
 # 业务层，API 逻辑，不应该抛出任何异常
 #########################
-
-async def get_user(username: str, async_session: AsyncSession) -> UserInDB | None:
-    """通过 Session 查询指定用户名的用户（可返回未激活用户）"""
-    # 通过 Session 查询用户
-    statement = select(UserInDB).where(UserInDB.username == username)
-    return (await async_session.exec(statement)).first()
-
-
-async def get_user_by_email(email: str, async_session: AsyncSession) -> UserInDB | None:
-    """通过 Session 查询指定邮箱的用户（可返回未激活用户）"""
-    statement = select(UserInDB).where(UserInDB.email == email)
-    return (await async_session.exec(statement)).first()
-
-
-async def authenticate_user(username: str, password: str, async_session: AsyncSession) -> UserInDB | None:
-    """
-    校验用户名/密码并返回用户对象。
-    为了安全（防枚举），统一返回 False 而不是抛出异常。
-    """
-    # 1. 直接查库，如果用户不存在直接返回 False
-    user = await get_user(username, async_session)
-    if not user:
-        return None
-
-    # 2. 检查激活状态
-    if not user.active:
-        return None
-
-    # 3. 检查密码
-    if not verify_password(password, user.hashed_password):
-        return None
-
-    return user
 
 # TODO:丢去作为任务来实现
 async def validate_orcid(orcid: str) -> bool:
@@ -92,17 +65,6 @@ async def validate_orcid(orcid: str) -> bool:
     except (HTTPStatusError, RequestError):  # Network Errors
         logger.error("Cannot access ORCID public API due to network error.")
         return False
-
-
-def validate_url(url: str) -> bool:
-    """
-    校验url是否合法。
-    合法:返回True;不合法:返回False
-    """
-    p = urlparse(url)
-    if p.scheme not in {'http', 'https'} or not p.netloc:
-        return False
-    return True
 
 
 async def validate_signup_info(user: UserCreate, async_session: AsyncSession):
@@ -235,6 +197,14 @@ async def login(
         await redis_client.hset(login_key, mapping=login_data.model_dump()) # type:ignore
         await redis_client.expire(login_key, LOGIN_EXPIRE_SECONDS) # set default expiration time
 
+        # After user login, create a Celery task to clean up staled preflights
+        task_name = f"cleanup_stale_preflights_{access_token[0:8]}"  # Use part of token to ensure uniqueness while avoiding too long task name
+        await TaskManager.add_interval_task(task_name=task_name,
+                                      task_path="background.file_background.cleanup_stale_preflights",
+                                      interval_seconds=CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
+                                      # interval_seconds = 10, # for testing
+                                      task_kwargs={"user_token": access_token, "ttl_minutes": PREFLIGHT_TTL_MINUTES})
+
         # return Token
         return Token(access_token=access_token, token_type="bearer")
 
@@ -267,6 +237,10 @@ async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: A
             raise login_expired_exception
 
         await redis_client.delete(login_key)
+
+        # 3. Remove corresponding tasks
+        await TaskManager.remove_task(f"cleanup_stale_preflights_{token[0:8]}") # type:ignore
+        logger.warning(f"User {username} has logged out. Task has been removed from schedule.")
 
     except ExpiredSignatureError as exc:
         raise token_expired_exception from exc

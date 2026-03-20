@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from database.db import get_async_session
+from database.db import get_async_session, get_async_engine
 from api.experiment_api_business import get_imzml_experiment_by_file_id
 from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
@@ -488,10 +488,9 @@ async def rollback_simple_upload(
     if final_path:
         delete_local_file(final_path)
     if pre_record:
-        session_gen = get_async_session()
-        async_session = await anext(session_gen)  # 开启新事务，安全清理预检记录和用户关联
-        await safe_cleanup_preflight_record(async_session, current_user, pre_record)
-        await async_session.commit() # 提交事务,使清理生效
+        async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
+            await safe_cleanup_preflight_record(async_session, current_user, pre_record)
+            await async_session.commit() # 提交事务,使清理生效
 
 
 async def rollback_part_upload(async_session: AsyncSession,

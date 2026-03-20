@@ -7,11 +7,13 @@ class ServerSettings(BaseModel):
     port: int
     host: str
 
+
 class TokenSettings(BaseModel):
     """令牌配置模型"""
     token_expire_minutes: int
     login_expire_minutes: int
     algorithm: str
+
 
 class DatabaseSettings(BaseModel):
     """数据库配置模型"""
@@ -25,15 +27,25 @@ class DatabaseSettings(BaseModel):
     host: str
     port: int
 
+
 class RedisSettings(BaseModel):
     """Redis服务器配置模型"""
     username: str
     host: str
     port: int
     max_connection: int
-    token_db_index: int
+    default_db_index: int
     celery_broker_db_index: int
     celery_backend_db_index: int
+    celery_redbeat_db_index: int
+
+
+class CelerySettings(BaseModel):
+    """Celery配置模型"""
+    worker_concurrency: int
+    worker_log_level: str
+    worker_log_file: str
+    worker_disable_rate_limits: bool
 
 
 class EmailSettings(BaseModel):
@@ -64,6 +76,7 @@ class StorageSettings(BaseModel):
     max_downloads_per_user: int
     max_files_per_user: int
     preflight_ttl_minutes: int
+    cleanup_preflights_interval_minutes: int
     chunk_ttl_minutes: int
 
 
@@ -95,6 +108,7 @@ class SampleInfoSettings(BaseModel):
     max_maldi_matrix_application_length: int
     max_solvent_length: int
 
+
 # Initial admin user's information 初始管理员信息
 class AdminInfo(BaseModel):
     """初始管理员信息配置模型"""
@@ -107,12 +121,14 @@ class AdminInfo(BaseModel):
     homepage: str
     email: str
 
+
 class Config(BaseModel):
     """全局配置模型"""
     server: ServerSettings
     email: EmailSettings
     database: DatabaseSettings
     redis: RedisSettings
+    celery: CelerySettings
     storage: StorageSettings
     user: UserSettings
     token: TokenSettings
