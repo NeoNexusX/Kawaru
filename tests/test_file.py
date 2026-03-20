@@ -311,6 +311,161 @@ class TestFile:
         assert rs.status_code == 401, rs.text
         logger.info("test_download_no_token_rejected passed")
 
+
+
+    # ------------------------------------------------------------------ #
+    # 分片上传接口测试
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.file
+    async def test_chunked_upload_ok(self, admin_login: Tuple[AsyncClient, str, str]):
+        """
+        完整分片上传流程：preflight → 逐片 chunked/upload → 合并完成
+        - 文件由内存 zip 构造，按 TEST_CHUNK_COUNT 均匀切分
+        - 每片计算独立 sha256，preflight 携带 total_parts
+        - 上传完最后一片后服务端自动合并，file_id 存入 class 变量供清理
+        """
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        content = _make_test_zip()
+        chunks = _split_into_chunks(content, TEST_CHUNK_COUNT)
+        total_hash = hashlib.sha256(content).hexdigest()
+        part_hashes = [hashlib.sha256(c).hexdigest() for c in chunks]
+        total_parts = len(chunks)
+        chunked_filename = "kawaru_chunked_test.zip"
+
+        logger.info(
+            f"test_chunked_upload_ok: size={len(content)} "
+            f"total_parts={total_parts} chunk_sizes={[len(c) for c in chunks]}"
+        )
+
+        # 1. preflight
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json={
+                "storage_type": "local",
+                "filename": chunked_filename,
+                "file_type": "zip",
+                "size": len(content),
+                "hash_sha256": total_hash,
+                "experiment_type": "imzML",
+                "organism": "",
+                "organism_part": "",
+                "condition": "",
+                "sample_growth_conditions": "",
+                "sample_stabilization": "",
+                "tissue_modification": "",
+                "maldi_matrix": "",
+                "maldi_matrix_application": "",
+                "solvent": "",
+                "total_parts": total_parts,
+            },
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+        logger.info(f"test_chunked_upload_ok: preflight ok, pre_file_id={pre_file_id}")
+
+        # 2. 逐片上传
+        for idx, chunk in enumerate(chunks):
+            part_number = idx + 1
+            part_hash = part_hashes[idx]
+            part_size = len(chunk)
+
+            logger.info(f"  uploading part {part_number}/{total_parts} size={part_size} hash={part_hash[:8]}...")
+
+            rs = await client.post(
+                "/files/chunked/upload",
+                headers=auth,
+                data={
+                    "part_data_json": json.dumps({
+                        "file_hash": total_hash,
+                        "part_number": part_number,
+                        "part_hash": part_hash,
+                        "part_size": part_size,
+                    })
+                },
+                files={
+                    "part": ("chunk.bin", io.BytesIO(chunk), "application/octet-stream")
+                },
+            )
+            assert rs.status_code == 200, f"part {part_number} failed: {rs.text}"
+            logger.info(f"  part {part_number}/{total_parts} uploaded ok")
+
+        # 3. 合并后查询状态，确认 is_complete=True
+        rs = await client.get(
+            f"/files/chunked/{pre_file_id}/status",
+            headers=auth,
+        )
+        assert rs.status_code == 200, rs.text
+        status = rs.json()
+        assert status["is_complete"] is True, f"expected is_complete=True, got: {status}"
+
+        TestFile._uploaded_file_id = pre_file_id
+        TestFile._uploaded_content = content
+        logger.info(f"test_chunked_upload_ok passed: file_id={pre_file_id} total_parts={total_parts}")
+
+    @pytest.mark.file
+    async def test_chunked_upload_wrong_part_hash_rejected(self, admin_login: Tuple[AsyncClient, str, str]):
+        """
+        分片上传：分片 hash 与实际内容不符，应返回 500
+        """
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        content = _make_test_zip()
+        total_hash = hashlib.sha256(content).hexdigest()
+        bad_filename = "kawaru_chunked_badhash.zip"
+
+        # preflight（2片）
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json={
+                "storage_type": "local",
+                "filename": bad_filename,
+                "file_type": "zip",
+                "size": len(content),
+                "hash_sha256": total_hash,
+                "experiment_type": "imzML",
+                "organism": "",
+                "organism_part": "",
+                "condition": "",
+                "sample_growth_conditions": "",
+                "sample_stabilization": "",
+                "tissue_modification": "",
+                "maldi_matrix": "",
+                "maldi_matrix_application": "",
+                "solvent": "",
+                "total_parts": 2,
+            },
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+
+        chunk = content  # 整体作为第1片，但 hash 故意填错
+        rs = await client.post(
+            "/files/chunked/upload",
+            headers=auth,
+            data={
+                "part_data_json": json.dumps({
+                    "file_hash": total_hash,
+                    "part_number": 1,
+                    "part_hash": "a" * 64,   # 故意错误的 hash
+                    "part_size": len(chunk),
+                })
+            },
+            files={
+                "part": ("chunk.bin", io.BytesIO(chunk), "application/octet-stream")
+            },
+        )
+        assert rs.status_code == 500, rs.text
+        logger.info("test_chunked_upload_wrong_part_hash_rejected passed")
+
+        # 清理预检记录
+        await client.delete(f"/files/{pre_file_id}", headers=auth)
+
     # ------------------------------------------------------------------ #
     # 清理
     # ------------------------------------------------------------------ #
