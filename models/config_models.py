@@ -80,6 +80,12 @@ class StorageSettings(BaseModel):
     chunk_ttl_minutes: int
 
 
+class OSSSettings(BaseModel):
+    """OSS配置模型"""
+    region_id: str | None  = None
+    bucket_name: str | None = None
+
+
 class UserSettings(BaseModel):
     """用户信息配置模型"""
     allowed_position_types: list[str]
@@ -130,6 +136,7 @@ class Config(BaseModel):
     redis: RedisSettings
     celery: CelerySettings
     storage: StorageSettings
+    oss: OSSSettings
     user: UserSettings
     token: TokenSettings
     admin_info: AdminInfo

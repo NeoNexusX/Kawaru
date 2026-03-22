@@ -112,7 +112,7 @@ async def cleanup_stale_preflights(
     """
     username = await check_user_login_status(user_token)
     if username is False:
-        TaskManager.remove_task(f"cleanup_stale_preflights_{user_token[0:8]}") # type:ignore
+        await TaskManager.remove_task(f"cleanup_stale_preflights_{user_token[0:8]}") # type:ignore
         logger.warning("Invalid user token provided for cleanup_stale_preflights task, " \
                         "task has been removed from schedule.")
         return 0
@@ -163,3 +163,4 @@ def heartbeat():
     理论上无需进行任何操作，也可以定期输出一些东西
     """
     pass # pylint: disable=unnecessary-pass
+

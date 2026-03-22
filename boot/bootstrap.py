@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+from exceptions.file_exceptions import storage_type_not_allowed_exception
 
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
@@ -49,6 +50,17 @@ def init_celery():
     return background.celery_app.celery_app
 
 
+def init_oss():
+    """显式初始化 oss 客户端"""
+    import storage_backend.oss_client as oss_client # pylint: disable=import-outside-toplevel
+
+    if oss_client.oss_client is None:
+        oss_client.oss_client = oss_client.create_oss_client()
+
+    return oss_client.oss_client
+
+
+
 BOOTSTRAP_SUMMARIZED = False  # 标记是否已输出启动概要，防止重复输出启动概要
 
 
@@ -58,6 +70,15 @@ def bootstrap():
     ENV = init_env() # pylint: disable=C0103
     CONFIG = init_config() # pylint: disable=C0103
     init_logging()
+
+    if CONFIG.config.storage.allowed_storage_types == ["oss"]:
+        OSS_CLIENT = init_oss() # pylint: disable=unused-variable, invalid-name
+    elif CONFIG.config.storage.allowed_storage_types == ["local"]:
+        OSS_CLIENT = None # pylint: disable=unused-variable, invalid-name
+    else:
+        raise ValueError("allowed_storage_types " \
+        "must be 'oss' or 'local'") from storage_type_not_allowed_exception
+
     CELERY_APP = init_celery() # pylint: disable=C0103
 
 

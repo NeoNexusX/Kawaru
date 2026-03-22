@@ -7,9 +7,10 @@ from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
-from tools.logger import get_logger
 from boot.config import get_config
 from boot.celery_boot import start_celery_worker, stop_celery_worker
+from background.celery_app import TaskManager
+from storage_backend.oss_client import oss_sumary, oss_client
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     celery_proc = await start_celery_worker()
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_proc = celery_proc
+    # oss client summary
+    if oss_client is not None:
+        await oss_sumary(oss_client)
 
     yield
 
