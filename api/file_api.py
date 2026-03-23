@@ -303,7 +303,7 @@ async def upload_simple_file(
         await rollback_simple_upload(async_session, current_user, pre_record, final_path)
         raise file_persist_failed_exception from exc
 
-    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type) #todotodo这里没有触发解压
+    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
     
     return pre_record # type: ignore
 

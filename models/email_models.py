@@ -11,6 +11,7 @@ logger = get_logger("models.email_models")
 class EmailConfirmResponseBase(BaseModel):
     email: str
     send_time: datetime
+    purpose: str = "register"
 
 
 # EmailRequest model
