@@ -9,6 +9,7 @@ Tests for user management API.
 """
 import asyncio
 from typing import Tuple
+import anyio
 import pytest
 from httpx import AsyncClient
 from .conftest import logger, TEST_USER, TEST_PWD, BASE_URL
@@ -197,7 +198,7 @@ class TestUserBenchmark:
                 assert rs.status_code == 200, rs.text
                 return rs.json()
 
-        result = benchmark(lambda: asyncio.get_event_loop().run_until_complete(_do_login()))
+        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_login())))
         logger.info(f"benchmark login result: {result}")
 
     @pytest.mark.benchmark
@@ -213,7 +214,7 @@ class TestUserBenchmark:
             assert rs.status_code == 200, rs.text
             return rs.json()
 
-        result = benchmark(lambda: asyncio.get_event_loop().run_until_complete(_do_get()))
+        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_get())))
         logger.info(f"benchmark get_user result: {result}")
 
     @pytest.mark.benchmark
@@ -230,5 +231,5 @@ class TestUserBenchmark:
             assert rs.status_code == 200, rs.text
             return rs.json()
 
-        result = benchmark(lambda: asyncio.get_event_loop().run_until_complete(_do_update()))
+        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_update())))
         logger.info(f"benchmark update_user result: {result}")

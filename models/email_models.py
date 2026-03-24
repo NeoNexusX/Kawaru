@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 
 import pyotp
 from pydantic import BaseModel
@@ -8,10 +9,15 @@ from tools.logger import get_logger
 logger = get_logger("models.email_models")
 
 
+class EmailPurpose(str, Enum):
+    REGISTER = "register"
+    UPDATE = "update"
+
+
 class EmailConfirmResponseBase(BaseModel):
     email: str
     send_time: datetime
-    purpose: str = "register"
+    purpose: EmailPurpose = EmailPurpose.REGISTER
 
 
 # EmailRequest model
