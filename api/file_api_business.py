@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from database.db import get_async_session, get_async_engine
+from database.db import get_async_engine
 from api.experiment_api_business import get_imzml_experiment_by_file_id
 from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
@@ -47,6 +47,7 @@ from exceptions import (
     user_file_limit_exception,
 )
 from tools.logger import get_logger
+from tools.time_tools import now_local_timezone
 from models.file_models import FileCreate, FileInDB, PartInDB
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
@@ -335,7 +336,9 @@ async def update_download_stats(
     更新下载统计
 
     """
+    now = now_local_timezone()
     file_record.download_count += 1
+    file_record.last_downloaded_at = now
     current_user.download_used = (current_user.download_used or 0) + 1
     session.add(current_user)
     session.add(file_record)
@@ -595,7 +598,12 @@ async def merge_parts_to_file(
         await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise merged_file_hash_mismatch_exception from exc
 
-    # 合并成功,清理分片临时文件和记录
+    # 合并成功,更新首次上传时的 download 时间 (等于 uploaded_at)
+    file_record.uploaded_at = now_local_timezone()
+    file_record.last_downloaded_at = file_record.uploaded_at
+    async_session.add(file_record)
+
+    # 清理分片临时文件和记录
     await delete_parts_by_file_id(async_session, file_record.file_id)
 
 

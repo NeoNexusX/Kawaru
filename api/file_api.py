@@ -24,6 +24,7 @@ from api.file_api_business import (
     rollback_part_upload,
     validate_upload_request
 )
+
 from api.file_api_helper import (
     ensure_storage_dirs,
     get_file_record_by_id,
@@ -55,6 +56,7 @@ from models.file_models import (
 )
 from models.user_models import UserInDB
 
+from tools.time_tools import now_local_timezone
 from tools.logger import get_logger
 logger = get_logger("api.file_api")
 
@@ -290,6 +292,8 @@ async def upload_simple_file(
         # 更新预检记录的路径和大小(预检时已建立用户关联)
         pre_record.path = str(final_path)
         pre_record.size = size
+        pre_record.uploaded_at = now_local_timezone()
+        pre_record.last_downloaded_at = pre_record.uploaded_at
         async_session.add(pre_record)
 
         await async_session.commit()
@@ -304,7 +308,7 @@ async def upload_simple_file(
         raise file_persist_failed_exception from exc
 
     trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
-    
+
     return pre_record # type: ignore
 
 

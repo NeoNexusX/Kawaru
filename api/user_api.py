@@ -11,8 +11,6 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from starlette import status
-from httpx import AsyncClient, HTTPStatusError, RequestError
 from api.auth_api import (
     credentials_exception,
     create_access_token,
@@ -21,7 +19,7 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
-from api.user_api_business import authenticate_user
+from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
 from api.user_api_helper import (
     validate_url,
     get_user,
@@ -46,26 +44,6 @@ logger = get_logger("api.user_api")
 #########################
 # 业务层，API 逻辑，不应该抛出任何异常
 #########################
-
-# TODO:丢去作为任务来实现
-async def validate_orcid(orcid: str) -> bool:
-    """
-    校验用户ORCID。
-    存在:返回True;
-    不存在或网络异常:返回False;
-    """
-    client = AsyncClient(timeout=100)
-    url = f"https://pub.orcid.org/v3.0/{orcid}/person"
-
-    try:
-        r = await client.head(url, headers={'Accept': 'application/json'})
-        if r.status_code == status.HTTP_200_OK:        # 200
-            return True
-        return False
-    except (HTTPStatusError, RequestError):  # Network Errors
-        logger.error("Cannot access ORCID public API due to network error.")
-        return False
-
 
 async def validate_signup_info(user: UserCreate, async_session: AsyncSession):
     """
@@ -320,45 +298,18 @@ async def update_user(
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
 
-    # 验证邮箱验证码
-    if "verify_code" in user_data and user_data["verify_code"]:
-        if not TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window):
-            raise user_verification_bad_exception
-        # 移除 verify_code，不更新到数据库
-        user_data.pop("verify_code")
+    # 验证邮箱验证码（update 接口 require）
+    if not (
+        "verify_code" in user_data
+        and user_data["verify_code"]
+        and TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window)):
+        raise user_verification_bad_exception
 
-    # 如果修改的用户并非当前已登录用户（通过用户名判断），则抛出异常
-    if user_data["username"] is None or user_past.username != user.username:
-        raise user_name_bad_exception
+    # 移除 verify_code，不更新到数据库
+    user_data.pop("verify_code")
 
-    # 校验 email 是否重复
-    if "email" in user_data and user_data["email"]:
-        existing_user = await get_user_by_email(user_data["email"], async_session)
-        if existing_user and existing_user.id != user_past.id:
-            raise email_already_exists_exception
-
-    # 校验 position
-    if "position" in user_data and user_data["position"] not in ALLOWED_POSITION_TYPES:
-        raise user_position_not_allowed_exception
-
-    # 校验 region
-    if "region" in user_data and user_data["region"] not in ALLOWED_REGIONS:
-        raise user_region_not_exist_exception
-
-    # 校验 orcid
-    if "orcid" in user_data and user_data["orcid"]:
-        if not await validate_orcid(user_data["orcid"]):
-            raise user_orcid_not_exist_exception
-
-    # 校验 homepage
-    if "homepage" in user_data and user_data["homepage"]:
-        if not validate_url(user_data["homepage"]):
-            raise user_homepage_invalid_exception
-
-    # 处理密码更新
-    if "password" in user_data and user_data["password"] is not None:
-        user_past.hashed_password = hashed_password(user_data["password"])
-        user_data.pop("password")
+    # 校验其他字段
+    user_data = await validate_update_user_data(user_data, user_past, async_session)
 
     # 再更新除密码外剩下的用户信息
     user_past.sqlmodel_update(user_data)

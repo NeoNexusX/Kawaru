@@ -6,10 +6,11 @@ from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey
 from tools.logger import get_logger
+from tools.time_tools import now_local_timezone
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
-from tools.time_tools import now_local_timezone
+
 
 # 获取服务器状态模块的日志器
 logger = get_logger("models.file_models")
@@ -81,6 +82,7 @@ class FilePublic(FileBase):
     file_id: int
     uploaded_at: datetime
     download_count: int
+    last_downloaded_at: datetime
 
 
 class FileListResponse(SQLModel):
@@ -99,6 +101,7 @@ class FileInDB(FileBase, table=True):
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
     uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 上传时间
+    last_downloaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
 
@@ -201,6 +204,7 @@ class FileDownloadMeta(FileBase):
     file_id: int | None = None
     uploaded_at: datetime
     download_count: int
+    last_downloaded_at: datetime
 
     @classmethod
     def from_record(cls, record: FileInDB) -> "FileDownloadMeta":
@@ -215,4 +219,5 @@ class FileDownloadMeta(FileBase):
             path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,
+            last_downloaded_at=record.last_downloaded_at,
         )

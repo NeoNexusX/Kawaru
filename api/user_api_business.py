@@ -2,14 +2,25 @@ import os
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel.ext.asyncio.session import AsyncSession
+from httpx import AsyncClient, HTTPStatusError, RequestError
+from starlette import status
 
 from database.redis_client import connect_new_redis
-from api.user_api_helper import get_user
-from api.auth_api import verify_password
+from api.user_api_helper import get_user, validate_url, get_user_by_email
+from api.auth_api import verify_password, hashed_password
 from models.user_models import UserInDB
 from models.auth import SECRET_KEY
 from models.auth import RedisLoginData
 from boot.config import get_config
+from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS
+from exceptions.user_exceptions import (
+    user_name_bad_exception,
+    user_position_not_allowed_exception,
+    user_region_not_exist_exception,
+    user_orcid_not_exist_exception,
+    user_homepage_invalid_exception,
+    email_already_exists_exception,
+)
 
 from tools.logger import get_logger
 logger = get_logger("api.user_api_business")
@@ -95,3 +106,62 @@ async def check_user_login_status(token: str) -> str | bool:
                 await _redis_client.aclose()
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to close Redis client after checking login status: %s", exc)
+
+# TODO 后续可以交给任务队列异步执行，避免邮件发送过程阻塞主线程
+async def validate_orcid(orcid: str) -> bool:
+    """
+    校验用户ORCID。
+    存在:返回True;
+    不存在或网络异常:返回False;
+    """
+    client = AsyncClient(timeout=100)
+    url = f"https://pub.orcid.org/v3.0/{orcid}/person"
+
+    try:
+        r = await client.head(url, headers={'Accept': 'application/json'})
+        if r.status_code == status.HTTP_200_OK:        # 200
+            return True
+        return False
+    except (HTTPStatusError, RequestError):  # Network Errors
+        logger.error("Cannot access ORCID public API due to network error.")
+        return False
+
+
+async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_session: AsyncSession) -> dict:
+    """
+    校验更新用户数据的有效性，并处理密码更新
+    """
+    # 如果修改的用户并非当前已登录用户（通过用户名判断），则抛出异常
+    if user_data.get("username") is None or user_past.username != user_data.get("username"):
+        raise user_name_bad_exception
+
+    # 校验 email 是否重复
+    if "email" in user_data and user_data["email"]:
+        existing_user = await get_user_by_email(user_data["email"], async_session)
+        if existing_user and existing_user.id != user_past.id:
+            raise email_already_exists_exception
+
+    # 校验 position
+    if "position" in user_data and user_data["position"] not in ALLOWED_POSITION_TYPES:
+        raise user_position_not_allowed_exception
+
+    # 校验 region
+    if "region" in user_data and user_data["region"] not in ALLOWED_REGIONS:
+        raise user_region_not_exist_exception
+
+    # 校验 orcid
+    if "orcid" in user_data and user_data["orcid"]:
+        if not await validate_orcid(user_data["orcid"]):
+            raise user_orcid_not_exist_exception
+
+    # 校验 homepage
+    if "homepage" in user_data and user_data["homepage"]:
+        if not validate_url(user_data["homepage"]):
+            raise user_homepage_invalid_exception
+
+    # 处理密码更新
+    if "password" in user_data and user_data["password"] is not None:
+        user_past.hashed_password = hashed_password(user_data["password"])
+        user_data.pop("password")
+
+    return user_data
