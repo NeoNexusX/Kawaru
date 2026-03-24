@@ -53,10 +53,6 @@ identity_not_allowed_exception = HTTPException(
     detail=format_exception_detail("Identity field must be None, it will be set by the API endpoint")
 )
 
-admin_create_not_allowed_exception = HTTPException(
-    status_code=status.HTTP_403_FORBIDDEN,
-    detail=format_exception_detail("Only admin users can create admin accounts")
-)
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "user_already_exists_exception",
@@ -69,5 +65,4 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "user_orcid_not_exist_exception",
     "user_homepage_invalid_exception",
     "identity_not_allowed_exception",
-    "admin_create_not_allowed_exception",
 ]

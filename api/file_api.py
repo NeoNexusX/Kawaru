@@ -4,7 +4,7 @@
 import json
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
-from sqlmodel import select, and_
+from sqlmodel import select, and_, col
 from background.experiment_background import trigger_experiment_extraction
 from api.file_api_business import (
     assert_file_owner,
@@ -33,6 +33,7 @@ from api.file_api_helper import (
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
+from api.user_api_helper import count_items
 from constants.file_constants import MAX_DOWNLOADS_PER_USER
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
@@ -42,6 +43,7 @@ from exceptions.file_exceptions import (
     permission_denied_exception,
     user_download_limit_exception,
 )
+from exceptions.common_exceptions import internal_server_error_exception
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -54,6 +56,8 @@ from models.file_models import (
     PartPublic,
 )
 from models.user_models import UserInDB
+from models.link_models import UserFileLink
+from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
 
 from tools.logger import get_logger
 logger = get_logger("api.file_api")
@@ -312,14 +316,14 @@ async def list_user_files(
 ) -> FileListResponse:
     """
     【文件列表查询接口】
-    
+
     功能:查询当前用户的全部文件记录
     返回:包含文件总数、文件列表和用户ID的JSON对象
-    
+
     查询逻辑:
     - 从用户的 file_ids 列表中获取文件ID
     - 批量查询文件记录
-    
+
     注意:
     - 只返回用户拥有的文件(file_id 在 user.file_ids 中)
     - 不包括预检记录(未完成上传的文件)
@@ -466,6 +470,92 @@ async def get_download_file_metadata(
 
     return FileDownloadMeta.from_record(file_record)
 
+
+async def get_file_list(
+    page: int,
+    size: int,
+    filters: FileFilter,
+    async_session: AsyncSessionDep
+) -> ListDataResponse:
+    """
+    【公共文件列表接口】
+
+    功能:根据查询参数返回文件列表
+    时机:在前端查询文件列表时调用
+
+    流程:
+    1. 分页查询文件列表(根据查询参数)
+    2. 返回文件列表和分页元数据
+
+    注意:
+    - 分页参数(page, size)默认值为 1, 10
+    - 查询参数(filters)默认值为空字典
+
+    """
+    try:
+
+        # 首先针对username模糊匹配数据库中的用户id列表
+        user_ids = []
+        if filters.username:
+            user_query = select(UserInDB.id).where(col(UserInDB.username).like(f"%{filters.username}%"))
+            user_ids = (await async_session.exec(user_query)).all() or []
+
+        # 构建select语句
+        file_query = select(FileInDB)
+
+        # 如果有username过滤,则内连接UserFileLink表,确保关联用户的文件会被列出来
+        if user_ids:
+            file_query = file_query.join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type:ignore
+
+        # 构建其余的筛选条件
+        file_query = file_query.filter(
+            and_(
+                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
+                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
+                FileInDB.organism == filters.organism if filters.organism else True,
+                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
+                FileInDB.condition == filters.condition if filters.condition else True,
+                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
+                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
+                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
+                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
+                FileInDB.solvent == filters.solvent if filters.solvent else True,
+                col(UserFileLink.user_id).in_(user_ids) if user_ids else True, # 用户关联条件：没有username过滤或user_id在匹配列表中 # pylint: disable=no-member
+            )
+        )
+
+        # 先根据filter条件查询文件数量
+        total_records = await count_items(async_session, file_query, FileInDB)
+
+        # 计算总页数
+        total_pages = (total_records + size - 1) // size
+
+        # 分页查询文件列表
+        offset = (page - 1) * size
+
+        data = (await async_session.exec(file_query.offset(offset).limit(size))).all() or None
+
+        # 分页元数据
+        pagination_meta = PaginationMeta(
+            current_page=page,
+            current_records=len(data) if data else 0,
+            total_pages=total_pages,
+            total_records=total_records
+        )
+
+        # 构建响应模型
+        list_file_response = ListDataResponse(
+            meta=pagination_meta,
+            data=[FilePublic(**file.model_dump()) for file in data] if data else []
+        )
+
+        return list_file_response
+
+    except Exception as e:
+        logger.error(f"failed to get_file_list: {e}")
+        raise internal_server_error_exception from e
+
+
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
@@ -474,3 +564,4 @@ DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
 PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
+ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]

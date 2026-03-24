@@ -8,7 +8,7 @@ import jwt
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import ExpiredSignatureError, InvalidTokenError
-from sqlmodel import select
+from sqlmodel import select, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from starlette import status
@@ -25,18 +25,21 @@ from api.user_api_business import authenticate_user
 from api.user_api_helper import (
     validate_url,
     get_user,
-    get_user_by_email
+    get_user_by_email,
+    count_items
 )
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from constants.file_constants import CLEANUP_PREFLIGHTS_INTERVAL_SECONDS, PREFLIGHT_TTL_MINUTES
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
+from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
 from background.celery_app import TaskManager
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
-from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
+from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic
+from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 
 from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
 from tools.logger import get_logger
@@ -285,6 +288,9 @@ async def create_admin_user_api(user: UserCreate,
                                 current_admin: Annotated[UserInDB, Depends(token_authen)],
                                 async_session: AsyncSessionDep,) -> UserPublic:
     """管理员接口:创建新的管理员账号"""
+    # 校验当前用户是否为管理员
+    if current_admin.identity != "admin":
+        raise non_admin_operation_not_allowed_exception
 
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
@@ -394,6 +400,59 @@ async def has_admin_user(session: AsyncSession, username: str) -> UserInDB | Non
     return result
 
 
+async def get_user_list(
+    page: int,
+    size: int,
+    filters: UserFilter,
+    current_admin: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep
+) -> ListDataResponse:
+    """获取用户列表"""
+    # 校验当前用户是否为管理员
+    if current_admin.identity != "admin":
+        raise non_admin_operation_not_allowed_exception
+
+    # 根据filters条件构建查询
+    query = select(UserInDB).filter(
+        col(UserInDB.username).like(f"%{filters.username}%") if filters.username else True, # type:ignore # pylint: disable=no-member
+        UserInDB.active == filters.active if filters.active else True, # type:ignore
+        UserInDB.institution == filters.institution if filters.institution else True, # type:ignore
+        UserInDB.region == filters.region if filters.region else True # type:ignore
+    )
+
+    try:
+        # 先根据filter条件查询用户数量
+        total_records = await count_items(async_session, query)
+
+        # 计算总页数
+        total_pages = (total_records + size - 1) // size
+
+        # 分页查询用户列表
+        offset = (page - 1) * size
+
+        data = (await async_session.exec(query.offset(offset).limit(size))).all() or None
+
+        # 分页元数据
+        pagination_meta = PaginationMeta(
+            current_page=page,
+            current_records=len(data) if data else 0,
+            total_pages=total_pages,
+            total_records=total_records
+        )
+
+        # 构建响应模型
+        list_user_response = ListDataResponse(
+            meta=pagination_meta,
+            data=[UserDetailPublic(**user.model_dump()) for user in data] if data else []
+        )
+
+        return list_user_response
+
+    except Exception as e:
+        logger.error(f"failed to get user list: {e}")
+        raise internal_server_error_exception from e
+
+
 ##########################
 # 以下为依赖注入创建的类型别名
 ##########################
@@ -405,3 +464,4 @@ AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用户信息
 UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 删除当前登录用户
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
+ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖
