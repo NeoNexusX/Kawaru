@@ -81,5 +81,12 @@ class UserUpdate(BaseModel):
     新用户信息模型，需要提供邮箱和密码，可选更新字段，不允许更新身份，名字字段
     """
     username: str = Field(max_length=user_config.max_username_length) #强制提供
-    email: str = Field(default=None,max_length=user_config.max_useremail_length, description="用户邮箱") #不强制提供
+    email: str | None= Field(default=None,max_length=user_config.max_useremail_length, description="用户邮箱") #不强制提供
     password: str | None = None #不强制提供
+    verify_code: str | None = None #邮箱验证码
+    institution: str | None = Field(default=None, max_length=user_config.max_institution_length)
+    position: str | None = Field(default=None, max_length=user_config.max_position_length)
+    research_field: str | None = Field(default=None, max_length=user_config.max_research_field_length)
+    region: str | None = Field(default=None, max_length=user_config.max_region_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
+    homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)

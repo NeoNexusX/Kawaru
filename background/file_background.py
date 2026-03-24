@@ -29,7 +29,7 @@ async def process_imzml_experiment_background(
     experiment_name: str
 ):
     """
-    后台处理 ImzML 实验的同步任务
+    后台处理 ImzML 实验的任务
 
     存储路径：
     - 临时目录:experiments/temp/exp_{id}/
@@ -60,6 +60,7 @@ async def process_imzml_experiment_background(
             # 删除原始 ZIP 文件并修改文件表中的 path 字段（helper 层）
             await delete_source_file_and_clear_path(async_session, source_file, is_successful=True)
             await async_session.commit()
+            await async_session.refresh(experiment_record)
 
             logger.info(f"deleted source zip file {source_file_id} and completed imzml experiment processing exp_id={experiment_record.id}")
 
@@ -74,6 +75,7 @@ async def process_imzml_experiment_background(
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
+            await async_session.refresh(experiment_record)
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 

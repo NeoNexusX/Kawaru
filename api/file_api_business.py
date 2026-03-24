@@ -26,7 +26,8 @@ from api.file_api_helper import (
     build_zip_file,
     merge_files_and_get_hash,
     save_upload_file,
-    delete_file_by_storage
+    delete_file_by_storage,
+    prepare_local_storage_path,
 )
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
@@ -431,7 +432,7 @@ async def unlink_user_from_file(
 
     # 3. 刷新事务
     await session.flush()
-
+    await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
@@ -566,12 +567,18 @@ async def merge_parts_to_file(
 
     事务管理:不 commit,由调用方(API 层)统一管理
     """
-    final_path = Path(file_record.path)
     part_paths = [Path(part.temp_path) for part in parts]
 
     assert file_record.file_id is not None
 
     try:
+        # 分片上传预检时 path 为空，合并前构建最终存储路径
+        if not file_record.path:
+            final_path = prepare_local_storage_path(file_record.filename)
+            file_record.path = str(final_path)
+            async_session.add(file_record)
+        else:
+            final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
         await merge_files_and_get_hash(part_paths, final_path, file_record.hash_sha256)
 

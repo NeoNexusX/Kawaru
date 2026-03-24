@@ -165,13 +165,15 @@ async def upload_file_part(
         part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size, temp_path)
 
         # 5. 尝试合并
-        if await validate_and_merge_parts(async_session, file_record, current_user):
+        is_merged = await validate_and_merge_parts(async_session, file_record, current_user)
+        if is_merged:
             trigger_experiment_extraction(background_tasks, file_record, current_user, file_record.experiment_type)
 
         await async_session.commit()
         await async_session.refresh(current_user)
         await async_session.refresh(file_record)
-
+        if not is_merged:
+            await async_session.refresh(part_record)
         logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
 
     except Exception as exc:
@@ -216,11 +218,10 @@ async def get_part_upload_status(
         is_complete=False,
     )
 
-    # 检查文件是否已完成上传
+    # 检查文件是否已完成上传(复用 valid_file_uploaded,对 imzML 类型额外验证实验状态)
     assert current_user.id is not None
     user_file_ids = await get_user_file_ids(session, current_user.id)
-    if file_record.file_id in user_file_ids:
-        status.total_parts = 0
+    if file_record.file_id in user_file_ids and await valid_file_uploaded(session, file_record):
         status.is_complete = True
         return status
 
@@ -303,7 +304,7 @@ async def upload_simple_file(
         raise file_persist_failed_exception from exc
 
     trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
-
+    
     return pre_record # type: ignore
 
 
@@ -341,7 +342,7 @@ async def list_user_files(
         if await valid_file_uploaded(session, file_record):
             filtered_results.append(file_record)
 
-    logger.debug(f"list user files user={current_user.id} count={len(filtered_results)}")
+    logger.info(f"list user files user={current_user.id} count={len(filtered_results)}")
 
     return FileListResponse(total=len(filtered_results),
                             files=list(filtered_results), # type: ignore

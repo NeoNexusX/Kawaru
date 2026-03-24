@@ -13,8 +13,8 @@ email:
   mailgun_domain: YOUR_MAILGUN_DOMAIN
   # Support for SMTP
   smtp_port: 465 # or 587
-  smtp_username: jszszzy@qq.com
-  smtp_from_email: jszszzy@qq.com
+  smtp_username: 1513401658@qq.com
+  smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
   #support for totp
   totp_window: 30

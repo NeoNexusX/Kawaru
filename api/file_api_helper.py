@@ -157,7 +157,7 @@ def delete_local_file(path: str | Path) -> None:
     path_str = str(path).strip()
 
     # 验证路径不是特殊值
-    if not path_str or any(x in path_str for x in ('..', '/', '\\')):
+    if not path_str or any(x in path_str for x in ('..', '\\')):
         logger.warning("invalid path for deletion: %r, skipping", path_str)
         return
 

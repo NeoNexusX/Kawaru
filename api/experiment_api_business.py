@@ -31,8 +31,7 @@ async def create_experiment_record(async_session: AsyncSession,
         status=ExperimentStatus.PROCESSING,
     )
     async_session.add(experiment_record)
-    await async_session.commit()
-    await async_session.refresh(experiment_record)
+    await async_session.flush()
 
     return experiment_record
 
@@ -118,7 +117,7 @@ async def delete_source_file_and_clear_path(
         else:
             source_file.path = ""
         async_session.add(source_file)
-        logger.info(f"source file deleted and path cleared for file_id={source_file.id}") #type:ignore
+        logger.info(f"source file deleted and path cleared for file_id={source_file.file_id}") #type:ignore
     else:
         logger.error("source file not found or path is empty, cannot delete source file")
         raise ValueError("source file not found or path is empty")

@@ -33,13 +33,13 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
 from background.celery_app import TaskManager
-from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
-
 from tools.logger import get_logger
+from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
+
 logger = get_logger("api.user_api")
 
 
@@ -320,9 +320,40 @@ async def update_user(
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
 
+    # 验证邮箱验证码
+    if "verify_code" in user_data and user_data["verify_code"]:
+        if not TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window):
+            raise user_verification_bad_exception
+        # 移除 verify_code，不更新到数据库
+        user_data.pop("verify_code")
+
     # 如果修改的用户并非当前已登录用户（通过用户名判断），则抛出异常
     if user_data["username"] is None or user_past.username != user.username:
         raise user_name_bad_exception
+
+    # 校验 email 是否重复
+    if "email" in user_data and user_data["email"]:
+        existing_user = await get_user_by_email(user_data["email"], async_session)
+        if existing_user and existing_user.id != user_past.id:
+            raise email_already_exists_exception
+
+    # 校验 position
+    if "position" in user_data and user_data["position"] not in ALLOWED_POSITION_TYPES:
+        raise user_position_not_allowed_exception
+
+    # 校验 region
+    if "region" in user_data and user_data["region"] not in ALLOWED_REGIONS:
+        raise user_region_not_exist_exception
+
+    # 校验 orcid
+    if "orcid" in user_data and user_data["orcid"]:
+        if not await validate_orcid(user_data["orcid"]):
+            raise user_orcid_not_exist_exception
+
+    # 校验 homepage
+    if "homepage" in user_data and user_data["homepage"]:
+        if not validate_url(user_data["homepage"]):
+            raise user_homepage_invalid_exception
 
     # 处理密码更新
     if "password" in user_data and user_data["password"] is not None:
