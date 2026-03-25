@@ -33,8 +33,7 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_proc = celery_proc
     # oss client summary
-    if oss_client is not None:
-        await oss_sumary(oss_client)
+    await oss_sumary(oss_client)
 
     yield
 

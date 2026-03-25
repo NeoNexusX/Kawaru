@@ -4,7 +4,7 @@
 import json
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
-from sqlmodel import select, and_, col
+from sqlmodel import select, and_, or_, col, distinct
 from background.experiment_background import trigger_experiment_extraction
 from api.file_api_business import (
     assert_file_owner,
@@ -493,12 +493,13 @@ async def get_file_list(
 
     """
     try:
-
         # 首先针对username模糊匹配数据库中的用户id列表
         user_ids = []
         if filters.username:
             user_query = select(UserInDB.id).where(col(UserInDB.username).like(f"%{filters.username}%"))
             user_ids = (await async_session.exec(user_query)).all() or []
+
+        logger.warning(f"user_ids={user_ids}")
 
         # 构建select语句
         file_query = select(FileInDB)
@@ -520,12 +521,17 @@ async def get_file_list(
                 FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
                 FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
                 FileInDB.solvent == filters.solvent if filters.solvent else True,
-                col(UserFileLink.user_id).in_(user_ids) if user_ids else True, # 用户关联条件：没有username过滤或user_id在匹配列表中 # pylint: disable=no-member
+
+                # 用户关联条件：没有username过滤或user_id在匹配列表中
+                or_(
+                    not filters.username,
+                    col(UserFileLink.user_id).in_(user_ids) if user_ids else False # pylint: disable=no-member
+                )
             )
-        )
+        ).distinct()
 
         # 先根据filter条件查询文件数量
-        total_records = await count_items(async_session, file_query, FileInDB)
+        total_records = await count_items(async_session, file_query, FileInDB, distinct_on_pk=True)
 
         # 计算总页数
         total_pages = (total_records + size - 1) // size

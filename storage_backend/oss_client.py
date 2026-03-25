@@ -34,9 +34,11 @@ else:
     oss_client: "oss_aio.AsyncClient | None" = None
 
 
-async def oss_sumary(client: oss_aio.AsyncClient):
+async def oss_sumary(client: oss_aio.AsyncClient | None):
     """oss_client 摘要"""
     logger = get_logger("bootstrap.oss_sumary")
+    if client is None:
+        return
     try:
         oss_config = get_config().oss
         assert oss_config.bucket_name is not None

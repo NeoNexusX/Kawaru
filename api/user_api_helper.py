@@ -1,6 +1,6 @@
 from typing import Any
 from urllib.parse import urlparse
-from sqlmodel import select, func, SQLModel
+from sqlmodel import select, func, SQLModel, distinct
 from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 from models.user_models import UserInDB
@@ -22,7 +22,8 @@ async def get_user_by_email(email: str, async_session: AsyncSession) -> UserInDB
 async def count_items(
     async_session: AsyncSession,
     query: SelectOfScalar[Any],
-    model: type[SQLModel] | None = None
+    model: type[SQLModel] | None = None,
+    distinct_on_pk: bool = False
 ) -> int:
     """
     根据查询条件统计记录数量
@@ -36,7 +37,15 @@ async def count_items(
     # 构建计数查询：从原查询中提取 WHERE 条件，只计数不取数据
     if model is None:
         model = query.get_final_froms()[0]
-    count_query = select(func.count()).select_from(model) # pylint: disable=not-callable # type: ignore
+
+    # 如果需要去重，根据主键添加 DISTINCT 子句
+    if distinct_on_pk:
+        pk_column = model.__table__.primary_key.columns[0] # type: ignore
+        count_query = select(func.count(distinct(pk_column))) # pylint: disable=not-callable
+    else:
+        count_query = select(func.count())  # pylint: disable=not-callable # type: ignore
+
+    count_query = count_query.select_from(model) # type: ignore
 
     # 复制原查询的 JOIN 条件
     for _join in query._setup_joins: # pylint: disable=protected-access
