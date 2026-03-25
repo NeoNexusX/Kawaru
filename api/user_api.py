@@ -19,12 +19,14 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
-from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
+from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data, delete_user_file_business
 from api.user_api_helper import (
     validate_url,
     get_user,
     get_user_by_email
 )
+from api.file_api_business import get_user_file_ids
+
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from constants.file_constants import CLEANUP_PREFLIGHTS_INTERVAL_SECONDS, PREFLIGHT_TTL_MINUTES
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
@@ -322,9 +324,19 @@ async def update_user(
 async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
 ):
-    """删除当前登录用户"""
-    await async_session.delete(user)  # 删除当前用户
-    await async_session.commit()  # 提交数据库操作
+    """删除当前登录用户: 先处理该用户相关文件，再删除用户本身"""
+    # 1. 删除该用户拥有的文件（如果其他用户共享则仅解除关联）
+    file_ids = []
+    file_ids = await get_user_file_ids(async_session, user.id)
+    if file_ids:
+        for file_id in file_ids:
+            try:
+                await delete_user_file_business(async_session, file_id, user)
+            except (FileNotFoundError,PermissionError) as exc:
+                logger.warning(f"Failed to delete file {file_id} for user {user.id}. Continue user deletion. error={exc}")
+    # 2. 删除用户本身
+    await async_session.delete(user)
+    await async_session.commit()
     return user
 
 
