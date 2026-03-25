@@ -77,6 +77,8 @@ class StorageSettings(BaseModel):
     max_files_per_user: int
     preflight_ttl_minutes: int
     cleanup_preflights_interval_minutes: int
+    cleanup_download_zip_interval_minutes: int
+    download_zip_retention_days: int
     chunk_ttl_minutes: int
 
 

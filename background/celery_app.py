@@ -36,6 +36,8 @@ def celery_create(cfg: Config, _logger: Logger | None = None) -> Celery:
     if _logger is None:
         _logger = _get_logger()
 
+    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS # TODO 此处有点争议 待定
+
     redis = cfg.redis
     password = os.getenv('REDIS_PASSWORD')
     username = redis.username or "default"
@@ -55,6 +57,12 @@ def celery_create(cfg: Config, _logger: Logger | None = None) -> Celery:
             "heartbeat": {
                 "task": "background.file_background.heartbeat",
                 "schedule": 10.0,
+            },
+            "cleanup_old_download_zips": {
+                "task": "background.file_background.cleanup_old_download_zips",
+                "schedule": CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
+                "args": (),
+                "kwargs": {},
             },
         },
     }

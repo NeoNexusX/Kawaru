@@ -8,11 +8,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.user_api_business import check_user_login_status
 from api.user_api_helper import get_user
-from api.experiment_api_business import create_experiment_record, delete_source_file_and_clear_path, mark_experiment
+from api.experiment_api_business import create_experiment_record, mark_experiment
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
-from api.file_api_helper import get_file_record_by_id
+from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import safe_cleanup_preflight_record
-from constants.file_constants import PREFLIGHT_TTL_MINUTES
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
@@ -57,12 +57,11 @@ async def process_imzml_experiment_background(
             # 更新实验记录
             await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
 
-            # 删除原始 ZIP 文件并修改文件表中的 path 字段（helper 层）
-            await delete_source_file_and_clear_path(async_session, source_file, is_successful=True)
+            # 保留原始 ZIP 文件与数据库 path 字段，由定时任务统一清理
             await async_session.commit()
             await async_session.refresh(experiment_record)
 
-            logger.info(f"deleted source zip file {source_file_id} and completed imzml experiment processing exp_id={experiment_record.id}")
+            logger.info(f"completed imzml experiment processing exp_id={experiment_record.id} source_file_id={source_file_id}")
 
         except HTTPException as e:
             logger.error(e)
@@ -82,11 +81,12 @@ async def process_imzml_experiment_background(
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
             await async_session.rollback()
-            async with AsyncSession(get_async_engine()) as async_session:
-                # 删除原始zip，清理记录的file的path信息
-                if source_file:
-                    await delete_source_file_and_clear_path(async_session, source_file, is_successful=False)
-                    await async_session.commit()
+
+            # 不在这里删除原始 zip，改由定时任务 cleanup_old_download_zips 处理
+            if source_file:
+                async_session.add(source_file)
+                await async_session.commit()
+
             logger.error("imzml experiment processing failed error=%s", e)
             raise
 
@@ -156,6 +156,43 @@ async def cleanup_stale_preflights(
             logger.info(f"completed cleanup of stale preflights for user {current_user.id}, cleaned {cleaned} records")
 
         return cleaned
+
+
+@celery_app.task()
+async def cleanup_old_download_zips(
+    retention_days: int = DOWNLOAD_ZIP_RETENTION_DAYS,
+    batch_size: int = 100,
+) -> int:
+    """
+    定时清理符合条件的下载zip文件：
+      - 走到数据库 file 表 path 不为空
+      - last_downloaded_at 早于 当前时间 - retention_days
+    物理文件删除后只置空 path，保留数据库记录
+    """
+    now = now_local_timezone()
+    cutoff_time = now - timedelta(days=retention_days)
+    cleaned = 0
+
+    async with AsyncSession(get_async_engine()) as session:
+        records = (await session.exec(
+            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time).limit(batch_size))).all()
+        for rec in records:
+            file_path = rec.path.strip() if rec.path else ""
+            if not file_path:
+                continue
+            try:
+                delete_file_by_storage(file_path, rec.storage_type)
+                rec.path = ""
+                session.add(rec)
+                cleaned += 1
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to delete old download zip for file_id=%s path=%s error=%s",rec.file_id,file_path,exc)
+
+        if cleaned:
+            await session.commit()
+
+    logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
+    return cleaned
 
 
 @celery_app.task()
