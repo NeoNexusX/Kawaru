@@ -54,7 +54,7 @@ async def count_items(
             target, # type: ignore
             onclause, # type: ignore
             isouter = flags.get("isouter", False) if flags else False,
-            full = flags.get("fulls", False) if flags else False,
+            full = flags.get("full", False) if flags else False,
         )
 
     # 复制原查询的 WHERE 条件

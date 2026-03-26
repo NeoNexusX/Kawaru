@@ -41,7 +41,8 @@ async def oss_sumary(client: oss_aio.AsyncClient | None):
         return
     try:
         oss_config = get_config().oss
-        assert oss_config.bucket_name is not None
+        if oss_config.bucket_name is None:
+            raise ValueError("oss bucket_name is empty")
         req = GetBucketLocationRequest(oss_config.bucket_name)
         res = await client.get_bucket_location(req) # type: ignore
         if res.status_code == 200:

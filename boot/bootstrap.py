@@ -76,8 +76,7 @@ def bootstrap():
     elif CONFIG.config.storage.allowed_storage_types == ["local"]:
         OSS_CLIENT = None # pylint: disable=unused-variable, invalid-name
     else:
-        raise ValueError("allowed_storage_types " \
-        "must be 'oss' or 'local'") from storage_type_not_allowed_exception
+        raise storage_type_not_allowed_exception
 
     CELERY_APP = init_celery() # pylint: disable=C0103
 

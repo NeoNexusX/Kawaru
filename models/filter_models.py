@@ -1,6 +1,5 @@
 from typing import Any
 from sqlmodel import Field, SQLModel
-from models.user_models import UserDetailPublic
 
 
 class PaginationMeta(SQLModel):

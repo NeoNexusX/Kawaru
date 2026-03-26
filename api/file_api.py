@@ -499,8 +499,6 @@ async def get_file_list(
             user_query = select(UserInDB.id).where(col(UserInDB.username).like(f"%{filters.username}%"))
             user_ids = (await async_session.exec(user_query)).all() or []
 
-        logger.warning(f"user_ids={user_ids}")
-
         # 构建select语句
         file_query = select(FileInDB)
 
