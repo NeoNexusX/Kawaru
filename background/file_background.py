@@ -13,6 +13,7 @@ from api.experiment_api_helper import create_experiment_directories, extract_and
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import safe_cleanup_preflight_record
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
@@ -178,11 +179,11 @@ async def cleanup_old_download_zips(
             select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time).limit(batch_size))).all()
         for rec in records:
             file_path = rec.path.strip() if rec.path else ""
-            # if not file_path:
-            #     continue
+            if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
+                continue
             try:
                 delete_file_by_storage(file_path, rec.storage_type)
-                rec.path = ""
+                rec.path = SOURCE_FILE_PATH_CLEARED
                 session.add(rec)
                 cleaned += 1
             except Exception as exc:  # pylint: disable=broad-exception-caught

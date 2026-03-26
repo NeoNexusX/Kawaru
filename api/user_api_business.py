@@ -122,17 +122,17 @@ async def validate_orcid(orcid: str) -> bool:
     存在:返回True;
     不存在或网络异常:返回False;
     """
-    client = AsyncClient(timeout=100)
-    url = f"https://pub.orcid.org/v3.0/{orcid}/person"
+    async with AsyncClient(timeout=100) as client:
+        url = f"https://pub.orcid.org/v3.0/{orcid}/person"
 
-    try:
-        r = await client.head(url, headers={'Accept': 'application/json'})
-        if r.status_code == status.HTTP_200_OK:        # 200
-            return True
-        return False
-    except (HTTPStatusError, RequestError):  # Network Errors
-        logger.error("Cannot access ORCID public API due to network error.")
-        return False
+        try:
+            r = await client.head(url, headers={'Accept': 'application/json'})
+            if r.status_code == status.HTTP_200_OK:        # 200
+                return True
+            return False
+        except (HTTPStatusError, RequestError):  # Network Errors
+            logger.error("Cannot access ORCID public API due to network error.")
+            return False
 
 
 async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_session: AsyncSession) -> dict:
