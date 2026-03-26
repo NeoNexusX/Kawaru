@@ -308,7 +308,7 @@ async def upload_simple_file(
         raise file_persist_failed_exception from exc
 
     trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
-
+    
     return pre_record # type: ignore
 
 
