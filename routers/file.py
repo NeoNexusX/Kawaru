@@ -1,10 +1,11 @@
 from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
 from models.file_models import FilePublic, PartUploadStatus
+from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
-    PartUploadDep, PartStatusDep
+    PartUploadDep, PartStatusDep, ListPublicFilesDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -54,3 +55,9 @@ async def upload_chunk(chunk_result: PartUploadDep):
 async def get_upload_status(status: PartStatusDep):
     """查询分片上传状态"""
     return status
+
+
+@file_router.post("/list_files", response_model=ListDataResponse)
+async def list_files(list_file_response: ListPublicFilesDep):
+    """查询文件列表"""
+    return list_file_response

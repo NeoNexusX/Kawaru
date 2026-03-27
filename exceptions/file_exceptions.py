@@ -27,6 +27,12 @@ download_not_implemented_exception = HTTPException(
     detail=format_exception_detail("download for this storage type not implemented")
 )
 
+# 当前存储类型不支持异常
+storage_type_not_allowed_exception = HTTPException(
+    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    detail=format_exception_detail("storage type not allowed")
+)
+
 # 文件内容缺失异常
 file_content_missing_exception = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
@@ -103,11 +109,19 @@ invalid_request_parameters_exception = HTTPException(
 )
 
 
+# OSS 相关异常定义
+oss_client_create_failed_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail=format_exception_detail("failed to create oss client")
+)
+
+
 __all__ = [
     "invalid_user_for_file_list_sync_exception",
     "file_not_found_exception",
     "permission_denied_exception",
     "download_not_implemented_exception",
+    "storage_type_not_allowed_exception",
     "file_content_missing_exception",
     "file_persist_failed_exception",
     "user_file_limit_exception",
@@ -120,4 +134,5 @@ __all__ = [
     "merged_file_hash_mismatch_exception",
     "part_file_missing_exception",
     "invalid_request_parameters_exception",
+    "oss_client_create_failed_exception",
 ]

@@ -7,9 +7,9 @@ from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
-from tools.logger import get_logger
 from boot.config import get_config
 from boot.celery_boot import start_celery_worker, stop_celery_worker
+from storage_backend.oss_client import oss_sumary, oss_client
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     celery_proc = await start_celery_worker()
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_proc = celery_proc
+    # oss client summary
+    await oss_sumary(oss_client)
 
     yield
 
@@ -55,11 +57,6 @@ app.add_middleware(
 app.include_router(user_router)
 app.include_router(file_router)
 app.include_router(experiment_router)
-
-# Celery 配置
-# TODO: 运行sudo apt install celery安装celery依赖
-celery_app = Celery('celery_app')
-celery_app.config_from_object('boot.celeryconfig')
 
 # update ：uvicorn run config
 if __name__ == "__main__":

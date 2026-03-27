@@ -1,9 +1,9 @@
-from typing import Annotated
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from models.auth import Token
 from models.email_models import EmailConfirmRequest
-from models.user_models import UserInDB, UserPublic,UserDetailPublic
-from api.user_api import (UserLoginDep, token_authen, UserCreateDep,
+from models.user_models import UserPublic,UserDetailPublic
+from models.filter_models import ListDataResponse
+from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
                           AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep)
 from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
 
@@ -36,7 +36,7 @@ async def logout(user: UserLogoutDep) -> UserPublic:
 
 
 @user_router.get("/user", response_model=UserDetailPublic)
-async def get_current_usr(user: Annotated[UserInDB, Depends(token_authen)]):
+async def get_current_usr(user: TokenDep):
     """
     Get current user:
     Method:Get
@@ -103,3 +103,13 @@ async def create_user_smtp_email_server(email: EmailConfirmSMTPDep):
     Params(Body):"email", "send_time"
     """
     return email
+
+
+@user_router.post("/list_users", response_model=ListDataResponse)
+async def list_users(list_user_response: ListUsersDep):
+    """
+    Get user list:
+    Method:Post
+    Params:filter
+    """
+    return list_user_response
