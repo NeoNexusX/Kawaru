@@ -4,7 +4,7 @@
 from datetime import datetime
 from enum import Enum
 from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey
-from models.file_models import now_local_timezone
+from models.file_models import utc_time
 from boot.config import get_config
 
 config = get_config()
@@ -33,7 +33,7 @@ class ExperimentBase(SQLModel):
     注意：实验通过 source_file_id 关联文件，多用户共享同一文件时共享同一实验记录
     """
     experiment_name: str = Field(min_length=1, max_length=255, description="实验名称")
-    created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
+    created_at: datetime = Field(default_factory=utc_time, description="创建时间")
     status: str = Field(default=ExperimentStatus.PROCESSING, description="处理状态: processing, completed, failed")
     error_message: str = Field(default="", description="错误信息(失败时)")
 
@@ -78,7 +78,7 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
     ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
     ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小(字节)")
     # 元数据
-    created_at: datetime = Field(default_factory=now_local_timezone, description="创建时间")
+    created_at: datetime = Field(default_factory=utc_time, description="创建时间")
     status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)
     error_message: str = Field(default="", description="错误信息(失败时)", max_length=255)
 

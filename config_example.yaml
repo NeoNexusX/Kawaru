@@ -62,6 +62,8 @@ storage:
   max_downloads_per_user: 50
   preflight_ttl_minutes: 30
   cleanup_preflights_interval_minutes: 60
+  cleanup_download_zip_interval_minutes: 1440
+  download_zip_retention_days: 7
   chunk_ttl_minutes: 30
 
 admin_info:

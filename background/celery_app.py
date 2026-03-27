@@ -9,6 +9,7 @@ from redbeat.schedulers import RedBeatSchedulerEntry as Entry
 from models.config_models import Config
 
 
+
 logger: "Logger | None" = None
 
 
@@ -31,7 +32,11 @@ def _get_logger():
     return logger
 
 
-def celery_create(cfg: Config, _logger: Logger | None = None) -> Celery:
+def celery_create(
+    cfg: Config,
+    cleanup_download_zip_interval_seconds: int,
+    _logger: Logger | None = None,
+) -> Celery:
     """Create a Celery app and return it."""
     if _logger is None:
         _logger = _get_logger()
@@ -56,6 +61,12 @@ def celery_create(cfg: Config, _logger: Logger | None = None) -> Celery:
                 "task": "background.file_background.heartbeat",
                 "schedule": 10.0,
             },
+            "cleanup_old_download_zips": {
+                "task": "background.file_background.cleanup_old_download_zips",
+                "schedule": cleanup_download_zip_interval_seconds,
+                "args": (),
+                "kwargs": {},
+            },
         },
     }
 
@@ -75,17 +86,23 @@ def init_celery_in_subprocess() -> Celery | None:
     # pylint:disable = C0415
     from boot.bootstrap import init_config
     from boot.bootstrap import init_logging
+    from boot.bootstrap import load_constants
     from boot.config import get_config
     from tools.logger import get_logger
     # pylint:enable = C0415
     init_config()
     init_logging()
+    constants = load_constants()
     _logger = get_logger("bootstrap.celery_boot")
     _celery_app = None
 
     try:
         # 延迟导入 config，避免在主进程重复初始化冲突
-        _celery_app = celery_create(get_config(), _logger)
+        _celery_app = celery_create(
+            get_config(),
+            cleanup_download_zip_interval_seconds=constants['cleanup_download_zip_interval_seconds'],
+            _logger=_logger,
+        )
         _logger.info("Celery app created for worker subprocess")
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # 不要抛异常阻止 celery CLI 启动，记录日志即可

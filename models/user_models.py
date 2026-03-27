@@ -75,6 +75,7 @@ class UserDetailPublic(BaseModel):
     region: str | None = Field(max_length=user_config.max_region_length)
     orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(max_length=user_config.max_homepage_length)
+    email: str = Field(max_length=user_config.max_useremail_length, description="用户邮箱")
 
 class UserUpdate(BaseModel):
     """

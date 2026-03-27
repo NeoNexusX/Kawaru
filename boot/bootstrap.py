@@ -38,13 +38,29 @@ def init_config():
     return boot.config.CONFIG
 
 
-def init_celery():
+def load_constants():
+    """集中加载应用所需的常量"""
+    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
+    # 后续可在此添加更多常量导入，例如：
+    # from constants.experiment_constants import SOME_EXPERIMENT_CONSTANT
+    # from constants.user_constants import SOME_USER_CONSTANT
+
+    return {
+        'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
+        # 添加更多常量键值对
+    }
+
+
+def init_celery(cleanup_download_zip_interval_seconds: int):
     """显式创建 celery app"""
     import background.celery_app # pylint: disable=import-outside-toplevel
 
     if background.celery_app.celery_app is None:
         from boot.config import get_config # pylint: disable=import-outside-toplevel
-        background.celery_app.celery_app = background.celery_app.celery_create(get_config())
+        background.celery_app.celery_app = background.celery_app.celery_create(
+            get_config(),
+            cleanup_download_zip_interval_seconds,
+        )
 
     return background.celery_app.celery_app
 
@@ -57,8 +73,9 @@ def bootstrap():
 
     ENV = init_env() # pylint: disable=C0103
     CONFIG = init_config() # pylint: disable=C0103
+    CONSTANTS = load_constants() # pylint: disable=C0103
     init_logging()
-    CELERY_APP = init_celery() # pylint: disable=C0103
+    CELERY_APP = init_celery(CONSTANTS['cleanup_download_zip_interval_seconds']) # pylint: disable=C0103
 
 
     #log part

@@ -31,7 +31,6 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     MAX_PARTS_PER_UPLOAD,
 )
-from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 
 from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
@@ -148,10 +147,6 @@ def delete_local_file(path: str | Path) -> None:
         logger.warning("empty path for deletion, skipping")
         return
 
-    # 跳过特殊占位符路径
-    if str(path) == SOURCE_FILE_PATH_CLEARED:
-        logger.debug("skip deletion for SOURCE_FILE_PATH_CLEARED placeholder")
-        return
 
     # 转换为字符串进行验证
     path_str = str(path).strip()

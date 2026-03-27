@@ -48,6 +48,10 @@ CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))
 # 清理过期预检任务的间隔时间
 CLEANUP_PREFLIGHTS_INTERVAL_SECONDS = config.storage.cleanup_preflights_interval_minutes * 60
 
+# 下载zip文件清理策略
+DOWNLOAD_ZIP_RETENTION_DAYS = int(getattr(storage_config, "download_zip_retention_days", 7))
+CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 1440)) * 60
+
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
     "BYTES_IN_MB",
@@ -68,4 +72,6 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "PREFLIGHT_TTL_MINUTES",
     "CHUNK_TTL_MINUTES",
     "CLEANUP_PREFLIGHTS_INTERVAL_SECONDS",
+    "DOWNLOAD_ZIP_RETENTION_DAYS",
+    "CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS",
 ]

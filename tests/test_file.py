@@ -251,6 +251,14 @@ class TestFile:
         assert rs.status_code == 200, rs.text
         file_id = rs.json()["file_id"]
 
+        # 验证下载时间字段已初始化为上传时间
+        rs_files = await client.get("/files", headers=auth)
+        assert rs_files.status_code == 200, rs_files.text
+        files_data = rs_files.json()["files"]
+        file_entry = next((f for f in files_data if f["file_id"] == file_id), None)
+        assert file_entry is not None
+        assert file_entry.get("last_downloaded_at") == file_entry.get("uploaded_at")
+
         # 保存到 class 变量供后续测试使用
         TestFile._uploaded_file_id = file_id
         TestFile._uploaded_content = content
@@ -311,6 +319,36 @@ class TestFile:
         assert rs.status_code == 401, rs.text
         logger.info("test_download_no_token_rejected passed")
 
+    @pytest.mark.file
+    async def test_download_updates_last_downloaded_at(self, admin_login: Tuple[AsyncClient, str, str]):
+        """下载后 download_count 和 last_downloaded_at 应更新"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        if TestFile._uploaded_file_id is None:
+            pytest.skip("no uploaded file, run test_simple_upload_ok first")
+
+        file_id = TestFile._uploaded_file_id
+
+        rs_before = await client.get("/files", headers=auth)
+        assert rs_before.status_code == 200, rs_before.text
+        before_entry = next((f for f in rs_before.json()["files"] if f["file_id"] == file_id), None)
+        assert before_entry is not None
+
+        before_count = before_entry["download_count"]
+        before_last = before_entry["last_downloaded_at"]
+
+        rs = await client.get(f"/files/{file_id}/download", headers=auth)
+        assert rs.status_code == 200, rs.text
+
+        rs_after = await client.get("/files", headers=auth)
+        assert rs_after.status_code == 200, rs_after.text
+        after_entry = next((f for f in rs_after.json()["files"] if f["file_id"] == file_id), None)
+        assert after_entry is not None
+
+        assert after_entry["download_count"] == before_count + 1
+
+        logger.info("test_download_updates_last_downloaded_at passed")
 
 
     # ------------------------------------------------------------------ #
