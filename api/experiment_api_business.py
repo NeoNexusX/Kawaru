@@ -51,7 +51,7 @@ async def delete_experiment_files(
     1. 查询与 source_file_id 关联的实验记录
     2. 删除实验相关的物理文件(imzml_path、ibd_path)
     3. 删除实验目录(如果为空)
-    4. 删除实验数据库记录
+    4. 删除实验数据库记录由对应的文件记录删除管理
 
     Raises:
         OSError: 物理文件删除失败时
@@ -78,19 +78,10 @@ async def delete_experiment_files(
     # 删除实验目录(如果为空)
     if experiment.imzml_path:
         experiment_dir = Path(experiment.imzml_path).parent
+        if experiment_dir.exists() and not any(experiment_dir.iterdir()):
+            experiment_dir.rmdir()
+            logger.debug("cleaned up experiment directory path=%s", experiment_dir)
 
-        def _rmdir_if_empty(d: Path) -> None:
-            if d.exists() and not any(d.iterdir()):
-                d.rmdir()
-
-        await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
-        logger.debug("cleaned up experiment directory path=%s", experiment_dir)
-
-    # # 删除实验数据库记录
-    # await session.delete(experiment)
-    # logger.info(
-    #     "deleted experiment record exp_id=%s file_id=%s", experiment.id, file_id
-    # )
 
 async def delete_source_file_and_clear_path(
         async_session: AsyncSession,

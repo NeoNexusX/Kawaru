@@ -37,8 +37,7 @@ from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
-from tools.logger import get_logger
-from tools.time_tools import utc_time, TIME_STR_FORMAT
+from tools import utc_time, TIME_STR_FORMAT,get_logger
 
 logger = get_logger("api.user_api")
 
@@ -317,7 +316,7 @@ async def update_user(
 
     return user # type:ignore
 
-
+#TODO：此处逻辑需要修改，大批量删除延迟不可控制
 async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
 ):
@@ -331,9 +330,11 @@ async def del_user(
                 await delete_user_file_business(async_session, file_id, user)
             except (FileNotFoundError,PermissionError) as exc:
                 logger.warning(f"Failed to delete file {file_id} for user {user.id}. Continue user deletion. error={exc}")
-    # 2. 删除用户本身
-    await async_session.delete(user)
-    await async_session.commit()
+            finally:
+                # 2. 删除用户本身
+                await async_session.delete(user)
+                await async_session.commit()
+
     return user
 
 

@@ -4,7 +4,7 @@
 from datetime import datetime
 from enum import Enum
 from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey
-from models.file_models import utc_time
+from tools import utc_time
 from boot.config import get_config
 
 config = get_config()

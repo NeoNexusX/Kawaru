@@ -17,11 +17,11 @@ from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
-from models.file_models import FileInDB, utc_time
+from models.file_models import FileInDB
 from models.link_models import UserFileLink
 
 from background.celery_app import celery_app, TaskManager
-from tools.logger import get_logger
+from tools import get_logger,utc_time
 logger = get_logger("background.file_background")
 
 async def process_imzml_experiment_background(

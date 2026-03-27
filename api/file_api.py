@@ -55,9 +55,8 @@ from models.file_models import (
     PartPublic,
 )
 from models.user_models import UserInDB
+from tools import utc_time,get_logger
 
-from tools.time_tools import utc_time
-from tools.logger import get_logger
 logger = get_logger("api.file_api")
 
 
