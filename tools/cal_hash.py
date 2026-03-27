@@ -1,11 +1,4 @@
-'''
-Author: xiongqiurong 1513401658@qq.com
-Date: 2025-12-06 15:01:30
-LastEditors: xiongqiurong 1513401658@qq.com
-LastEditTime: 2025-12-06 15:45:10
-FilePath: \Kawaru\cal_hash.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
+
 # file_hash.py
 """
 计算文件SHA256哈希值的异步模块

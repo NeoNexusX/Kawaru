@@ -36,7 +36,16 @@ async def count_items(
     """
     # 构建计数查询：从原查询中提取 WHERE 条件，只计数不取数据
     if model is None:
-        model = query.get_final_froms()[0]
+        # column_descriptions 包含了 select() 中定义的所有实体信息
+        if query.column_descriptions:
+            # 拿到第一个实体的类型 (比如 UserInDB)
+            entity = query.column_descriptions[0].get("entity")
+            if isinstance(entity, type) and issubclass(entity, SQLModel):
+                model = entity
+
+    # 如果还是没拿到，再用底层方法兜底（这时候可能需要 type: ignore 或者 cast）
+    if model is None:
+        model = query.get_final_froms()[0]  # type: ignore
 
     # 如果需要去重，根据主键添加 DISTINCT 子句
     if distinct_on_pk:

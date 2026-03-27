@@ -3,7 +3,6 @@ import os
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from celery import Celery
 from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position

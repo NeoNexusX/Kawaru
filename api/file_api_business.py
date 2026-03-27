@@ -564,13 +564,13 @@ async def merge_parts_to_file(
     """
     执行分片合并,将所有分片写入最终文件
 
-    使用 helper 层的 merge_files_with_hash 函数进行合并和哈希验证
+    使用 helper 层的 merge_files_with_hash 函数进行合并和哈希验证 
     如果哈希不匹配,删除错误文件和所有相关记录
 
     事务管理:不 commit,由调用方(API 层)统一管理
     """
     part_paths = [Path(part.temp_path) for part in parts]
-
+    final_path = None
     assert file_record.file_id is not None
 
     try:
@@ -587,7 +587,8 @@ async def merge_parts_to_file(
     except FileNotFoundError as exc:
         # 分片文件丢失
         logger.error(f"part file missing file_id={file_record.file_id} error={exc}")
-        delete_local_file(final_path)
+        # if final_path:
+            # delete_local_file(final_path)
         await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise part_file_missing_exception from exc
 
