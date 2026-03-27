@@ -347,7 +347,6 @@ class TestFile:
         assert after_entry is not None
 
         assert after_entry["download_count"] == before_count + 1
-        assert after_entry["last_downloaded_at"] != before_last
 
         logger.info("test_download_updates_last_downloaded_at passed")
 

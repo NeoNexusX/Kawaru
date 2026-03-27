@@ -32,7 +32,11 @@ def _get_logger():
     return logger
 
 
-def celery_create(cfg: Config, constants: dict, _logger: Logger | None = None) -> Celery:
+def celery_create(
+    cfg: Config,
+    cleanup_download_zip_interval_seconds: int,
+    _logger: Logger | None = None,
+) -> Celery:
     """Create a Celery app and return it."""
     if _logger is None:
         _logger = _get_logger()
@@ -59,7 +63,7 @@ def celery_create(cfg: Config, constants: dict, _logger: Logger | None = None) -
             },
             "cleanup_old_download_zips": {
                 "task": "background.file_background.cleanup_old_download_zips",
-                "schedule": constants['cleanup_download_zip_interval_seconds'],
+                "schedule": cleanup_download_zip_interval_seconds,
                 "args": (),
                 "kwargs": {},
             },
@@ -94,7 +98,11 @@ def init_celery_in_subprocess() -> Celery | None:
 
     try:
         # 延迟导入 config，避免在主进程重复初始化冲突
-        _celery_app = celery_create(get_config(), constants, _logger)
+        _celery_app = celery_create(
+            get_config(),
+            cleanup_download_zip_interval_seconds=constants['cleanup_download_zip_interval_seconds'],
+            _logger=_logger,
+        )
         _logger.info("Celery app created for worker subprocess")
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # 不要抛异常阻止 celery CLI 启动，记录日志即可

@@ -6,7 +6,7 @@ from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey
 from tools.logger import get_logger
-from tools.time_tools import now_local_timezone
+from tools.time_tools import utc_time
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -100,8 +100,8 @@ class FileInDB(FileBase, table=True):
 
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
-    uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 上传时间
-    last_downloaded_at: datetime = Field(default_factory=now_local_timezone, index=True)  # 最近下载时间
+    uploaded_at: datetime = Field(default_factory=utc_time, index=True)  # 上传时间
+    last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
 
@@ -168,7 +168,7 @@ class PartInDB(PartBase, table=True):
     )
     temp_path: str = Field(max_length=getattr(storage_config, "max_path_length", 128), description="临时存储路径")
     owner_id: int = Field(index=True, description="分片所属用户ID")
-    uploaded_at: datetime = Field(default_factory=now_local_timezone, index=True)
+    uploaded_at: datetime = Field(default_factory=utc_time, index=True)
     # 外键关联 FileInDB,数据库层面配置级联删除
     file_id: int = Field(
         sa_column=Column(

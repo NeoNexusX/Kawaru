@@ -51,13 +51,16 @@ def load_constants():
     }
 
 
-def init_celery(constants: dict):
+def init_celery(cleanup_download_zip_interval_seconds: int):
     """显式创建 celery app"""
     import background.celery_app # pylint: disable=import-outside-toplevel
 
     if background.celery_app.celery_app is None:
         from boot.config import get_config # pylint: disable=import-outside-toplevel
-        background.celery_app.celery_app = background.celery_app.celery_create(get_config(), constants)
+        background.celery_app.celery_app = background.celery_app.celery_create(
+            get_config(),
+            cleanup_download_zip_interval_seconds,
+        )
 
     return background.celery_app.celery_app
 
@@ -72,7 +75,7 @@ def bootstrap():
     CONFIG = init_config() # pylint: disable=C0103
     CONSTANTS = load_constants() # pylint: disable=C0103
     init_logging()
-    CELERY_APP = init_celery(CONSTANTS) # pylint: disable=C0103
+    CELERY_APP = init_celery(CONSTANTS['cleanup_download_zip_interval_seconds']) # pylint: disable=C0103
 
 
     #log part

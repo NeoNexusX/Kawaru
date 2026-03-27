@@ -38,7 +38,7 @@ from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic
 from tools.logger import get_logger
-from tools.time_tools import now_local_timezone, TIME_STR_FORMAT
+from tools.time_tools import utc_time, TIME_STR_FORMAT
 
 logger = get_logger("api.user_api")
 
@@ -170,7 +170,7 @@ async def login(
                                            expires_delta=access_token_expires)
 
         # Create redis login information
-        last_access_time = now_local_timezone().strftime(TIME_STR_FORMAT)
+        last_access_time = utc_time().strftime(TIME_STR_FORMAT)
         login_key = f"login_token:{access_token}"
         login_data = RedisLoginData(username=user.username,
                                     last_access_time=last_access_time)
@@ -306,9 +306,6 @@ async def update_user(
         and user_data["verify_code"]
         and TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window)):
         raise user_verification_bad_exception
-
-    # 移除 verify_code，不更新到数据库
-    user_data.pop("verify_code")
 
     # 校验其他字段
     user_data = await validate_update_user_data(user_data, user_past, async_session)

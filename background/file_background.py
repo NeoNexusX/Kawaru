@@ -17,7 +17,7 @@ from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
-from models.file_models import FileInDB, now_local_timezone
+from models.file_models import FileInDB, utc_time
 from models.link_models import UserFileLink
 
 from background.celery_app import celery_app, TaskManager
@@ -128,7 +128,7 @@ async def cleanup_stale_preflights(
         logger.info(f"starting cleanup stale preflights for user {current_user.id} with TTL {ttl_minutes} minutes...")
 
         # 代表 uploaded_at 超过 TTL 的时间点
-        now = now_local_timezone()
+        now = utc_time()
         cutoff_time = now - timedelta(minutes=ttl_minutes)
         cleaned = 0
 
@@ -170,7 +170,7 @@ async def cleanup_old_download_zips(
       - last_downloaded_at 早于 当前时间 - retention_days
     物理文件删除后只置空 path，保留数据库记录
     """
-    now = now_local_timezone()
+    now = utc_time()
     cutoff_time = now - timedelta(days=retention_days)
     cleaned = 0
 
