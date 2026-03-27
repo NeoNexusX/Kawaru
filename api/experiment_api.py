@@ -14,9 +14,8 @@ from api.file_api_business import (
     assert_file_owner
 )
 from database.db import AsyncSessionDep
-from tools.logger import get_logger
 from models.user_models import UserInDB
-from models.file_models import FileInDB, now_local_timezone
+from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.experiment_models import (
     ExperimentImzMLInDB,
@@ -31,7 +30,7 @@ from exceptions.experiment_exceptions import (
     experiment_permission_denied_exception,
     source_file_not_found_exception,
 )
-
+from tools import get_logger,utc_time
 logger = get_logger("api.experiment_api")
 
 #########################
@@ -57,7 +56,7 @@ async def cleanup_failed_experiments(
     - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
     - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
     """
-    now = now_local_timezone()
+    now = utc_time()
     threshold = now - timedelta(minutes=ttl_minutes)
     cleaned = 0
 

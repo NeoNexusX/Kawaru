@@ -8,7 +8,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 from models.file_models import FileInDB
 from api.file_api_helper import get_file_record_by_id,delete_files_async
-from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from tools.logger import get_logger
 
 logger = get_logger("api.experiment_api_business")
@@ -31,8 +30,7 @@ async def create_experiment_record(async_session: AsyncSession,
         status=ExperimentStatus.PROCESSING,
     )
     async_session.add(experiment_record)
-    await async_session.commit()
-    await async_session.refresh(experiment_record)
+    await async_session.flush()
 
     return experiment_record
 
@@ -53,7 +51,7 @@ async def delete_experiment_files(
     1. 查询与 source_file_id 关联的实验记录
     2. 删除实验相关的物理文件(imzml_path、ibd_path)
     3. 删除实验目录(如果为空)
-    4. 删除实验数据库记录
+    4. 删除实验数据库记录由对应的文件记录删除管理
 
     Raises:
         OSError: 物理文件删除失败时
@@ -80,32 +78,20 @@ async def delete_experiment_files(
     # 删除实验目录(如果为空)
     if experiment.imzml_path:
         experiment_dir = Path(experiment.imzml_path).parent
-
-        def _rmdir_if_empty(d: Path) -> None:
-            if d.exists() and not any(d.iterdir()):
-                d.rmdir()
-
-        await asyncio.to_thread(_rmdir_if_empty, experiment_dir)
-        logger.debug("cleaned up experiment directory path=%s", experiment_dir)
-
-    # # 删除实验数据库记录
-    # await session.delete(experiment)
-    # logger.info(
-    #     "deleted experiment record exp_id=%s file_id=%s", experiment.id, file_id
-    # )
+        if experiment_dir.exists() and not any(experiment_dir.iterdir()):
+            experiment_dir.rmdir()
+            logger.debug("cleaned up experiment directory path=%s", experiment_dir)
 
 
 async def delete_source_file_and_clear_path(
         async_session: AsyncSession,
         source: int | FileInDB,
-        is_successful: bool = True
         ):
     """
-    删除源文件并清空数据库中的 path 字段
+    删除源文件并清空数据库中的 path 字段，只用于实验处理失败时的清理
     Args:
         async_session: 数据库会话
         source_file: 文件记录对象，必须具有 path 属性
-        is_successful: 是否成功处理实验文件，成功则保留占位符，失败则清空 path
     """
     source_file = await get_file_record_by_id(source,async_session) if isinstance(source, int) else source
 
@@ -113,15 +99,13 @@ async def delete_source_file_and_clear_path(
         # 删除物理文件
         Path(source_file.path).unlink(missing_ok=True)
         # 如果上传成功将 path 置为占位常量，否则清空path
-        if is_successful:
-            source_file.path = SOURCE_FILE_PATH_CLEARED
-        else:
-            source_file.path = ""
+        source_file.path = ""
         async_session.add(source_file)
-        logger.info(f"source file deleted and path cleared for file_id={source_file.id}") #type:ignore
+        logger.info(f"source file deleted and path cleared for file_id={source_file.file_id}") #type:ignore
     else:
         logger.error("source file not found or path is empty, cannot delete source file")
         raise ValueError("source file not found or path is empty")
+
 
 #########################
 # experiment  - 改

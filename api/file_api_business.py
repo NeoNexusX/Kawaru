@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from database.db import get_async_session, get_async_engine
+from database.db import get_async_engine
 from api.experiment_api_business import get_imzml_experiment_by_file_id
 from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
@@ -26,7 +26,8 @@ from api.file_api_helper import (
     build_zip_file,
     merge_files_and_get_hash,
     save_upload_file,
-    delete_file_by_storage
+    delete_file_by_storage,
+    prepare_local_storage_path,
 )
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
@@ -45,7 +46,7 @@ from exceptions import (
     part_validation_failed_exception,
     user_file_limit_exception,
 )
-from tools.logger import get_logger
+from tools import get_logger,utc_time
 from models.file_models import FileCreate, FileInDB, PartInDB
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
@@ -334,7 +335,9 @@ async def update_download_stats(
     更新下载统计
 
     """
+    now = utc_time()
     file_record.download_count += 1
+    file_record.last_downloaded_at = now
     current_user.download_used = (current_user.download_used or 0) + 1
     session.add(current_user)
     session.add(file_record)
@@ -431,7 +434,7 @@ async def unlink_user_from_file(
 
     # 3. 刷新事务
     await session.flush()
-
+    await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
@@ -566,12 +569,18 @@ async def merge_parts_to_file(
 
     事务管理:不 commit,由调用方(API 层)统一管理
     """
-    final_path = Path(file_record.path)
     part_paths = [Path(part.temp_path) for part in parts]
 
     assert file_record.file_id is not None
 
     try:
+        # 分片上传预检时 path 为空，合并前构建最终存储路径
+        if not file_record.path:
+            final_path = prepare_local_storage_path(file_record.filename)
+            file_record.path = str(final_path)
+            async_session.add(file_record)
+        else:
+            final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
         await merge_files_and_get_hash(part_paths, final_path, file_record.hash_sha256)
 
@@ -588,7 +597,12 @@ async def merge_parts_to_file(
         await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise merged_file_hash_mismatch_exception from exc
 
-    # 合并成功,清理分片临时文件和记录
+    # 合并成功,更新首次上传时的 download 时间 (等于 uploaded_at)
+    file_record.uploaded_at = utc_time()
+    file_record.last_downloaded_at = file_record.uploaded_at
+    async_session.add(file_record)
+
+    # 清理分片临时文件和记录
     await delete_parts_by_file_id(async_session, file_record.file_id)
 
 

@@ -15,49 +15,7 @@ import pytest
 import aiofiles
 from httpx import AsyncClient
 from .conftest import logger
-from .conftest import BASE_URL, UPLOAD_FILE_DIR, CHUNK_BUFFER_SIZE
-
-
-@pytest.fixture(scope="session", name="async_client")
-async def _async_client():
-    if not BASE_URL:
-        pytest.fail("Environment variable BASE_URL is required")
-    async with AsyncClient(base_url=BASE_URL, timeout=60) as client:
-        yield client
-
-@pytest.fixture(scope="session", name="admin_login")
-async def _admin_login(async_client):
-    client = async_client
-    # ASGI login, and get the access token.
-    username = os.getenv("TEST_USER")
-    password = os.getenv("TEST_PWD")
-    if not (username and password):
-        pytest.skip("TEST_USER/TEST_PWD hasn't provided yet.")
-
-    rs = await client.post(
-        "/login",
-        data={
-            "grant_type": "password",
-            "username": username,
-            "password": password,
-        },
-    )
-    assert rs.status_code == 200, rs.text
-    rs.raise_for_status()
-    token, token_type = rs.json()['access_token'], rs.json()['token_type']
-
-    # Check if current user is corresponding to your username.
-    rs = await client.get(
-        "/user",
-        headers={"Authorization": f"{token_type.title()} {token}"},
-    )
-    assert rs.status_code == 200, rs.text
-    current_username = rs.json()['username']
-    if current_username != username:
-        pytest.fail(f"Current user is not the same as target user，"
-                    f"username:{username}, current username:{current_username}")
-
-    yield client, token, token_type
+from .conftest import UPLOAD_FILE_DIR, CHUNK_BUFFER_SIZE
 
 
 class TestFileUpload:
