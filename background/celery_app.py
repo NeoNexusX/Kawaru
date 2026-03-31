@@ -51,7 +51,7 @@ def celery_create(
         'broker_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_broker_db_index}",
         'result_backend': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_backend_db_index}",
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
-        'imports': ["background.file_background"],
+        'imports': ["background.file_background", "background.api_background"],
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
         'timezone': 'UTC',
         'enable_utc': True,

@@ -1,9 +1,8 @@
 import os
+import asyncio
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel.ext.asyncio.session import AsyncSession
-from httpx import AsyncClient, HTTPStatusError, RequestError
-from starlette import status
 
 from database.redis_client import connect_new_redis
 from api.user_api_helper import get_user, validate_url, get_user_by_email
@@ -30,6 +29,7 @@ from exceptions.user_exceptions import (
 )
 from exceptions.file_exceptions import permission_denied_exception
 
+from background.api_background import validate_orcid_task
 from tools.logger import get_logger
 logger = get_logger("api.user_api_business")
 
@@ -122,17 +122,16 @@ async def validate_orcid(orcid: str) -> bool:
     存在:返回True;
     不存在或网络异常:返回False;
     """
-    async with AsyncClient(timeout=100) as client:
-        url = f"https://pub.orcid.org/v3.0/{orcid}/person"
-
-        try:
-            r = await client.head(url, headers={'Accept': 'application/json'})
-            if r.status_code == status.HTTP_200_OK:        # 200
-                return True
-            return False
-        except (HTTPStatusError, RequestError):  # Network Errors
-            logger.error("Cannot access ORCID public API due to network error.")
-            return False
+    # 使用 Celery 任务异步执行 ORCID 验证
+    result = validate_orcid_task.delay(orcid) # type: ignore
+    try:
+        # 在异步上下文中等待任务结果
+        loop = asyncio.get_event_loop()
+        task_result = await loop.run_in_executor(None, result.get, timeout=120)
+        return task_result
+    except Exception as exc: # pylint: disable=broad-exception-caught
+        logger.error(f"ORCID validation task failed for {orcid}: {exc}")
+        return False
 
 
 async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_session: AsyncSession) -> dict:

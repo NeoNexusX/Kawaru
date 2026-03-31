@@ -88,6 +88,9 @@ def bootstrap():
     CONSTANTS = load_constants() # pylint: disable=C0103
     init_logging()
 
+    if CONFIG.config is None:
+        raise RuntimeError("CONFIG.config is not initialized")
+
     if CONFIG.config.storage.allowed_storage_types == ["oss"]:
         OSS_CLIENT = init_oss() # pylint: disable=unused-variable, invalid-name
     elif CONFIG.config.storage.allowed_storage_types == ["local"]:

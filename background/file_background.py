@@ -75,7 +75,7 @@ async def process_imzml_experiment_background(
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
-            await async_session.refresh(experiment_record)
+            await async_session.refresh(experiment_record) #type:ignore
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 
@@ -93,7 +93,7 @@ async def process_imzml_experiment_background(
 
 
 # TODO: 针对所有用户清理 做定时任务
-@celery_app.task()
+@celery_app.task() # type: ignore
 async def cleanup_stale_preflights(
     user_token: str,
     ttl_minutes: int = PREFLIGHT_TTL_MINUTES,
@@ -159,7 +159,7 @@ async def cleanup_stale_preflights(
         return cleaned
 
 
-@celery_app.task()
+@celery_app.task() # type: ignore
 async def cleanup_old_download_zips(
     retention_days: int = DOWNLOAD_ZIP_RETENTION_DAYS,
     batch_size: int = 100,
@@ -196,7 +196,7 @@ async def cleanup_old_download_zips(
     return cleaned
 
 
-@celery_app.task()
+@celery_app.task() # type: ignore
 def heartbeat():
     """
     这是一个心跳任务，用于celery beat后台保活，
