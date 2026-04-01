@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
+from celery.result import AsyncResult
 
 from database.db import get_async_engine
+from api.user_api_helper import get_user_by_id
 from api.experiment_api_business import get_imzml_experiment_by_file_id
 from api.experiment_api_helper import validate_experiment_type
 from api.file_api_helper import (
@@ -21,7 +23,6 @@ from api.file_api_helper import (
     valid_user_duplicate_file_hash,
     validate_file_metadata,
     validate_total_parts,
-    compute_upload_file_hash,
     delete_local_file,
     build_zip_file,
     merge_files_and_get_hash,
@@ -29,6 +30,8 @@ from api.file_api_helper import (
     delete_file_by_storage,
     prepare_local_storage_path,
 )
+from background.celery_app import wait_for_result
+from background.file_background_helper import compute_upload_file_hash
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -308,13 +311,16 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     2026.3.3 Neo checked
     """
-    hash_sha256, size = await compute_upload_file_hash(file)
+    task_result: AsyncResult = compute_upload_file_hash.delay(file) # type: ignore
+    hash_sha256, size = await wait_for_result(task_result, 0.5)
+
     #哈希等检查
     if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
         logger.error(f"metadata mismatch user={current_user.id}\n"
                      f"expected_hash={pre_record.hash_sha256} actual_hash={hash_sha256}\n"
                      f"expected_size={pre_record.size} actual_size={size}")
         raise invalid_request_parameters_exception
+
     # 文件名检查
     if not file.filename:
         logger.error(f"filename missing user={current_user.id}")
@@ -485,12 +491,20 @@ async def rollback_simple_upload(
 
         2026.3.3 Neo checked
     """
-    await async_session.rollback()  # 回滚事务，撤销已有的数据库操作
+    # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
+    _record_id = pre_record.file_id
+    _user_id = current_user.id
+
+    # 回滚事务，撤销已有的数据库操作
+    await async_session.rollback() 
 
     if final_path:
         delete_local_file(final_path)
     if pre_record:
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
+            assert _record_id is not None and _user_id is not None
+            pre_record = await get_file_record_by_id(_record_id, async_session)
+            current_user = await get_user_by_id(_user_id, async_session)
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效
 
@@ -648,7 +662,8 @@ async def validate_part_upload(
         raise part_already_exists_exception
 
     # 3. 哈希和大小验证
-    act_hash, act_size = await compute_upload_file_hash(part)
+    task_result: AsyncResult =  compute_upload_file_hash.delay(part)
+    act_hash, act_size = await wait_for_result(task_result, poll_interval=0.5)
     if act_hash != part_data.part_hash or act_size != part_data.part_size:
         raise part_validation_failed_exception
 
