@@ -1,3 +1,4 @@
+from typing import Optional
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -22,7 +23,23 @@ UPLOAD_FILE_DIR = os.getenv("UPLOAD_FILE_DIR")
 TEST_USER = os.getenv("TEST_USER")
 TEST_PWD = os.getenv("TEST_PWD")
 
+# 初始化日志系统
+def _init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
+    """显式初始化日志系统（必须先于任何 get_logger 调用）"""
+    import tools.logger as _logger  # pylint: disable=import-outside-toplevel
+
+    if getattr(_logger.LOGGER_MANAGER, "initialized", False):
+        return
+    _logger.LOGGER_MANAGER = _logger.LoggerManager()
+
+    _logger.LOGGER_MANAGER.init_app(
+        log_level="debug",
+        log_dir="tests",
+    )
+
+_init_logging()
 logger = get_logger("test")
+
 # 基础存储配置来自 config
 config = get_config()
 if not config:
