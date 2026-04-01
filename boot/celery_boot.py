@@ -1,8 +1,10 @@
 import sys
 import os
 import asyncio
-from celery import Celery
 from logging import Logger
+
+from celery import Celery
+
 from database.redis_client import connect_new_redis
 from models.auth import SECRET_KEY
 from boot.config import get_config

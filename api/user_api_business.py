@@ -1,5 +1,4 @@
 import os
-import asyncio
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -115,20 +114,17 @@ async def check_user_login_status(token: str) -> str | bool:
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to close Redis client after checking login status: %s", exc)
 
-# TODO 后续可以交给任务队列异步执行，避免邮件发送过程阻塞主线程
+
 async def validate_orcid(orcid: str) -> bool:
     """
     校验用户ORCID。
     存在:返回True;
     不存在或网络异常:返回False;
     """
-    # 使用 Celery 任务异步执行 ORCID 验证
-    result = validate_orcid_task.delay(orcid) # type: ignore
     try:
-        # 在异步上下文中等待任务结果
-        loop = asyncio.get_event_loop()
-        task_result = await loop.run_in_executor(None, result.get, timeout=120)
-        return task_result
+        # 使用 Celery 任务异步执行 ORCID 验证
+        result = validate_orcid_task.delay(orcid).get(timeout=120) # type: ignore
+        return result
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error(f"ORCID validation task failed for {orcid}: {exc}")
         return False
