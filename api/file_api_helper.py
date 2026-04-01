@@ -261,28 +261,6 @@ async def merge_files_and_get_hash(
     return final_hash
 
 
-async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
-    """
-    计算上传文件的元数据(SHA256哈希和大小)
-
-    分片读取文件内容,避免一次性加载到内存
-    读取完成后重置文件指针到开头,供后续写入使用
-
-    """
-    # TODO: 后期应改为任务队列异步执行,避免在上传接口中计算导致响应变慢
-    sha256 = hashlib.sha256()
-    size = 0
-    await upload_file.seek(0)
-    while True:
-        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
-        if not chunk:
-            break
-        sha256.update(chunk)
-        size += len(chunk)
-    await upload_file.seek(0)
-    return sha256.hexdigest(), size
-
-
 def check_user_quota(user: UserInDB, file_size: int) -> bool:
     """
     检查用户配额是否足够

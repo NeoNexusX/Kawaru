@@ -311,8 +311,9 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     2026.3.3 Neo checked
     """
-    task_result: AsyncResult = compute_upload_file_hash.delay(file) # type: ignore
-    hash_sha256, size = await wait_for_result(task_result, 0.5)
+    file_contents = await file.read()
+    task_result: AsyncResult = compute_upload_file_hash.delay(file_contents) # type: ignore
+    hash_sha256, size = await wait_for_result(task_result, poll_interval=0.5) # type: ignore
 
     #哈希等检查
     if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
@@ -662,8 +663,9 @@ async def validate_part_upload(
         raise part_already_exists_exception
 
     # 3. 哈希和大小验证
-    task_result: AsyncResult =  compute_upload_file_hash.delay(part)
-    act_hash, act_size = await wait_for_result(task_result, poll_interval=0.5)
+    part_contents = await part.read()
+    task_result: AsyncResult = compute_upload_file_hash.delay(part_contents) # type: ignore
+    act_hash, act_size = await wait_for_result(task_result, poll_interval=0.5) # type: ignore
     if act_hash != part_data.part_hash or act_size != part_data.part_size:
         raise part_validation_failed_exception
 

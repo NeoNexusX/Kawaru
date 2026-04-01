@@ -19,10 +19,12 @@ from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
-
 from background.celery_app import celery_app, TaskManager
+
 from tools import get_logger,utc_time
 logger = get_logger("background.file_background")
+
+assert celery_app is not None, "celery_app is None"
 
 async def process_imzml_experiment_background(
     user_id: int,
@@ -75,7 +77,7 @@ async def process_imzml_experiment_background(
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
-            await async_session.refresh(experiment_record)
+            await async_session.refresh(experiment_record) # type: ignore
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 

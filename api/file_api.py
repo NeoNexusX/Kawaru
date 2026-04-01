@@ -4,7 +4,7 @@
 import json
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
-from sqlmodel import select, and_, or_, col, distinct
+from sqlmodel import select, and_, or_, col
 from background.experiment_background import trigger_experiment_extraction
 from api.file_api_business import (
     assert_file_owner,
