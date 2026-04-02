@@ -23,12 +23,12 @@ from api.file_api_helper import (
     validate_total_parts,
     compute_upload_file_hash,
     delete_local_file,
-    build_zip_file,
     merge_files_and_get_hash,
     save_upload_file,
     delete_file_by_storage,
     prepare_local_storage_path,
 )
+
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("api.file_api_business")
 
+from background.file_background_helper import build_zip_file_background 
 
 #########################
 # File  - 增
@@ -277,7 +278,7 @@ async def prepare_download_file(
             (ibd_path, ibd_path.name),
         ]
 
-        await build_zip_file(files_to_zip, zip_path)
+        build_zip_file_background.delay(files_to_zip, zip_path) # type: ignore
 
         # 更新文件记录
         file_record.path = str(zip_path)

@@ -5,7 +5,6 @@
 #########################
 from __future__ import annotations
 
-import zipfile
 import asyncio
 import hashlib
 from pathlib import Path
@@ -31,6 +30,7 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     MAX_PARTS_PER_UPLOAD,
 )
+
 
 from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
@@ -71,7 +71,6 @@ def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> P
 ########
 # file 增
 ########
-#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     将上传文件保存到指定路径
@@ -87,43 +86,6 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
                 break
             await buffer.write(chunk)
     await upload_file.close()
-
-
-#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
-async def build_zip_file(
-    files: list[tuple[Path, str]],
-    output_path: Path,
-    compression: int | None = None,
-) -> Path:
-    """
-    创建ZIP文件(通用工具函数)
-
-    Args:
-        files: 文件列表,每个元素是 (文件路径, ZIP中的文件名) 元组
-        output_path: 输出ZIP文件路径
-        compression: 压缩级别,默认为 ZIP_DEFLATED
-
-    Returns:
-        创建的ZIP文件路径
-
-    Raises:
-        FileNotFoundError: 源文件不存在
-    """
-
-    if compression is None:
-        compression = zipfile.ZIP_DEFLATED
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def _create_zip() -> None:
-        with zipfile.ZipFile(output_path, "w", compression) as zf:
-            for file_path, arc_name in files:
-                if not file_path.exists():
-                    raise FileNotFoundError(f"Source file not found: {file_path}")
-                zf.write(file_path, arc_name)
-
-    await asyncio.to_thread(_create_zip)
-    return output_path
 
 
 ########
@@ -269,7 +231,7 @@ async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
     读取完成后重置文件指针到开头,供后续写入使用
 
     """
-    # TODO: 后期应改为任务队列异步执行,避免在上传接口中计算导致响应变慢
+
     sha256 = hashlib.sha256()
     size = 0
     await upload_file.seek(0)

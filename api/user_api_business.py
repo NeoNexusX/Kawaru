@@ -1,9 +1,7 @@
-import os
-import jwt
-from jwt import ExpiredSignatureError, InvalidTokenError
+
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from database.redis_client import connect_new_redis
+
 from api.user_api_helper import get_user, validate_url, get_user_by_email
 from api.auth_api import verify_password, hashed_password
 from api.file_api_business import (
@@ -14,9 +12,6 @@ from api.file_api_business import (
 )
 from api.experiment_api_business import delete_experiment_files
 from models.user_models import UserInDB
-from models.auth import SECRET_KEY
-from models.auth import RedisLoginData
-from boot.config import get_config
 from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS
 from exceptions.user_exceptions import (
     user_name_bad_exception,
@@ -54,67 +49,6 @@ async def authenticate_user(username: str, password: str, async_session: AsyncSe
     return user
 
 
-async def check_user_login_status(token: str) -> str | bool:
-    """
-    用于在任务队列中验证用户登录状态的辅助函数，确保只有登录用户的任务被执行
-        - 1. 验证 JWT token 的有效性和过期时间
-        - 2. 从 Redis 中查询登录状态，确保 token 对应的用户仍然登录中
-        - 3. 确保 Redis 中的登录数据与 JWT token 中的用户信息一致
-    ## Args:
-        token (str): 用户的 JWT token
-    ## Returns:
-        str | bool: 如果 token 有效且用户登录状态正常，返回用户名；否则返回 False
-    """
-    secret_key = os.getenv("SECRET_KEY", SECRET_KEY) # 优先从子进程环境变量获取，确保和主进程一致
-    _redis_client = None
-
-    try:
-        payload = jwt.decode(
-            token, secret_key, algorithms=[get_config().token.algorithm]
-        )
-        username = payload.get("sub")
-        if username is None:
-            return False
-
-        # Internally connect to Redis, independent from main process
-        redis_cfg = get_config().redis
-        _redis_client = connect_new_redis(db_index=redis_cfg.default_db_index)
-
-        # Retrieve login status
-        login_key = f"login_token:{token}"
-        login_data = await _redis_client.hgetall(login_key) # type:ignore
-
-        # 1. Check if login data exists
-        if not login_data:
-            return False
-        login_data = RedisLoginData(**(login_data))
-
-        # 2. Check if login data correspond to current user
-        if login_data.username != username:
-            return False
-
-        return username
-
-    except ExpiredSignatureError:
-        logger.warning("Token expired while checking user login status.")
-        return False
-
-    except InvalidTokenError:
-        logger.warning("Invalid token while checking user login status.")
-        return False
-
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error(f"Error while checking user login status: {exc}")
-        return False
-
-    finally:
-        if _redis_client is not None:
-            try:
-                await _redis_client.aclose()
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to close Redis client after checking login status: %s", exc)
-
-
 async def validate_orcid(orcid: str) -> bool:
     """
     校验用户ORCID。
@@ -138,7 +72,7 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
     if user_data.get("username") is None or user_past.username != user_data.get("username"):
         raise user_name_bad_exception
 
-    # 校验 email 是否重复
+    # 校验 email 是否重复 只需要在这里验证验证码
     if "email" in user_data and user_data["email"]:
         existing_user = await get_user_by_email(user_data["email"], async_session)
         if existing_user and existing_user.id != user_past.id:

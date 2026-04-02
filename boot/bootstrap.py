@@ -41,18 +41,19 @@ def init_config():
 
 def load_constants():
     """集中加载应用所需的常量"""
-    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
+    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS, CLEANUP_PREFLIGHTS_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
     # 后续可在此添加更多常量导入，例如：
     # from constants.experiment_constants import SOME_EXPERIMENT_CONSTANT
     # from constants.user_constants import SOME_USER_CONSTANT
 
     return {
         'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
+        'cleanup_stale_preflights_interval_seconds': CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
         # 添加更多常量键值对
     }
 
 
-def init_celery(cleanup_download_zip_interval_seconds: int):
+def init_celery(cleanup_download_zip_interval_seconds: int, cleanup_stale_preflights_interval_seconds: int):
     """显式创建 celery app"""
     import background.celery_app # pylint: disable=import-outside-toplevel
 
@@ -61,6 +62,7 @@ def init_celery(cleanup_download_zip_interval_seconds: int):
         background.celery_app.celery_app = background.celery_app.celery_create(
             get_config(),
             cleanup_download_zip_interval_seconds,
+            cleanup_stale_preflights_interval_seconds,
         )
 
     return background.celery_app.celery_app
@@ -98,7 +100,7 @@ def bootstrap():
     else:
         raise storage_type_not_allowed_exception
 
-    CELERY_APP = init_celery(CONSTANTS['cleanup_download_zip_interval_seconds']) # pylint: disable=C0103
+    CELERY_APP = init_celery(CONSTANTS['cleanup_download_zip_interval_seconds'], CONSTANTS['cleanup_stale_preflights_interval_seconds']) # pylint: disable=C0103
 
 
     #log part

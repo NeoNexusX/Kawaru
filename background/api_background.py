@@ -11,7 +11,7 @@ logger = get_logger("background.api_background")
 
 
 @celery_app.task() # type: ignore
-async def generic_http_request_task(url: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None,
+async def generic_http_request_task(url: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None, # TODO 写成类 ，先全部写出来普通的task，然后再合并
                                     data: Optional[Dict[str, Any]] = None, timeout: int = 30,
                                     max_retries: int = 3) -> Dict[str, Any]: # pyright: ignore[reportReturnType]
     """

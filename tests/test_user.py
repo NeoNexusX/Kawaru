@@ -9,7 +9,6 @@ Tests for user management API.
 """
 import asyncio
 from typing import Tuple
-import anyio
 import pytest
 from httpx import AsyncClient
 from .conftest import logger, TEST_USER, TEST_PWD, BASE_URL
@@ -184,13 +183,14 @@ class TestUserBenchmark:
     或 anyio.from_thread.run_sync 包裹。这里使用标准库 asyncio 方案。
     运行: uv run pytest -m benchmark --benchmark-autosave
     """
-
+    if BASE_URL is None:
+        raise RuntimeError("Environment variable BASE_URL is required")
     @pytest.mark.benchmark
     def test_benchmark_login(self, benchmark):
         """benchmark: POST /login 响应时间"""
 
         async def _do_login():
-            async with AsyncClient(base_url=BASE_URL, timeout=60) as client:
+            async with AsyncClient(base_url=BASE_URL, timeout=60) as client: # type:ignore
                 rs = await client.post(
                     "/login",
                     data={"grant_type": "password", "username": TEST_USER, "password": TEST_PWD},
@@ -198,7 +198,7 @@ class TestUserBenchmark:
                 assert rs.status_code == 200, rs.text
                 return rs.json()
 
-        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_login())))
+        result = benchmark(lambda: asyncio.run(_do_login()))
         logger.info(f"benchmark login result: {result}")
 
     @pytest.mark.benchmark
@@ -214,7 +214,7 @@ class TestUserBenchmark:
             assert rs.status_code == 200, rs.text
             return rs.json()
 
-        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_get())))
+        result = benchmark(lambda: asyncio.run(_do_get()))
         logger.info(f"benchmark get_user result: {result}")
 
     @pytest.mark.benchmark
@@ -231,5 +231,5 @@ class TestUserBenchmark:
             assert rs.status_code == 200, rs.text
             return rs.json()
 
-        result = benchmark(lambda: anyio.from_thread.run_sync(lambda: asyncio.get_event_loop().run_until_complete(_do_update())))
+        result = benchmark(lambda: asyncio.run(_do_update()))
         logger.info(f"benchmark update_user result: {result}")
