@@ -52,6 +52,9 @@ CLEANUP_PREFLIGHTS_INTERVAL_SECONDS = config.storage.cleanup_preflights_interval
 DOWNLOAD_ZIP_RETENTION_DAYS = int(getattr(storage_config, "download_zip_retention_days", 7))
 CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 1440)) * 60
 
+# OSS相关常量
+OSS_BUCKET_NAME = config.oss.bucket_name
+
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
     "BYTES_IN_MB",

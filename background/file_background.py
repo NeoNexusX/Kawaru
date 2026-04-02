@@ -2,9 +2,10 @@ from datetime import timedelta
 import zipfile
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlmodel import and_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from alibabacloud_oss_v2 import HeadObjectRequest
 
 from api.user_api_business import check_user_login_status
 from api.user_api_helper import get_user
@@ -12,17 +13,20 @@ from api.experiment_api_business import create_experiment_record, mark_experimen
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import safe_cleanup_preflight_record
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
+from storage_backend.oss_client import create_oss_client
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
-
 from background.celery_app import celery_app, TaskManager
+
 from tools import get_logger,utc_time
 logger = get_logger("background.file_background")
+
+assert celery_app is not None, "celery_app is None"
 
 async def process_imzml_experiment_background(
     user_id: int,
@@ -75,7 +79,7 @@ async def process_imzml_experiment_background(
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
-            await async_session.refresh(experiment_record)
+            await async_session.refresh(experiment_record) # type: ignore
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 
@@ -197,10 +201,47 @@ async def cleanup_old_download_zips(
 
 
 @celery_app.task()
+async def check_oss_file(filename: str, size: int) -> bool:
+    """检查OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = HeadObjectRequest(bucket=bucket_name, key=filename) # type: ignore
+        meta = await oss_client.head_object(req)
+
+        # 检查文件是否存在
+        if meta.status_code != status.HTTP_200_OK:
+            return False
+
+        # 检查文件大小是否一致
+        actual_size = meta.content_length
+        if actual_size != size:
+            return False
+
+        # TODO:oss默认不包含sha256只包含md5信息，考虑验证计算方式？
+        # 检查md5
+
+        return True
+
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to check oss file: {e}")
+        return False
+
+
+@celery_app.task()
 def heartbeat():
     """
     这是一个心跳任务，用于celery beat后台保活，
     理论上无需进行任何操作，也可以定期输出一些东西
     """
-    pass # pylint: disable=unnecessary-pass
 
+    pass # pylint: disable=unnecessary-pass

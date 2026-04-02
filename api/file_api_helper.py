@@ -19,8 +19,6 @@ from models.file_models import FileInDB, UserFileLink
 from models.user_models import UserInDB
 from exceptions import file_not_found_exception
 from constants.file_constants import (
-    STORAGE_ROOT,
-    LOCAL_STORAGE_ROOT,
     TEMP_PARTS_ROOT,
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
@@ -34,25 +32,6 @@ from constants.file_constants import (
 
 from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
-
-
-def ensure_storage_dirs() -> None:
-    """
-    确保存储目录存在
-    在上传操作前调用,创建必要的存储目录结构
-    """
-    for path in (STORAGE_ROOT, LOCAL_STORAGE_ROOT, TEMP_PARTS_ROOT):
-        path.mkdir(parents=True, exist_ok=True)
-
-
-def prepare_local_storage_path(filename: str) -> Path:
-    """
-    为简单上传准备最终保存路径
-
-    文件直接保存在 LOCAL_STORAGE_ROOT 下,不按用户ID分文件夹
-    """
-    LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-    return LOCAL_STORAGE_ROOT / filename
 
 
 def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> Path:
@@ -259,28 +238,6 @@ async def merge_files_and_get_hash(
         raise ValueError(f"Hash mismatch: expected={expected_hash}, actual={final_hash}")
 
     return final_hash
-
-
-async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
-    """
-    计算上传文件的元数据(SHA256哈希和大小)
-
-    分片读取文件内容,避免一次性加载到内存
-    读取完成后重置文件指针到开头,供后续写入使用
-
-    """
-    # TODO: 后期应改为任务队列异步执行,避免在上传接口中计算导致响应变慢
-    sha256 = hashlib.sha256()
-    size = 0
-    await upload_file.seek(0)
-    while True:
-        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
-        if not chunk:
-            break
-        sha256.update(chunk)
-        size += len(chunk)
-    await upload_file.seek(0)
-    return sha256.hexdigest(), size
 
 
 def check_user_quota(user: UserInDB, file_size: int) -> bool:
