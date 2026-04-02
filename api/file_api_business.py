@@ -307,8 +307,8 @@ async def validate_simple_upload(
 ) -> None:
     """
     验证简单上传的所有条件：
-    包含：大小、名字、存储类型
-    确保上传的文件内容与预检记录一致
+    包含：名字、存储类型
+    确保上传的文件信息与预检记录一致
 
     Raises:
         HTTPException: 验证失败时抛出异常
@@ -667,7 +667,6 @@ async def validate_part_upload(
     Raises:
         part_number_out_of_range_exception: 分片编号越界
         part_already_exists_exception: 分片已上传
-        part_validation_failed_exception: 哈希或大小不匹配
 
     2026.3.3 Neo checked
     """

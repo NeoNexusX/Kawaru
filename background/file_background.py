@@ -211,6 +211,8 @@ async def check_oss_file(filename: str, size: int) -> bool:
 
         # 获取bucket名称
         bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
 
         # 发送请求
         req = HeadObjectRequest(bucket=bucket_name, key=filename) # type: ignore

@@ -290,6 +290,7 @@ async def upload_simple_file(
 
     pre_record = None
     final_path = None
+    oss_upload_path = None
 
     try:
         # 只有全局配置允许local存储时，才创建本地存储目录
@@ -330,7 +331,7 @@ async def upload_simple_file(
             # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录
 
             # TODO: 实现预签名URL/STS授权，临时授予用户上传权限，返回的final_path应该是带权限的URL
-            pre_record.oss_upload_path = prepare_oss_storage_path(file.filename) #type: ignore
+            oss_upload_path = prepare_oss_storage_path(file.filename) #type: ignore
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
@@ -340,6 +341,11 @@ async def upload_simple_file(
     # 如果是本地存储，在此处触发实验文件提取任务
     if storage_type == "local":
         trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+
+    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_upload_path（仅供返回前端）
+    if oss_upload_path:
+        pre_record = FilePublic.model_validate(pre_record)
+        pre_record.oss_upload_path = oss_upload_path
 
     return pre_record # type: ignore
 
@@ -607,8 +613,10 @@ async def oss_upload_complete(file_id: int, async_session: AsyncSessionDep):
         if not is_file_exist:
             raise FileNotFoundError(f"oss_file={pre_record.filename} not found")
 
-        # 更新文件状态为已完成上传
+        # TODO: 更新文件路径
+        pre_record.path = "此处为oss路径，后续替换为实际路径"
         await async_session.commit()
+        await async_session.refresh(pre_record)
 
     except Exception as e:
         logger.error(f"oss_upload_complete failed: {e}")

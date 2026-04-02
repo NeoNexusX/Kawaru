@@ -176,8 +176,21 @@ class TaskManager:
         return False
 
 
-async def wait_for_result(result: AsyncResult, poll_interval: float):
-    """异步轮询等待 Celery 结果"""
-    while not result.ready():
-        await asyncio.sleep(poll_interval)
-    return result.get(propagate=True)  # 失败时抛异常
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 10):
+    """异步轮询等待 Celery 结果
+
+    :param result: Celery AsyncResult 对象
+    :param poll_interval: 轮询间隔（秒）
+    :param timeout: 最长等待时间（秒），为 None 时表示不限制
+    """
+    async def _poll_until_ready():
+        while not result.ready():
+            await asyncio.sleep(poll_interval)
+        return result.result
+
+    if timeout is None:
+        return await _poll_until_ready()
+    try:
+        return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise asyncio.TimeoutError("Celery task timeout") # pylint:disable = raise-missing-from
