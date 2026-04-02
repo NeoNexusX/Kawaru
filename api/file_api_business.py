@@ -28,10 +28,12 @@ from api.file_api_helper import (
     merge_files_and_get_hash,
     save_upload_file,
     delete_file_by_storage,
+)
+from storage_backend.storage import (
     prepare_local_storage_path,
 )
 from background.celery_app import wait_for_result
-from background.file_background_helper import compute_upload_file_hash
+from background.file_background_helper import compute_upload_local_file_hash
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -46,8 +48,8 @@ from exceptions import (
     merged_file_hash_mismatch_exception,
     part_already_exists_exception,
     part_number_out_of_range_exception,
-    part_validation_failed_exception,
     user_file_limit_exception,
+    hash_size_validation_failed_exception,
 )
 from tools import get_logger,utc_time
 from models.file_models import FileCreate, FileInDB, PartInDB
@@ -301,25 +303,20 @@ async def validate_simple_upload(
     current_user: UserInDB,
     file: "UploadFile",
     pre_record: FileInDB,
-) -> tuple[str, int]:
+    storage_type: str,
+) -> None:
     """
     验证简单上传的所有条件：
-    包含、哈希、大小、名字
+    包含：大小、名字、存储类型
     确保上传的文件内容与预检记录一致
 
     Raises:
         HTTPException: 验证失败时抛出异常
     2026.3.3 Neo checked
     """
-    file_contents = await file.read()
-    task_result: AsyncResult = compute_upload_file_hash.delay(file_contents) # type: ignore
-    hash_sha256, size = await wait_for_result(task_result, poll_interval=0.5) # type: ignore
-
-    #哈希等检查
-    if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
-        logger.error(f"metadata mismatch user={current_user.id}\n"
-                     f"expected_hash={pre_record.hash_sha256} actual_hash={hash_sha256}\n"
-                     f"expected_size={pre_record.size} actual_size={size}")
+    # 存储类型检查
+    if storage_type != pre_record.storage_type:
+        logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
         raise invalid_request_parameters_exception
 
     # 文件名检查
@@ -327,7 +324,44 @@ async def validate_simple_upload(
         logger.error(f"filename missing user={current_user.id}")
         raise invalid_request_parameters_exception
 
-    return hash_sha256, size
+
+async def validate_hash_and_size(
+    expected_hash: str,
+    expected_size: int,
+    file_path: str,
+    storage_type: str,
+) -> tuple[str, int]:
+    """
+    验证哈希和大小是否匹配，适用于文件或分片的验证
+    调用时机：文件落盘后
+    ### Args:
+        - expected_hash: 预期的哈希值
+        - expected_size: 预期的文件大小
+        - file_path: 文件路径(本地或oss路径)
+        - storage_type: 存储类型(local/oss)
+    ### Returns:
+        - act_hash: 实际的哈希值
+        - act_size: 实际的文件大小
+    ### Raises:
+        - file_validation_failed_exception: 验证失败时抛出异常
+    """
+    act_hash, act_size = "", 0
+    # 读取文件内容
+    if storage_type == "local":
+        #哈希、文件大小检查
+        task_result: AsyncResult = compute_upload_local_file_hash.delay(file_path) # type: ignore
+        act_hash, act_size = await wait_for_result(task_result, poll_interval=0.1) # type: ignore
+    elif storage_type == "oss":
+        # TODO： 从 OSS 中获取文件哈希和大小
+        pass
+
+    if act_size != expected_size or act_hash != expected_hash:
+        logger.error(f"file or part hash or size mismath\n"
+                     f"expected_hash={expected_hash} actual_hash={act_hash}\n"
+                     f"expected_size={expected_size} actual_size={act_size}")
+        raise hash_size_validation_failed_exception
+
+    return act_hash, act_size
 
 
 #########################
@@ -497,7 +531,7 @@ async def rollback_simple_upload(
     _user_id = current_user.id
 
     # 回滚事务，撤销已有的数据库操作
-    await async_session.rollback() 
+    await async_session.rollback()
 
     if final_path:
         delete_local_file(final_path)
@@ -534,7 +568,6 @@ async def save_and_persist_part(
     current_user: UserInDB,
     part_data: PartCreate,
     part: UploadFile,
-    act_part_size: int,
     temp_path: Path,
 ) -> PartInDB:
     """
@@ -563,9 +596,6 @@ async def save_and_persist_part(
     )
     async_session.add(part_record)
     await async_session.flush()
-
-    logger.info(f"part saved user={current_user.id} file_id={file_record.file_id} "
-                f"part={part_data.part_number} size={act_part_size}")
 
     return part_record
 
@@ -630,13 +660,9 @@ async def validate_part_upload(
     file_record: FileInDB,
     current_user: UserInDB,
     part_data: PartCreate,
-    part: UploadFile,
-) -> tuple[str, int]:
+) -> None:
     """
-    分片上传前置验证(编号范围 + 重复检查 + 哈希大小校验)
-
-    Returns:
-        (actual_hash, actual_size) 验证通过后返回分片的实际哈希和大小
+    分片上传前置验证(编号范围 + 重复检查)
 
     Raises:
         part_number_out_of_range_exception: 分片编号越界
@@ -645,7 +671,6 @@ async def validate_part_upload(
 
     2026.3.3 Neo checked
     """
-    act_hash, act_size = None, None
     # 1. 分片编号范围校验
     if not part_data.part_number or not file_record.total_parts:
         raise part_number_out_of_range_exception
@@ -661,15 +686,6 @@ async def validate_part_upload(
                                      part_data.part_number,
                                      current_user.id):
         raise part_already_exists_exception
-
-    # 3. 哈希和大小验证
-    part_contents = await part.read()
-    task_result: AsyncResult = compute_upload_file_hash.delay(part_contents) # type: ignore
-    act_hash, act_size = await wait_for_result(task_result, poll_interval=0.5) # type: ignore
-    if act_hash != part_data.part_hash or act_size != part_data.part_size:
-        raise part_validation_failed_exception
-
-    return act_hash, act_size
 
 
 async def validate_part_duplicate(

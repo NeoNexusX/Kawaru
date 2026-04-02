@@ -1,6 +1,5 @@
 import os
 from typing import Optional
-from exceptions.file_exceptions import storage_type_not_allowed_exception
 
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
@@ -41,15 +40,11 @@ def init_config():
 
 def load_constants():
     """集中加载celery应用所需的常量"""
+    # 后续可在此添加更多常量导入
     from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
-    from constants.file_constants import CHUNK_BUFFER_SIZE  # pylint: disable=import-outside-toplevel
-    # 后续可在此添加更多常量导入，例如：
-    # from constants.experiment_constants import SOME_EXPERIMENT_CONSTANT
-    # from constants.user_constants import SOME_USER_CONSTANT
 
     return {
         'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
-        'chunk_buffer_size': CHUNK_BUFFER_SIZE,
         # 添加更多常量键值对
     }
 

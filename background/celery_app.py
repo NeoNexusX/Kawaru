@@ -13,7 +13,7 @@ from models.config_models import Config
 logger: "Logger | None" = None
 
 
-# celery 任务涉及到的模块都要在这里倒入
+# celery 任务涉及到的模块都要在这里导入
 CELERY_MODULE_IMPORTS = [
     "background.file_background",
     "background.file_background_helper",

@@ -82,6 +82,7 @@ class FilePublic(FileBase):
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
+    oss_upload_path: str | None = Field(default=None, max_length=256, description="OSS上传路径(仅用于OSS存储类型)")
 
 
 class FileListResponse(SQLModel):
