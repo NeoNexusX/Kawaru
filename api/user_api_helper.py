@@ -12,7 +12,7 @@ async def get_user(username: str, async_session: AsyncSession) -> UserInDB | Non
     return (await async_session.exec(statement)).first()
 
 
-async def get_user_by_id(id: int, async_session: AsyncSession) -> UserInDB | None:
+async def get_user_by_id(id: int, async_session: AsyncSession) -> UserInDB | None: # pylint: disable=redefined-builtin
     """通过 Session 查询指定用户ID的用户（可返回未激活用户）"""
     # 通过 Session 查询用户
     statement = select(UserInDB).where(UserInDB.id == id)
