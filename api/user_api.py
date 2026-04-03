@@ -19,14 +19,13 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
-from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data, delete_user_file_business
+from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
 from api.user_api_helper import (
     validate_url,
     get_user,
     get_user_by_email,
     count_items
 )
-from api.file_api_business import get_user_file_ids
 
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614

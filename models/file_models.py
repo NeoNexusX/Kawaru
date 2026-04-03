@@ -31,7 +31,7 @@ class FileBase(SQLModel):
                                  max_length=sample_config.max_experiment_type_length,)
     size: int = Field(default=0)
     storage_type: str = Field(default="local", max_length=64)
-    hash_sha256: str | None = Field(default=None, max_length=256)
+    hash_md5: str | None = Field(default=None, max_length=32)
 
     # 样本信息字段
     organism: str = Field(default="",description="样本所属物种",max_length=sample_config.max_organism_length,)
@@ -216,7 +216,7 @@ class FileDownloadMeta(FileBase):
             file_type=record.file_type,
             size=record.size,
             storage_type=record.storage_type,
-            hash_sha256=record.hash_sha256,
+            hash_md5=record.hash_md5,
             path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,

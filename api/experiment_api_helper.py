@@ -106,7 +106,7 @@ def validate_experiment_type(experiment_type: str) -> bool:
     return False
 
 
-def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool:
+def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool: # pylint: disable=unused-argument
     """
     验证 imzML 和 ibd 文件是否为有效可读的 MSI 实验数据
     

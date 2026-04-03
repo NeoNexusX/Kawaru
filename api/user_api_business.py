@@ -4,13 +4,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api.user_api_helper import get_user, validate_url, get_user_by_email
 from api.auth_api import verify_password, hashed_password
-from api.file_api_business import (
-    get_file_record_by_id,
-    assert_file_owner,
-    unlink_user_from_file,
-    delete_file_and_parts,
-)
-from api.experiment_api_business import delete_experiment_files
+
 from models.user_models import UserInDB
 from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS
 from exceptions.user_exceptions import (
@@ -21,7 +15,7 @@ from exceptions.user_exceptions import (
     user_homepage_invalid_exception,
     email_already_exists_exception,
 )
-from exceptions.file_exceptions import permission_denied_exception
+
 
 from background.api_background import validate_orcid_task
 from tools.logger import get_logger
@@ -72,7 +66,7 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
     if user_data.get("username") is None or user_past.username != user_data.get("username"):
         raise user_name_bad_exception
 
-    # 校验 email 是否重复 只需要在这里验证验证码
+    # 校验 email 是否重复 TODO 只需要在这里验证验证码
     if "email" in user_data and user_data["email"]:
         existing_user = await get_user_by_email(user_data["email"], async_session)
         if existing_user and existing_user.id != user_past.id:
@@ -102,31 +96,3 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
         user_data.pop("password")
 
     return user_data
-
-
-async def delete_user_file_business(
-    session: AsyncSession,
-    file_id: int,
-    user: UserInDB,
-) -> None:
-    """
-    删除用户文件的业务逻辑（用于用户删除时清理文件）
-    """
-    file_record = await get_file_record_by_id(file_id, session)
-    if not await assert_file_owner(session, file_record, user):
-        raise permission_denied_exception
-
-    # 解除用户与文件的关联
-    has_other_owners = await unlink_user_from_file(session, user, file_record)
-
-    if has_other_owners:
-        # 还有其他用户持有，只解除关联
-        logger.info(f"unlinked file reference only user={user.id} file_id={file_id}")
-    else:
-        # 没有其他用户持有，执行完全删除
-        if file_record.experiment_type == "imzML":
-            await delete_experiment_files(session, file_id)
-
-        # 删除文件、分片和数据库记录
-        await delete_file_and_parts(session, file_id, user)
-        logger.info(f"deleted file completely user={user.id} file_id={file_id}")

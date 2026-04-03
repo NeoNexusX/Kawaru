@@ -39,21 +39,21 @@ class TestFileUpload:
             # open file asynchronously
             async with aiofiles.open(file=file_path, mode='rb') as upload_file:
                 file_type = Path(file_path).suffix.lstrip('.')
-                total_hash = hashlib.sha256()
+                total_hash = hashlib.md5()
                 part_hashes = []
                 total_parts = 0
                 size = 0
                 await upload_file.seek(0)
 
                 # calculate the hashes of all the chunks of current file
-                # simultaneously calculate the total hash of current file  
+                # simultaneously calculate the total hash of current file
                 while True:
                     chunk = await upload_file.read(CHUNK_BUFFER_SIZE) # 分片来计算hash值，不分片会消耗很大的内存
                     if not chunk:
                         break
                     total_parts += 1
                     total_hash.update(chunk)
-                    part_hash = hashlib.sha256() # get the hash of single chunk
+                    part_hash = hashlib.md5() # get the hash of single chunk
                     part_hash.update(chunk)
                     part_hashes.append(part_hash.hexdigest())
                     size += len(chunk)
@@ -66,7 +66,7 @@ class TestFileUpload:
                         "filename": file_name,
                         "file_type": file_type,
                         "size": size,
-                        "hash_sha256": total_hash,
+                        "hash_md5": total_hash,
                         "total_parts": total_parts,
                         "experiment_type": "imzML",
                         "organism": "Citrus sinensis",

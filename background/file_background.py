@@ -1,9 +1,8 @@
 from datetime import timedelta
 import zipfile
 from pathlib import Path
-import asyncio
 from fastapi import HTTPException
-from sqlmodel import and_, select
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 

@@ -200,7 +200,7 @@ async def merge_files_and_get_hash(
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    total_hash = hashlib.sha256()
+    total_hash = hashlib.md5()
     async with aiofiles.open(destination, "wb") as dest_file:
         for source_file in source_files:
             if not source_file.exists():
@@ -225,24 +225,24 @@ async def merge_files_and_get_hash(
 
 async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
     """
-    计算上传文件的元数据(SHA256哈希和大小)
+    计算上传文件的元数据(MD5哈希和大小)
 
     分片读取文件内容,避免一次性加载到内存
     读取完成后重置文件指针到开头,供后续写入使用
 
     """
 
-    sha256 = hashlib.sha256()
+    md5 = hashlib.md5()
     size = 0
     await upload_file.seek(0)
     while True:
         chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
         if not chunk:
             break
-        sha256.update(chunk)
+        md5.update(chunk)
         size += len(chunk)
     await upload_file.seek(0)
-    return sha256.hexdigest(), size
+    return md5.hexdigest(), size
 
 
 def check_user_quota(user: UserInDB, file_size: int) -> bool:
@@ -424,7 +424,7 @@ async def valid_duplicate_filename(
 
 
 async def valid_user_duplicate_file_hash(
-    session: AsyncSession, user: UserInDB, hash_sha256: str
+    session: AsyncSession, user: UserInDB, hash_md5: str
 ) -> bool:
     """
     检查用户是否已拥有该哈希的文件(只针对本用户)
@@ -441,7 +441,7 @@ async def valid_user_duplicate_file_hash(
                 and_(
                     (UserFileLink.user_id == user.id),
                     (UserFileLink.file_id == FileInDB.file_id),
-                    (FileInDB.hash_sha256 == hash_sha256)
+                    (FileInDB.hash_md5 == hash_md5)
                 )
             )
         )
@@ -451,7 +451,7 @@ async def valid_user_duplicate_file_hash(
         logger.warning(
             "duplicate file hash found user=%s hash=%s",
             user.id,
-            hash_sha256,
+            hash_md5,
         )
         return True
 

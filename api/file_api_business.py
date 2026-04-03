@@ -29,6 +29,8 @@ from api.file_api_helper import (
     prepare_local_storage_path,
 )
 
+from background.file_background_helper import build_zip_file_background
+
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -57,8 +59,6 @@ if TYPE_CHECKING:
     from models.file_models import PartCreate
 
 logger = get_logger("api.file_api_business")
-
-from background.file_background_helper import build_zip_file_background 
 
 #########################
 # File  - 增
@@ -143,7 +143,7 @@ async def get_file_record_by_hash(
     """
     file_record = (
         await async_session.exec(
-            select(FileInDB).where(FileInDB.hash_sha256 == file_hash)
+            select(FileInDB).where(FileInDB.hash_md5 == file_hash)
         )
     ).first()
     if not file_record:
@@ -161,7 +161,7 @@ async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | N
 async def get_reuse_file_by_hash(
     async_session: AsyncSession,
     user: UserInDB,
-    hash_sha256: str,
+    hash_md5: str,
 ) -> FileInDB | None:
     """
     查询是否存在可复用的相同哈希文件(不建立关联)
@@ -179,7 +179,7 @@ async def get_reuse_file_by_hash(
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
-            .where(FileInDB.hash_sha256 == hash_sha256)
+            .where(FileInDB.hash_md5 == hash_md5)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -191,7 +191,7 @@ async def get_reuse_file_by_hash(
     ).first()
 
     if same_hash_file:
-        logger.info(f"found reusable file record user={user.id} file_id={same_hash_file.file_id} hash={hash_sha256}")
+        logger.info(f"found reusable file record user={user.id} file_id={same_hash_file.file_id} hash={hash_md5}")
 
     return same_hash_file
 
@@ -309,11 +309,11 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     2026.3.3 Neo checked
     """
-    hash_sha256, size = await compute_upload_file_hash(file)
+    hash_md5, size = await compute_upload_file_hash(file)
     #哈希等检查
-    if size != pre_record.size or hash_sha256 != (pre_record.hash_sha256 or ""):
+    if size != pre_record.size or hash_md5 != (pre_record.hash_md5 or ""):
         logger.error(f"metadata mismatch user={current_user.id}\n"
-                     f"expected_hash={pre_record.hash_sha256} actual_hash={hash_sha256}\n"
+                     f"expected_hash={pre_record.hash_md5} actual_hash={hash_md5}\n"
                      f"expected_size={pre_record.size} actual_size={size}")
         raise invalid_request_parameters_exception
     # 文件名检查
@@ -321,7 +321,7 @@ async def validate_simple_upload(
         logger.error(f"filename missing user={current_user.id}")
         raise invalid_request_parameters_exception
 
-    return hash_sha256, size
+    return hash_md5, size
 
 
 #########################
@@ -583,7 +583,7 @@ async def merge_parts_to_file(
         else:
             final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_sha256)
+        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_md5)
 
     except FileNotFoundError as exc:
         # 分片文件丢失
@@ -849,8 +849,8 @@ async def validate_upload_request(
         raise duplicate_file_exception
 
     # 7. 重复文件哈希检查
-    assert file_data.hash_sha256 is not None
-    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
+    assert file_data.hash_md5 is not None
+    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_md5):
         raise duplicate_file_exception
 
     return True
