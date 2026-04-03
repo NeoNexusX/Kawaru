@@ -4,13 +4,21 @@ import asyncio
 from logging import Logger
 from celery import Celery
 from celery import Task as CeleryTask
+from celery.result import AsyncResult
 from celery.schedules import schedule
 from redbeat.schedulers import RedBeatSchedulerEntry as Entry
 from models.config_models import Config
 
 
-
 logger: "Logger | None" = None
+
+
+# celery 任务涉及到的模块都要在这里导入
+CELERY_MODULE_IMPORTS = [
+    "background.file_background",
+    "background.api_background",
+    "background.file_background_helper",
+]
 
 
 # Task base that runs coroutine results in an event loop
@@ -34,8 +42,7 @@ def _get_logger():
 
 def celery_create(
     cfg: Config,
-    cleanup_download_zip_interval_seconds: int,
-    cleanup_stale_preflights_interval_seconds: int,
+    const_kwargs: dict,
     _logger: Logger | None = None,
 ) -> Celery:
     """Create a Celery app and return it."""
@@ -52,7 +59,7 @@ def celery_create(
         'broker_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_broker_db_index}",
         'result_backend': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_backend_db_index}",
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
-        'imports': ["background.file_background", "background.api_background"],
+        'imports': CELERY_MODULE_IMPORTS,
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
         'timezone': 'UTC',
         'enable_utc': True,
@@ -64,13 +71,13 @@ def celery_create(
             },
             "cleanup_old_download_zips": {
                 "task": "background.file_background.cleanup_old_download_zips",
-                "schedule": cleanup_download_zip_interval_seconds,
+                "schedule": const_kwargs['cleanup_download_zip_interval_seconds'],
                 "args": (),
                 "kwargs": {},
             },
             "cleanup_stale_preflights_all_users": {
                 "task": "background.file_background.cleanup_stale_preflights_all_users",
-                "schedule": cleanup_stale_preflights_interval_seconds,
+                "schedule": const_kwargs['cleanup_stale_preflights_interval_seconds'],
                 "args": (),
                 "kwargs": {},
             },
@@ -99,7 +106,7 @@ def init_celery_in_subprocess() -> Celery | None:
     # pylint:enable = C0415
     init_config()
     init_logging()
-    constants = load_constants()
+    _constants = load_constants()
     _logger = get_logger("bootstrap.celery_boot")
     _celery_app = None
 
@@ -107,8 +114,7 @@ def init_celery_in_subprocess() -> Celery | None:
         # 延迟导入 config，避免在主进程重复初始化冲突
         _celery_app = celery_create(
             get_config(),
-            cleanup_download_zip_interval_seconds=constants['cleanup_download_zip_interval_seconds'],
-            cleanup_stale_preflights_interval_seconds=constants['cleanup_stale_preflights_interval_seconds'],
+            _constants,
             _logger=_logger,
         )
         _logger.info("Celery app created for worker subprocess")
@@ -175,3 +181,23 @@ class TaskManager:
             _logger.error(f"Cannot remove task due to error: {exc}")
 
         return False
+
+
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 10):
+    """异步轮询等待 Celery 结果
+
+    :param result: Celery AsyncResult 对象
+    :param poll_interval: 轮询间隔（秒）
+    :param timeout: 最长等待时间（秒），为 None 时表示不限制
+    """
+    async def _poll_until_ready():
+        while not result.ready():
+            await asyncio.sleep(poll_interval)
+        return result.result
+
+    if timeout is None:
+        return await _poll_until_ready()
+    try:
+        return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise asyncio.TimeoutError("Celery task timeout") # pylint:disable = raise-missing-from

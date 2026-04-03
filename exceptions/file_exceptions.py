@@ -63,6 +63,13 @@ user_download_limit_exception = HTTPException(
     detail=format_exception_detail("user download limit reached")
 )
 
+# 文件哈希和大小不匹配异常
+hash_size_validation_failed_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail=format_exception_detail("file or part hash or size does not match expected values")
+)
+
+
 # 分片相关异常定义
 
 # 分片验证失败异常（哈希或大小不匹配）
@@ -127,6 +134,7 @@ __all__ = [
     "user_file_limit_exception",
     "duplicate_file_exception",
     "user_download_limit_exception",
+    "hash_size_validation_failed_exception",
     "part_validation_failed_exception",
     "invalid_part_data_exception",
     "part_number_out_of_range_exception",

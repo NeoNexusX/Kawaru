@@ -5,7 +5,8 @@ from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
-    PartUploadDep, PartStatusDep, ListPublicFilesDep
+    PartUploadDep, PartStatusDep, ListPublicFilesDep,
+    OssUploadCompleteDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -61,3 +62,9 @@ async def get_upload_status(status: PartStatusDep):
 async def list_files(list_file_response: ListPublicFilesDep):
     """查询文件列表"""
     return list_file_response
+
+
+@file_router.post("/oss_upload_complete")
+async def oss_upload_complete(file_record: OssUploadCompleteDep):
+    """OSS上传完成时，前端调用该接口通知后端"""
+    return file_record

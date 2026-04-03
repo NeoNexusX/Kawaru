@@ -1,6 +1,5 @@
 import os
 from typing import Optional
-from exceptions.file_exceptions import storage_type_not_allowed_exception
 
 
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
@@ -43,8 +42,6 @@ def load_constants():
     """集中加载应用所需的常量"""
     from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS, CLEANUP_PREFLIGHTS_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
     # 后续可在此添加更多常量导入，例如：
-    # from constants.experiment_constants import SOME_EXPERIMENT_CONSTANT
-    # from constants.user_constants import SOME_USER_CONSTANT
 
     return {
         'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
@@ -53,16 +50,17 @@ def load_constants():
     }
 
 
-def init_celery(cleanup_download_zip_interval_seconds: int, cleanup_stale_preflights_interval_seconds: int):
-    """显式创建 celery app"""
+def init_celery(const_kwargs: dict):
+    """
+    显式创建 celery app
+    """
     import background.celery_app # pylint: disable=import-outside-toplevel
 
     if background.celery_app.celery_app is None:
         from boot.config import get_config # pylint: disable=import-outside-toplevel
         background.celery_app.celery_app = background.celery_app.celery_create(
             get_config(),
-            cleanup_download_zip_interval_seconds,
-            cleanup_stale_preflights_interval_seconds,
+            const_kwargs,
         )
 
     return background.celery_app.celery_app
@@ -93,14 +91,12 @@ def bootstrap():
     if CONFIG.config is None:
         raise RuntimeError("CONFIG.config is not initialized")
 
-    if CONFIG.config.storage.allowed_storage_types == ["oss"]:
+    if "oss" in CONFIG.config.storage.allowed_storage_types:
         OSS_CLIENT = init_oss() # pylint: disable=unused-variable, invalid-name
-    elif CONFIG.config.storage.allowed_storage_types == ["local"]:
-        OSS_CLIENT = None # pylint: disable=unused-variable, invalid-name
     else:
-        raise storage_type_not_allowed_exception
+        OSS_CLIENT = None # pylint: disable=unused-variable, invalid-name
 
-    CELERY_APP = init_celery(CONSTANTS['cleanup_download_zip_interval_seconds'], CONSTANTS['cleanup_stale_preflights_interval_seconds']) # pylint: disable=C0103
+    CELERY_APP = init_celery(CONSTANTS) # pylint: disable=C0103
 
 
     #log part

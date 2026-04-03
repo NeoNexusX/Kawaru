@@ -17,7 +17,7 @@ dependencies = [
     "fabric>=3.2.2",
     "fastapi>=0.121.3",
     "greenlet==3.3.1",
-    "httpx>=0.28.1",
+    "httpx[socks]>=0.28.1",
     "passlib>=1.7.4",
     "pydantic>=2.12.4",
     "pyjwt>=2.10.1",

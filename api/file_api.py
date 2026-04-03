@@ -5,7 +5,15 @@ import json
 from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
 from sqlmodel import select, and_, or_, col
+
+from background.celery_app import wait_for_result
 from background.experiment_background import trigger_experiment_extraction
+from background.file_background import check_oss_file
+from storage_backend.storage import (
+    ensure_local_storage_dirs,
+    prepare_local_storage_path,
+    prepare_oss_storage_path
+)
 from api.file_api_business import (
     assert_file_owner,
     delete_file_and_parts,
@@ -22,20 +30,18 @@ from api.file_api_business import (
     validate_part_upload,
     validate_simple_upload,
     rollback_part_upload,
-    validate_upload_request
+    validate_upload_request,
+    validate_hash_and_size,
 )
-
 from api.file_api_helper import (
-    ensure_storage_dirs,
     get_file_record_by_id,
-    prepare_local_storage_path,
     save_upload_file,
     prepare_part_temp_path
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items
-from constants.file_constants import MAX_DOWNLOADS_PER_USER
+from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     file_persist_failed_exception,
@@ -86,7 +92,9 @@ async def preflight_create_file(
     - 此时文件记录已创建,但用户的 file_ids 和统计信息尚未更新
     - 只有在后续上传接口中校验通过后,才会更新用户计数
     """
-    ensure_storage_dirs()
+    # 只有全局配置允许local存储时，才创建本地存储目录
+    if "local" in ALLOWED_STORAGE_TYPES:
+        ensure_local_storage_dirs()
 
     # 参数验证
     if not await validate_upload_request(async_session, current_user, file_data):
@@ -149,7 +157,9 @@ async def upload_file_part(
     temp_path = None
     # 1. 解析分片元数据
     try:
-        ensure_storage_dirs()
+        # 只有全局配置允许local存储时，才创建本地存储目录
+        if "local" in ALLOWED_STORAGE_TYPES:
+            ensure_local_storage_dirs()
 
         part_data = PartCreate(**json.loads(part_data_json))
         logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
@@ -157,8 +167,8 @@ async def upload_file_part(
         # 2. 查询文件记录(业务层)
         file_record = await get_file_record_by_hash(async_session, part_data.file_hash)
 
-        # 3. 统一验证(业务层:编号范围 + 重复 + 哈希大小)
-        _, act_part_size = await validate_part_upload(async_session, file_record, current_user, part_data, part)
+        # 3. 统一验证(业务层:编号范围 + 重复)
+        await validate_part_upload(async_session, file_record, current_user, part_data)
 
         # 4 获取保存路径
         if not file_record.hash_md5 or not current_user.id or not file_record.file_id:
@@ -166,8 +176,12 @@ async def upload_file_part(
 
         temp_path = prepare_part_temp_path(current_user.id, file_record.hash_md5, part_data.part_number)
 
-        # 4. 保存分片并持久化记录(业务层)
-        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, act_part_size, temp_path)
+        # 4. 保存分片、校验哈希并持久化记录(业务层)
+        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, temp_path)
+        _, act_part_size = await validate_hash_and_size(part_data.part_hash, part_data.part_size, str(temp_path), "local")
+
+        logger.info(f"part saved user={current_user.id} file_id={file_record.file_id} "
+                    f"part={part_data.part_number} size={act_part_size}")
 
         # 5. 尝试合并
         is_merged = await validate_and_merge_parts(async_session, file_record, current_user)
@@ -276,41 +290,62 @@ async def upload_simple_file(
 
     pre_record = None
     final_path = None
+    oss_upload_path = None
 
     try:
-        ensure_storage_dirs()
+        # 只有全局配置允许local存储时，才创建本地存储目录
+        if "local" in ALLOWED_STORAGE_TYPES:
+            ensure_local_storage_dirs()
 
         # 查询预检记录
         pre_record = await get_file_record_by_id(pre_file_id, async_session)
 
         # 统一验证(业务层)
-        _, size = await validate_simple_upload(current_user, file, pre_record)
+        await validate_simple_upload(current_user, file, pre_record, storage_type)
 
-        #TODO：这里应该是根据存储类型动态处理不同的存储逻辑,目前只实现了本地存储,后续可以扩展其他存储类型(如 S3、Azure Blob 等)
-        final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+        # 根据存储类型动态处理不同的存储逻辑
+        if storage_type == "local":
+            # 如果是本地存储，保存文件并更新最终文件记录
+            final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+            await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
-        # 保存文件 → 更新记录 → 提交,统一 try 保护
-        await save_upload_file(file, final_path)
+            # 校验文件哈希和大小
+            assert pre_record.hash_md5 is not None
+            _, act_size = await validate_hash_and_size(pre_record.hash_md5, pre_record.size, str(final_path), storage_type)
 
-        # 更新预检记录的路径和大小(预检时已建立用户关联)
-        pre_record.path = str(final_path)
-        pre_record.size = size
-        pre_record.uploaded_at = utc_time()
-        pre_record.last_downloaded_at = pre_record.uploaded_at
-        async_session.add(pre_record)
+            # 更新预检记录的路径和大小(预检时已建立用户关联)
+            pre_record.path = str(final_path)
+            pre_record.size = act_size
+            pre_record.uploaded_at = utc_time()
+            pre_record.last_downloaded_at = pre_record.uploaded_at
+            async_session.add(pre_record)
 
-        await async_session.commit()
-        await async_session.refresh(pre_record)
-        await async_session.refresh(current_user)
-        logger.info(f"simple upload completed user={current_user.id} user name = {current_user.username}\n"
-                    f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
+            await async_session.commit()
+            await async_session.refresh(pre_record)
+            await async_session.refresh(current_user)
+            logger.info(f"simple upload completed user={current_user.id} user name = {current_user.username}\n"
+                        f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
+
+        elif storage_type == "oss":
+            # 如果是oss存储，向前端返回带oss_upload_path的URL，前端需要根据URL上传文件到oss
+            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录
+
+            # TODO: 实现预签名URL/STS授权，临时授予用户上传权限，返回的final_path应该是带权限的URL
+            oss_upload_path = prepare_oss_storage_path(file.filename) #type: ignore
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
         await rollback_simple_upload(async_session, current_user, pre_record, final_path)
         raise file_persist_failed_exception from exc
 
-    trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+    # 如果是本地存储，在此处触发实验文件提取任务
+    if storage_type == "local":
+        trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+
+    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_upload_path（仅供返回前端）
+    if oss_upload_path:
+        pre_record = FilePublic.model_validate(pre_record)
+        pre_record.oss_upload_path = oss_upload_path
 
     return pre_record # type: ignore
 
@@ -565,6 +600,34 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
+async def oss_upload_complete(file_id: int, async_session: AsyncSessionDep):
+    """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
+    try:
+        # 查询预检记录
+        pre_record = await get_file_record_by_id(file_id, async_session)
+        if pre_record is None:
+            raise FileNotFoundError(f"preflight_file_id={file_id} not found")
+
+        # celery任务鉴定bucket是否存在
+        res = check_oss_file.delay(filename=pre_record.filename, size=pre_record.size) # type:ignore
+        is_file_exist = await wait_for_result(res, poll_interval=0.1)
+        if not is_file_exist:
+            raise FileNotFoundError(f"oss_file={pre_record.filename} not found")
+
+        # TODO: 更新文件路径
+        pre_record.path = "此处为oss路径，后续替换为实际路径"
+        await async_session.commit()
+        await async_session.refresh(pre_record)
+
+    except Exception as e:
+        logger.error(f"oss_upload_complete failed: {e}")
+        raise internal_server_error_exception from e
+
+    # TODO: 触发实验文件提取任务的oss版本
+    # trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+    return pre_record
+
+
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
@@ -574,3 +637,4 @@ PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
 PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
+OssUploadCompleteDep = Annotated[FilePublic, Depends(oss_upload_complete)]
