@@ -275,16 +275,16 @@ async def prepare_download_file(
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
-        # 准备文件列表:(文件路径, ZIP中的文件名)
+        # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
         files_to_zip = [
-            (imzml_path, imzml_path.name),
-            (ibd_path, ibd_path.name),
+            (str(imzml_path), imzml_path.name),
+            (str(ibd_path), ibd_path.name),
         ]
 
-        build_zip_file_background.delay(files_to_zip, zip_path) # type: ignore
+        build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
 
         # 更新文件记录
-        file_record.path = str(zip_path)
+        file_record.path = str(zip_path) #TODO 在更新世可能文件还没创建，此处存在bug，需要改成在celery任务完成后更新，或者在这里轮询等待文件创建完成?
         file_record.size = zip_path.stat().st_size
 
         logger.info(

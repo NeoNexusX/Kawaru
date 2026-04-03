@@ -20,27 +20,30 @@ logger = get_logger("background.file_background")
 
 @celery_app.task()  # type: ignore
 async def build_zip_file_background(
-    files: list[tuple[Path, str]],
-    output_path: Path,
+    files: list[tuple[str, str]],
+    output_path: str,
     compression: int | None = None,
 ) -> str:
     """
     后台创建ZIP文件任务
+
+    参数已转换为可序列化类型：
+      - files: list[tuple[file_path_str, arc_name]]
+      - output_path: str
     """
     if compression is None:
         compression = zipfile.ZIP_DEFLATED
 
-    output = output_path
+    output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # 转换参数为字符串
-    files_str = [(str(fp), arc) for fp, arc in files]
-    output_str = str(output_path)
+    # 从可序列化参数转换为 Path
+    files_path = [(Path(fp), arc) for fp, arc in files]
+    output_str = str(output)
 
     def _create_zip() -> None:
         with zipfile.ZipFile(output_str, "w", compression) as zf:
-            for file_path_str, arc_name in files_str:
-                file_path = Path(file_path_str)
+            for file_path, arc_name in files_path:
                 if not file_path.exists():
                     raise FileNotFoundError(f"Source file not found: {file_path}")
                 zf.write(file_path, arc_name)
@@ -53,7 +56,7 @@ async def build_zip_file_background(
 @celery_app.task # type: ignore
 async def compute_upload_local_file_hash(file_path: str) -> tuple[str, int]:
     """
-    计算上传文件元数据的本地版本(SHA256哈希和大小)
+    计算上传文件元数据的本地版本(md值和大小)
     分片读取指定本地路径的文件内容,避免一次性加载到内存
     """
     md5 = hashlib.md5()  # 使用MD5算法计算哈希值

@@ -18,6 +18,7 @@ from exceptions.user_exceptions import (
 
 
 from background.api_background import validate_orcid_task
+from background.celery_app import wait_for_result
 from tools.logger import get_logger
 logger = get_logger("api.user_api_business")
 
@@ -50,9 +51,9 @@ async def validate_orcid(orcid: str) -> bool:
     不存在或网络异常:返回False;
     """
     try:
-        # 使用 Celery 任务异步执行 ORCID 验证
-        result = validate_orcid_task.delay(orcid).get(timeout=120) # type: ignore
-        return result
+        task_result = validate_orcid_task.delay(orcid) # type: ignore
+        result = await wait_for_result(task_result, poll_interval=0.1, timeout=120)
+        return bool(result)
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error(f"ORCID validation task failed for {orcid}: {exc}")
         return False

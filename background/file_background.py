@@ -106,7 +106,7 @@ async def cleanup_stale_preflights_all_users(
     清理所有用户过期且未完成的预检记录(celery定时任务版本)
 
     清理条件(需同时满足):
-    1. 文件物理路径不存在(说明为预检记录,未完成上传)
+    1. 文件物理路径为空（“”）(说明为预检记录,未完成上传)
     2. uploaded_at 超过 TTL
 
     Returns:
@@ -125,20 +125,15 @@ async def cleanup_stale_preflights_all_users(
         records = (await session.exec(
             select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
+            .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
             .limit(batch_size)
         )).all()
 
-        for file_record, user_id in records:
-            # 获取用户对象
-            user_stmt = select(UserInDB).where(UserInDB.id == user_id)
-            user = (await session.exec(user_stmt)).first()
-            if not user:
-                logger.warning(f"User {user_id} not found for file {file_record.file_id}, skipping cleanup")
-                continue
+        for file_record, user in records:
 
             # 清理预检记录
-            await safe_cleanup_preflight_record(session, user, file_record)
+            await safe_cleanup_preflight_record(session, user, file_record) # type: ignore[arg-type]
             total_cleaned += 1
 
         if total_cleaned:

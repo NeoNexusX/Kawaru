@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, Any, Optional
 import httpx
-from httpx import HTTPStatusError, RequestError
+from httpx import RequestError
 from starlette import status
 
 from background.celery_app import celery_app
@@ -10,40 +10,56 @@ from tools.logger import get_logger
 logger = get_logger("background.api_background")
 
 
-@celery_app.task() # type: ignore
-async def generic_http_request_task(url: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None, # TODO 写成类 ，先全部写出来普通的task，然后再合并
-                                    data: Optional[Dict[str, Any]] = None, timeout: int = 30,
-                                    max_retries: int = 3) -> Dict[str, Any]: # pyright: ignore[reportReturnType]
+@celery_app.task()  # type: ignore
+async def generic_http_request_task(# TODO 写成类 ，先全部写出来普通的task，然后再合并
+    url: str,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    data: Optional[Dict[str, Any]] = None,
+    timeout: int = 30,
+    max_retries: int = 3,
+) -> Dict[str, Any]:  # pyright: ignore[reportReturnType]
     """
     通用异步 HTTP 请求任务。
     返回 {'success': bool, 'status_code': int, 'data': Any 或 'error': str}
     """
+    retry_status_codes = {429, 500, 502, 503, 504}
+
     for attempt in range(max_retries + 1):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
-                if method.upper() == 'GET':
+                if method.upper() == "GET":
                     response = await client.get(url, headers=headers or {})
-                elif method.upper() == 'POST':
+                elif method.upper() == "POST":
                     response = await client.post(url, headers=headers or {}, json=data or {})
-                elif method.upper() == 'HEAD':
+                elif method.upper() == "HEAD":
                     response = await client.head(url, headers=headers or {})
                 else:
-                    return {'success': False, 'error': f'Unsupported method: {method}'}
+                    return {"success": False, "error": f"Unsupported method: {method}"}
 
                 if response.status_code == status.HTTP_200_OK:
-                    return {'success': True, 'status_code': response.status_code, 'data': response.text}
-                else:
-                    return {'success': False, 'status_code': response.status_code, 'error': f'HTTP {response.status_code}'}
-            except (HTTPStatusError, RequestError) as e:
-                logger.warning(f"HTTP request failed for {url} (attempt {attempt + 1}/{max_retries + 1}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)  # 指数退避
+                    return {"success": True,"status_code": response.status_code,"data": response.text,}
+
+                if response.status_code in retry_status_codes and attempt < max_retries:
+                    await asyncio.sleep(2 ** attempt)
                     continue
-                else:
-                    return {'success': False, 'error': str(e)}
+
+                return {
+                    "success": False,"status_code": response.status_code,"error": f"HTTP {response.status_code}",}
+
+            except RequestError as e:
+                logger.warning(
+                    "HTTP request failed for %s (attempt %s/%s): %s",url,attempt + 1,max_retries + 1,
+                    e,
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return {"success": False, "error": str(e)}
+
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error(f"Unexpected error in HTTP request for {url}: {e}")
-                return {'success': False, 'error': str(e)}
+                return {"success": False, "error": str(e)}
 
 
 @celery_app.task() # type: ignore
