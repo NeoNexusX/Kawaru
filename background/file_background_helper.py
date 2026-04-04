@@ -23,7 +23,7 @@ async def build_zip_file_background(
     files: list[tuple[str, str]],
     output_path: str,
     compression: int | None = None,
-) -> str:
+) -> int:
     """
     后台创建ZIP文件任务
 
@@ -50,7 +50,7 @@ async def build_zip_file_background(
 
     await asyncio.to_thread(_create_zip)
     logger.info(f"ZIP file created at {output_str}")
-    return output_str
+    return output.stat().st_size
 
 
 @celery_app.task # type: ignore

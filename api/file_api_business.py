@@ -281,11 +281,14 @@ async def prepare_download_file(
             (str(ibd_path), ibd_path.name),
         ]
 
-        build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
+        task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
+        zip_size = await wait_for_result(task_result, poll_interval=0.1)
+        if zip_size is None:
+            raise file_content_missing_exception
 
         # 更新文件记录
-        file_record.path = str(zip_path) #TODO 在更新世可能文件还没创建，此处存在bug，需要改成在celery任务完成后更新，或者在这里轮询等待文件创建完成?
-        file_record.size = zip_path.stat().st_size
+        file_record.path = str(zip_path)
+        file_record.size = zip_size
 
         logger.info(
             "created download zip file_id=%s path=%s size=%s",
