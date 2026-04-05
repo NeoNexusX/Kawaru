@@ -19,6 +19,7 @@ class EnvSet:
         self.env = load_dotenv(".env")
 
     def summary(self):
+        """输出环境变量的摘要信息，帮助调试和验证环境变量是否正确加载"""
         logger = get_logger("bootstrap.envset")
 
         if self.env:

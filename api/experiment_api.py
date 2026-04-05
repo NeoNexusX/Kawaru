@@ -70,7 +70,7 @@ async def cleanup_failed_experiments(
                 )
             )
         ).all()
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         logger.error("failed to query failed experiments error=%s", e)
         return cleaned
 
@@ -131,7 +131,7 @@ async def cleanup_failed_experiments(
             cleaned += 1
             logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
 
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-exception-caught
             logger.error(
                 "failed to cleanup experiment exp_id=%s error=%s", exp.id, e
             )
@@ -140,7 +140,7 @@ async def cleanup_failed_experiments(
     try:
         await session.commit()
         logger.info("cleanup failed experiments completed count=%s", cleaned)
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-exception-caught
         logger.error("failed to commit cleanup changes error=%s", e)
 
     return cleaned

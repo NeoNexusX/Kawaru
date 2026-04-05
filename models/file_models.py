@@ -31,7 +31,7 @@ class FileBase(SQLModel):
                                  max_length=sample_config.max_experiment_type_length,)
     size: int = Field(default=0)
     storage_type: str = Field(default="local", max_length=64)
-    hash_sha256: str | None = Field(default=None, max_length=256)
+    hash_md5: str | None = Field(default=None, max_length=32)
 
     # 样本信息字段
     organism: str = Field(default="",description="样本所属物种",max_length=sample_config.max_organism_length,)
@@ -49,6 +49,7 @@ class FileBase(SQLModel):
                                           description="基质施加方式",
                                           max_length=sample_config.max_maldi_matrix_application_length,)
     solvent: str = Field(default="",description="使用溶剂(选填)",max_length=sample_config.max_solvent_length,)
+    is_public: bool = Field(default=False, description="是否公开文件")
 
 
 class FileCreate(FileBase):
@@ -96,6 +97,7 @@ class FileInDB(FileBase, table=True):
     """数据库模型"""
 
     file_id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})  # 文件编号(自增主键)
+    is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
     # 与 UserInDB 的多对多关系
@@ -215,7 +217,7 @@ class FileDownloadMeta(FileBase):
             file_type=record.file_type,
             size=record.size,
             storage_type=record.storage_type,
-            hash_sha256=record.hash_sha256,
+            hash_md5=record.hash_md5,
             path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,

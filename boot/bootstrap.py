@@ -39,12 +39,13 @@ def init_config():
 
 
 def load_constants():
-    """集中加载celery应用所需的常量"""
-    # 后续可在此添加更多常量导入
-    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
+    """集中加载应用所需的常量"""
+    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS, CLEANUP_PREFLIGHTS_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
+    # 后续可在此添加更多常量导入，例如：
 
     return {
         'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
+        'cleanup_stale_preflights_interval_seconds': CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
         # 添加更多常量键值对
     }
 
@@ -86,6 +87,9 @@ def bootstrap():
     CONFIG = init_config() # pylint: disable=C0103
     CONSTANTS = load_constants() # pylint: disable=C0103
     init_logging()
+
+    if CONFIG.config is None:
+        raise RuntimeError("CONFIG.config is not initialized")
 
     if "oss" in CONFIG.config.storage.allowed_storage_types:
         OSS_CLIENT = init_oss() # pylint: disable=unused-variable, invalid-name

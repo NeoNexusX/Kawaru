@@ -24,7 +24,6 @@ from api.file_api_helper import (
     validate_file_metadata,
     validate_total_parts,
     delete_local_file,
-    build_zip_file,
     merge_files_and_get_hash,
     save_upload_file,
     delete_file_by_storage,
@@ -32,8 +31,9 @@ from api.file_api_helper import (
 from storage_backend.storage import (
     prepare_local_storage_path,
 )
+
 from background.celery_app import wait_for_result
-from background.file_background_helper import compute_upload_local_file_hash
+from background.file_background_helper import compute_upload_local_file_hash,build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -62,7 +62,6 @@ if TYPE_CHECKING:
     from models.file_models import PartCreate
 
 logger = get_logger("api.file_api_business")
-
 
 #########################
 # File  - 增
@@ -147,7 +146,7 @@ async def get_file_record_by_hash(
     """
     file_record = (
         await async_session.exec(
-            select(FileInDB).where(FileInDB.hash_sha256 == file_hash)
+            select(FileInDB).where(FileInDB.hash_md5 == file_hash)
         )
     ).first()
     if not file_record:
@@ -165,7 +164,7 @@ async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | N
 async def get_reuse_file_by_hash(
     async_session: AsyncSession,
     user: UserInDB,
-    hash_sha256: str,
+    hash_md5: str,
 ) -> FileInDB | None:
     """
     查询是否存在可复用的相同哈希文件(不建立关联)
@@ -183,7 +182,7 @@ async def get_reuse_file_by_hash(
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
-            .where(FileInDB.hash_sha256 == hash_sha256)
+            .where(FileInDB.hash_md5 == hash_md5)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -195,7 +194,7 @@ async def get_reuse_file_by_hash(
     ).first()
 
     if same_hash_file:
-        logger.info(f"found reusable file record user={user.id} file_id={same_hash_file.file_id} hash={hash_sha256}")
+        logger.info(f"found reusable file record user={user.id} file_id={same_hash_file.file_id} hash={hash_md5}")
 
     return same_hash_file
 
@@ -276,17 +275,20 @@ async def prepare_download_file(
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
-        # 准备文件列表:(文件路径, ZIP中的文件名)
+        # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
         files_to_zip = [
-            (imzml_path, imzml_path.name),
-            (ibd_path, ibd_path.name),
+            (str(imzml_path), imzml_path.name),
+            (str(ibd_path), ibd_path.name),
         ]
 
-        await build_zip_file(files_to_zip, zip_path)
+        task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
+        zip_size = await wait_for_result(task_result, poll_interval=0.1)
+        if zip_size is None:
+            raise file_content_missing_exception
 
         # 更新文件记录
         file_record.path = str(zip_path)
-        file_record.size = zip_path.stat().st_size
+        file_record.size = zip_size
 
         logger.info(
             "created download zip file_id=%s path=%s size=%s",
@@ -314,6 +316,7 @@ async def validate_simple_upload(
         HTTPException: 验证失败时抛出异常
     2026.3.3 Neo checked
     """
+
     # 存储类型检查
     if storage_type != pre_record.storage_type:
         logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
@@ -527,6 +530,7 @@ async def rollback_simple_upload(
         2026.3.3 Neo checked
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
+    assert pre_record is not None
     _record_id = pre_record.file_id
     _user_id = current_user.id
 
@@ -539,7 +543,7 @@ async def rollback_simple_upload(
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
             pre_record = await get_file_record_by_id(_record_id, async_session)
-            current_user = await get_user_by_id(_user_id, async_session)
+            current_user = await get_user_by_id(_user_id, async_session) # type: ignore
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效
 
@@ -627,7 +631,7 @@ async def merge_parts_to_file(
         else:
             final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_sha256)
+        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_md5)
 
     except FileNotFoundError as exc:
         # 分片文件丢失
@@ -880,8 +884,8 @@ async def validate_upload_request(
         raise duplicate_file_exception
 
     # 7. 重复文件哈希检查
-    assert file_data.hash_sha256 is not None
-    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_sha256):
+    assert file_data.hash_md5 is not None
+    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_md5):
         raise duplicate_file_exception
 
     return True

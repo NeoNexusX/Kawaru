@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import asyncio
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession

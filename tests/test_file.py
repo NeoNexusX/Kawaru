@@ -73,7 +73,7 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         content = _make_test_zip()
-        sha256 = hashlib.sha256(content).hexdigest()
+        md5 = hashlib.md5(content).hexdigest()
 
         rs = await client.post(
             "/files/preflight",
@@ -83,7 +83,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_sha256": sha256,
+                "hash_md5": md5,
                 "experiment_type": "imzML",
                 "organism": "", 
                 "organism_part": "",
@@ -120,7 +120,7 @@ class TestFile:
                 "filename": "kawaru_test.exe",   # 不在 allowed_file_types 中
                 "file_type": "exe",
                 "size": 1024,
-                "hash_sha256": "a" * 64,
+                "hash_md5": "a" * 32,
                 "experiment_type": "",
             },
         )
@@ -141,7 +141,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_sha256": hashlib.sha256(content).hexdigest(),
+                "hash_md5": hashlib.md5(content).hexdigest(),
                 "experiment_type": "",
             },
         )
@@ -163,7 +163,7 @@ class TestFile:
 
         content_a = _make_test_zip()
         content_b = _make_test_zip()  # 不同的随机内容，hash 必然不同
-        sha256_a = hashlib.sha256(content_a).hexdigest()
+        md5_a = hashlib.md5(content_a).hexdigest()
         mismatch_filename = "kawaru_mismatch_test.zip"
 
         # preflight 用 content_a 的 hash
@@ -175,7 +175,7 @@ class TestFile:
                 "filename": mismatch_filename,
                 "file_type": "zip",
                 "size": len(content_a),
-                "hash_sha256": sha256_a,
+                "hash_md5": md5_a,
                 "experiment_type": "imzML",
                 "organism": "",
                  "organism_part": "", 
@@ -212,7 +212,7 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         content = _make_test_zip()
-        sha256 = hashlib.sha256(content).hexdigest()
+        md5 = hashlib.md5(content).hexdigest()
 
         # 1. preflight
         rs = await client.post(
@@ -223,7 +223,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_sha256": sha256,
+                "hash_md5": md5,
                 "experiment_type": "imzML",
                 "organism": "", 
                 "organism_part": "",
@@ -336,7 +336,6 @@ class TestFile:
         assert before_entry is not None
 
         before_count = before_entry["download_count"]
-        before_last = before_entry["last_downloaded_at"]
 
         rs = await client.get(f"/files/{file_id}/download", headers=auth)
         assert rs.status_code == 200, rs.text
@@ -360,7 +359,7 @@ class TestFile:
         """
         完整分片上传流程：preflight → 逐片 chunked/upload → 合并完成
         - 文件由内存 zip 构造，按 TEST_CHUNK_COUNT 均匀切分
-        - 每片计算独立 sha256，preflight 携带 total_parts
+        - 每片计算独立 md5，preflight 携带 total_parts
         - 上传完最后一片后服务端自动合并，file_id 存入 class 变量供清理
         """
         client, token, token_type = admin_login
@@ -368,8 +367,8 @@ class TestFile:
 
         content = _make_test_zip()
         chunks = _split_into_chunks(content, TEST_CHUNK_COUNT)
-        total_hash = hashlib.sha256(content).hexdigest()
-        part_hashes = [hashlib.sha256(c).hexdigest() for c in chunks]
+        total_hash = hashlib.md5(content).hexdigest()
+        part_hashes = [hashlib.md5(c).hexdigest() for c in chunks]
         total_parts = len(chunks)
         chunked_filename = "kawaru_chunked_test.zip"
 
@@ -387,7 +386,7 @@ class TestFile:
                 "filename": chunked_filename,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_sha256": total_hash,
+                "hash_md5": total_hash,
                 "experiment_type": "imzML",
                 "organism": "",
                 "organism_part": "",
@@ -453,7 +452,7 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         content = _make_test_zip()
-        total_hash = hashlib.sha256(content).hexdigest()
+        total_hash = hashlib.md5(content).hexdigest()
         bad_filename = "kawaru_chunked_badhash.zip"
 
         # preflight（2片）
@@ -465,7 +464,7 @@ class TestFile:
                 "filename": bad_filename,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_sha256": total_hash,
+                "hash_md5": total_hash,
                 "experiment_type": "imzML",
                 "organism": "",
                 "organism_part": "",

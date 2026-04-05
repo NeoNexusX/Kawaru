@@ -16,6 +16,7 @@ logger: "Logger | None" = None
 # celery 任务涉及到的模块都要在这里导入
 CELERY_MODULE_IMPORTS = [
     "background.file_background",
+    "background.api_background",
     "background.file_background_helper",
 ]
 
@@ -71,6 +72,12 @@ def celery_create(
             "cleanup_old_download_zips": {
                 "task": "background.file_background.cleanup_old_download_zips",
                 "schedule": const_kwargs['cleanup_download_zip_interval_seconds'],
+                "args": (),
+                "kwargs": {},
+            },
+            "cleanup_stale_preflights_all_users": {
+                "task": "background.file_background.cleanup_stale_preflights_all_users",
+                "schedule": const_kwargs['cleanup_stale_preflights_interval_seconds'],
                 "args": (),
                 "kwargs": {},
             },
@@ -176,7 +183,7 @@ class TaskManager:
         return False
 
 
-async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 10):
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 20): #TODO 压缩任务时间要求会长一点
     """异步轮询等待 Celery 结果
 
     :param result: Celery AsyncResult 对象

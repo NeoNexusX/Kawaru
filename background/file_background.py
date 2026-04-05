@@ -3,12 +3,11 @@ import zipfile
 from pathlib import Path
 
 from fastapi import HTTPException, status
-from sqlmodel import and_, select
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from alibabacloud_oss_v2 import HeadObjectRequest
 
-from api.user_api_business import check_user_login_status
-from api.user_api_helper import get_user
+
 from api.experiment_api_business import create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
@@ -21,7 +20,9 @@ from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
-from background.celery_app import celery_app, TaskManager
+from models.user_models import UserInDB
+
+from background.celery_app import celery_app
 
 from tools import get_logger,utc_time
 logger = get_logger("background.file_background")
@@ -96,74 +97,53 @@ async def process_imzml_experiment_background(
             raise
 
 
-# TODO: 针对所有用户清理 做定时任务
-@celery_app.task()
-async def cleanup_stale_preflights(
-    user_token: str,
+@celery_app.task() # type: ignore
+async def cleanup_stale_preflights_all_users(
     ttl_minutes: int = PREFLIGHT_TTL_MINUTES,
+    batch_size: int = 100,
 ) -> int:
     """
-    清理当前用户过期且未完成的预检记录(celery定时任务版本)
+    清理所有用户过期且未完成的预检记录(celery定时任务版本)
 
     清理条件(需同时满足):
-    1. 记录 owners 中包含当前用户
-    2. 文件物理路径不存在(说明为预检记录,未完成上传)
-    3. file_id 不在用户 file_ids 中
-    4. uploaded_at 超过 TTL
-
-    更正清理条件:
-    在多对多设计的情况下,简化为满足条件2和4即可清理
+    1. 文件物理路径为空（“”）(说明为预检记录,未完成上传)
+    2. uploaded_at 超过 TTL
 
     Returns:
         清理的记录数量
     """
-    username = await check_user_login_status(user_token)
-    if username is False:
-        await TaskManager.remove_task(f"cleanup_stale_preflights_{user_token[0:8]}") # type:ignore
-        logger.warning("Invalid user token provided for cleanup_stale_preflights task, " \
-                        "task has been removed from schedule.")
-        return 0
-
-    # Create internal database session
-    assert isinstance(username, str) # for type checker
     async with AsyncSession(get_async_engine()) as session:
-        current_user = await get_user(username, session)
-        assert current_user is not None # for type checker
-        logger.info(f"starting cleanup stale preflights for user {current_user.id} with TTL {ttl_minutes} minutes...")
+        logger.info(f"starting cleanup stale preflights for all users with TTL {ttl_minutes} minutes...")
 
         # 代表 uploaded_at 超过 TTL 的时间点
         now = utc_time()
         cutoff_time = now - timedelta(minutes=ttl_minutes)
-        cleaned = 0
+        total_cleaned = 0
 
-        # 数据库层面先过滤出owners包含当前用户的所有文件记录
+        # 直接查询所有过期预检记录（path 为空且 uploaded_at < cutoff_time）
+        # 通过 UserFileLink 关联获取用户
         records = (await session.exec(
-            select(FileInDB)
-            .join(UserFileLink, and_(FileInDB.file_id == UserFileLink.file_id))
-            .where(UserFileLink.user_id == current_user.id)
+            select(FileInDB, UserFileLink.user_id)
+            .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
+            .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
+            .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
+            .limit(batch_size)
         )).all()
 
-        for rec in records:
-            # 只要 path 不为空字符串,直接跳过(不再检查物理文件是否存在)
-            if rec.path:
-                continue
+        for file_record, user in records:
 
-            # TTL 判断 - 所有时间都是UTC时间,直接比较
-            if not rec.uploaded_at < cutoff_time:
-                continue
+            # 清理预检记录
+            await safe_cleanup_preflight_record(session, user, file_record) # type: ignore[arg-type]
+            total_cleaned += 1
 
-            # 满足所有条件,清理预检记录
-            await safe_cleanup_preflight_record(session, current_user, rec)
-            cleaned += 1
-
-        if cleaned:
+        if total_cleaned:
             await session.commit()
-            logger.info(f"completed cleanup of stale preflights for user {current_user.id}, cleaned {cleaned} records")
+            logger.info(f"completed cleanup of stale preflights for all users, total cleaned {total_cleaned} records")
 
-        return cleaned
+        return total_cleaned
 
 
-@celery_app.task()
+@celery_app.task() # type: ignore
 async def cleanup_old_download_zips(
     retention_days: int = DOWNLOAD_ZIP_RETENTION_DAYS,
     batch_size: int = 100,
@@ -243,5 +223,4 @@ def heartbeat():
     这是一个心跳任务，用于celery beat后台保活，
     理论上无需进行任何操作，也可以定期输出一些东西
     """
-
     pass # pylint: disable=unnecessary-pass

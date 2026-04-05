@@ -19,17 +19,15 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
-from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data, delete_user_file_business
+from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
 from api.user_api_helper import (
     validate_url,
     get_user,
     get_user_by_email,
     count_items
 )
-from api.file_api_business import get_user_file_ids
 
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
-from constants.file_constants import CLEANUP_PREFLIGHTS_INTERVAL_SECONDS, PREFLIGHT_TTL_MINUTES
 from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
@@ -178,14 +176,6 @@ async def login(
         await redis_client.hset(login_key, mapping=login_data.model_dump()) # type:ignore
         await redis_client.expire(login_key, LOGIN_EXPIRE_SECONDS) # set default expiration time
 
-        # After user login, create a Celery task to clean up staled preflights
-        task_name = f"cleanup_stale_preflights_{access_token[0:8]}"  # Use part of token to ensure uniqueness while avoiding too long task name
-        await TaskManager.add_interval_task(task_name=task_name,
-                                      task_path="background.file_background.cleanup_stale_preflights",
-                                      interval_seconds=CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
-                                      # interval_seconds = 10, # for testing
-                                      task_kwargs={"user_token": access_token, "ttl_minutes": PREFLIGHT_TTL_MINUTES})
-
         # return Token
         return Token(access_token=access_token, token_type="bearer")
 
@@ -321,25 +311,13 @@ async def update_user(
 
     return user # type:ignore
 
-#TODO：此处逻辑需要修改，大批量删除延迟不可控制
+#TODO：此处逻辑已经修改，但是还差一个定时任务来清理用户文件，后续补上
 async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
 ):
-    """删除当前登录用户: 先处理该用户相关文件，再删除用户本身"""
-    # 1. 删除该用户拥有的文件（如果其他用户共享则仅解除关联）
-    file_ids = []
-    file_ids = await get_user_file_ids(async_session, user.id)
-    if file_ids:
-        for file_id in file_ids:
-            try:
-                await delete_user_file_business(async_session, file_id, user)
-            except (FileNotFoundError,PermissionError) as exc:
-                logger.warning(f"Failed to delete file {file_id} for user {user.id}. Continue user deletion. error={exc}")
-            finally:
-                # 2. 删除用户本身
-                await async_session.delete(user)
-                await async_session.commit()
-
+    """删除当前登录用户"""
+    await async_session.delete(user)
+    await async_session.commit()
     return user
 
 

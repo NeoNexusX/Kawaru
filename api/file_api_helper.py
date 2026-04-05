@@ -5,7 +5,6 @@
 #########################
 from __future__ import annotations
 
-import zipfile
 import asyncio
 import hashlib
 from pathlib import Path
@@ -30,6 +29,7 @@ from constants.file_constants import (
     MAX_PARTS_PER_UPLOAD,
 )
 
+
 from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
 
@@ -50,7 +50,6 @@ def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> P
 ########
 # file 增
 ########
-#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
 async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
     """
     将上传文件保存到指定路径
@@ -66,43 +65,6 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
                 break
             await buffer.write(chunk)
     await upload_file.close()
-
-
-#TODO: 理论上应该丢去异步任务队列执行,避免在上传接口中执行导致响应变慢
-async def build_zip_file(
-    files: list[tuple[Path, str]],
-    output_path: Path,
-    compression: int | None = None,
-) -> Path:
-    """
-    创建ZIP文件(通用工具函数)
-
-    Args:
-        files: 文件列表,每个元素是 (文件路径, ZIP中的文件名) 元组
-        output_path: 输出ZIP文件路径
-        compression: 压缩级别,默认为 ZIP_DEFLATED
-
-    Returns:
-        创建的ZIP文件路径
-
-    Raises:
-        FileNotFoundError: 源文件不存在
-    """
-
-    if compression is None:
-        compression = zipfile.ZIP_DEFLATED
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def _create_zip() -> None:
-        with zipfile.ZipFile(output_path, "w", compression) as zf:
-            for file_path, arc_name in files:
-                if not file_path.exists():
-                    raise FileNotFoundError(f"Source file not found: {file_path}")
-                zf.write(file_path, arc_name)
-
-    await asyncio.to_thread(_create_zip)
-    return output_path
 
 
 ########
@@ -217,7 +179,7 @@ async def merge_files_and_get_hash(
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    total_hash = hashlib.sha256()
+    total_hash = hashlib.md5()
     async with aiofiles.open(destination, "wb") as dest_file:
         for source_file in source_files:
             if not source_file.exists():
@@ -238,6 +200,28 @@ async def merge_files_and_get_hash(
         raise ValueError(f"Hash mismatch: expected={expected_hash}, actual={final_hash}")
 
     return final_hash
+
+
+async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
+    """
+    计算上传文件的元数据(MD5哈希和大小)
+
+    分片读取文件内容,避免一次性加载到内存
+    读取完成后重置文件指针到开头,供后续写入使用
+
+    """
+
+    md5 = hashlib.md5()
+    size = 0
+    await upload_file.seek(0)
+    while True:
+        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
+        if not chunk:
+            break
+        md5.update(chunk)
+        size += len(chunk)
+    await upload_file.seek(0)
+    return md5.hexdigest(), size
 
 
 def check_user_quota(user: UserInDB, file_size: int) -> bool:
@@ -419,7 +403,7 @@ async def valid_duplicate_filename(
 
 
 async def valid_user_duplicate_file_hash(
-    session: AsyncSession, user: UserInDB, hash_sha256: str
+    session: AsyncSession, user: UserInDB, hash_md5: str
 ) -> bool:
     """
     检查用户是否已拥有该哈希的文件(只针对本用户)
@@ -436,7 +420,7 @@ async def valid_user_duplicate_file_hash(
                 and_(
                     (UserFileLink.user_id == user.id),
                     (UserFileLink.file_id == FileInDB.file_id),
-                    (FileInDB.hash_sha256 == hash_sha256)
+                    (FileInDB.hash_md5 == hash_md5)
                 )
             )
         )
@@ -446,7 +430,7 @@ async def valid_user_duplicate_file_hash(
         logger.warning(
             "duplicate file hash found user=%s hash=%s",
             user.id,
-            hash_sha256,
+            hash_md5,
         )
         return True
 
