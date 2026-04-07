@@ -420,7 +420,7 @@ async def valid_user_duplicate_file_hash(
                 and_(
                     (UserFileLink.user_id == user.id),
                     (UserFileLink.file_id == FileInDB.file_id),
-                    (FileInDB.hash_md5 == hash_md5)
+                    (FileInDB.file_verify_code == hash_md5)
                 )
             )
         )

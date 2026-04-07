@@ -102,8 +102,8 @@ async def preflight_create_file(
         raise invalid_request_parameters_exception
 
     # 尝试复用同哈希文件,否则创建新记录
-    assert file_data.hash_md5 is not None
-    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.hash_md5)
+    assert file_data.file_verify_code is not None
+    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code)
 
     if reused_file:
         file_record = reused_file
@@ -171,10 +171,10 @@ async def upload_file_part(
         await validate_part_upload(async_session, file_record, current_user, part_data)
 
         # 4 获取保存路径
-        if not file_record.hash_md5 or not current_user.id or not file_record.file_id:
+        if not file_record.file_verify_code or not current_user.id or not file_record.file_id:
             raise invalid_request_parameters_exception
 
-        temp_path = prepare_part_temp_path(current_user.id, file_record.hash_md5, part_data.part_number)
+        temp_path = prepare_part_temp_path(current_user.id, file_record.file_verify_code, part_data.part_number)
 
         # 4. 保存分片、校验哈希并持久化记录(业务层)
         part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, temp_path)
@@ -229,7 +229,7 @@ async def get_part_upload_status(
 
     # 创建基础状态对象
     status = PartUploadStatus(
-        file_hash=file_record.hash_md5 or "",
+        file_hash=file_record.file_verify_code or "",
         filename=file_record.filename,
         total_parts=file_record.total_parts or 0,
         uploaded_parts=[],
@@ -310,8 +310,8 @@ async def upload_simple_file(
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
             # 校验文件哈希和大小
-            assert pre_record.hash_md5 is not None
-            _, act_size = await validate_hash_and_size(pre_record.hash_md5, pre_record.size, str(final_path), storage_type)
+            assert pre_record.file_verify_code is not None
+            _, act_size = await validate_hash_and_size(pre_record.file_verify_code, pre_record.size, str(final_path), storage_type)
 
             # 更新预检记录的路径和大小(预检时已建立用户关联)
             pre_record.path = str(final_path)

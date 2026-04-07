@@ -146,7 +146,7 @@ async def get_file_record_by_hash(
     """
     file_record = (
         await async_session.exec(
-            select(FileInDB).where(FileInDB.hash_md5 == file_hash)
+            select(FileInDB).where(FileInDB.file_verify_code == file_hash)
         )
     ).first()
     if not file_record:
@@ -182,7 +182,7 @@ async def get_reuse_file_by_hash(
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
-            .where(FileInDB.hash_md5 == hash_md5)
+            .where(FileInDB.file_verify_code == hash_md5)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -631,7 +631,7 @@ async def merge_parts_to_file(
         else:
             final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_md5)
+        await merge_files_and_get_hash(part_paths, final_path, file_record.file_verify_code)
 
     except FileNotFoundError as exc:
         # 分片文件丢失
@@ -884,8 +884,8 @@ async def validate_upload_request(
         raise duplicate_file_exception
 
     # 7. 重复文件哈希检查
-    assert file_data.hash_md5 is not None
-    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_md5):
+    assert file_data.file_verify_code is not None
+    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.file_verify_code):
         raise duplicate_file_exception
 
     return True
