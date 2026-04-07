@@ -335,7 +335,7 @@ async def upload_simple_file(
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
-        await rollback_simple_upload(async_session, current_user, pre_record, final_path)
+        await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 这个地方回滚有一点问题
         raise file_persist_failed_exception from exc
 
     # 如果是本地存储，在此处触发实验文件提取任务

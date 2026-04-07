@@ -4,7 +4,7 @@ from typing import AsyncGenerator, Optional, List
 import aiofiles
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Column, Integer, ForeignKey,BigInteger
 from tools import utc_time,get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
@@ -29,7 +29,7 @@ class FileBase(SQLModel):
     experiment_type: str = Field(default="",
                                  description="实验类型(imzml/raw等),用于定位实验表",
                                  max_length=sample_config.max_experiment_type_length,)
-    size: int = Field(default=0)
+    size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0))
     storage_type: str = Field(default="local", max_length=64)
     file_verify_code: str | None = Field(default=None, max_length=32)
 
