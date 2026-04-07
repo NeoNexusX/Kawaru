@@ -193,6 +193,10 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
     async def _poll_until_ready():
         while not result.ready():
             await asyncio.sleep(poll_interval)
+
+        if result.failed():
+            raise result.result
+
         return result.result
 
     if timeout is None:

@@ -161,6 +161,7 @@ async def merge_files_and_get_hash(
     expected_hash: str | None = None,
     buffer_size: int = CHUNK_BUFFER_SIZE,
 ) -> str:
+    # TODO: 计算哈希部分考虑调用任务队列？
     """
     合并多个文件并计算哈希
 
@@ -200,28 +201,6 @@ async def merge_files_and_get_hash(
         raise ValueError(f"Hash mismatch: expected={expected_hash}, actual={final_hash}")
 
     return final_hash
-
-
-async def compute_upload_file_hash(upload_file: UploadFile) -> tuple[str, int]:
-    """
-    计算上传文件的元数据(MD5哈希和大小)
-
-    分片读取文件内容,避免一次性加载到内存
-    读取完成后重置文件指针到开头,供后续写入使用
-
-    """
-
-    md5 = hashlib.md5()
-    size = 0
-    await upload_file.seek(0)
-    while True:
-        chunk = await upload_file.read(CHUNK_BUFFER_SIZE)
-        if not chunk:
-            break
-        md5.update(chunk)
-        size += len(chunk)
-    await upload_file.seek(0)
-    return md5.hexdigest(), size
 
 
 def check_user_quota(user: UserInDB, file_size: int) -> bool:

@@ -6,13 +6,13 @@ from typing import Annotated, Any
 from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
 from sqlmodel import select, and_, or_, col
 
-from background.celery_app import wait_for_result
 from background.experiment_background import trigger_experiment_extraction
-from background.file_background import check_oss_file
 from storage_backend.storage import (
     ensure_local_storage_dirs,
     prepare_local_storage_path,
-    prepare_oss_storage_path
+    prepare_oss_storage_path,
+    get_oss_upload_sts_token,
+    check_oss_file,
 )
 from api.file_api_business import (
     assert_file_owner,
@@ -290,7 +290,8 @@ async def upload_simple_file(
 
     pre_record = None
     final_path = None
-    oss_upload_path = None
+    oss_path = None
+    oss_sts_token = None
 
     try:
         # 只有全局配置允许local存储时，才创建本地存储目录
@@ -304,13 +305,14 @@ async def upload_simple_file(
         await validate_simple_upload(current_user, file, pre_record, storage_type)
 
         # 根据存储类型动态处理不同的存储逻辑
+        assert file.filename is not None # 已经在validate_simple_upload 里面校验了
+        assert pre_record.hash_md5 is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
             # 如果是本地存储，保存文件并更新最终文件记录
-            final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+            final_path = prepare_local_storage_path(file.filename)
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
             # 校验文件哈希和大小
-            assert pre_record.hash_md5 is not None
             _, act_size = await validate_hash_and_size(pre_record.hash_md5, pre_record.size, str(final_path), storage_type)
 
             # 更新预检记录的路径和大小(预检时已建立用户关联)
@@ -328,10 +330,9 @@ async def upload_simple_file(
 
         elif storage_type == "oss":
             # 如果是oss存储，向前端返回带oss_upload_path的URL，前端需要根据URL上传文件到oss
-            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录
-
-            # TODO: 实现预签名URL/STS授权，临时授予用户上传权限，返回的final_path应该是带权限的URL
-            oss_upload_path = prepare_oss_storage_path(file.filename) #type: ignore
+            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务(或通过oss回调进行通知)
+            oss_path = prepare_oss_storage_path(file.filename) # oss 存储路径(如)
+            oss_sts_token = await get_oss_upload_sts_token(file_path = oss_path)
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
@@ -342,10 +343,11 @@ async def upload_simple_file(
     if storage_type == "local":
         trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
 
-    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_upload_path（仅供返回前端）
-    if oss_upload_path:
+    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_path和oss_sts_token（仅供返回前端）
+    if oss_path and oss_sts_token:
         pre_record = FilePublic.model_validate(pre_record)
-        pre_record.oss_upload_path = oss_upload_path
+        pre_record.oss_path = oss_path
+        pre_record.oss_sts_token = oss_sts_token
 
     return pre_record # type: ignore
 
@@ -608,14 +610,16 @@ async def oss_upload_complete(file_id: int, async_session: AsyncSessionDep):
         if pre_record is None:
             raise FileNotFoundError(f"preflight_file_id={file_id} not found")
 
-        # celery任务鉴定bucket是否存在
-        res = check_oss_file.delay(filename=pre_record.filename, size=pre_record.size) # type:ignore
-        is_file_exist = await wait_for_result(res, poll_interval=0.1)
-        if not is_file_exist:
-            raise FileNotFoundError(f"oss_file={pre_record.filename} not found")
+        # 构建OSS文件路径
+        oss_path = prepare_oss_storage_path(pre_record.filename)
 
-        # TODO: 更新文件路径
-        pre_record.path = "此处为oss路径，后续替换为实际路径"
+        # celery任务鉴定oss文件是否存在
+        is_file_exist = await check_oss_file(oss_path, pre_record.size)
+        if not is_file_exist:
+            raise FileNotFoundError(f"file_id={file_id}, oss_file_name={pre_record.filename} not found")
+
+        # 更新文件路径
+        pre_record.path = oss_path
         await async_session.commit()
         await async_session.refresh(pre_record)
 

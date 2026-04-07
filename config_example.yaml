@@ -69,6 +69,10 @@ storage:
 oss:
   region_id: cn-shenzhen
   bucket_name: kawaru-storage
+  oss_upload_sts_token_expire_minutes: 15
+  oss_download_sts_token_expire_minutes: 60
+  oss_zip_storage_root: data/
+  oss_experiment_storage_root: experiments/
 
 admin_info:
   username: kawaru

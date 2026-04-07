@@ -1,21 +1,22 @@
-from datetime import timedelta
 import zipfile
+from datetime import timedelta
 from pathlib import Path
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from alibabacloud_oss_v2 import HeadObjectRequest
 
-
+from storage_backend.storage import create_local_experiment_directories, create_oss_experiment_directories
 from api.experiment_api_business import create_experiment_record, mark_experiment, delete_source_file_and_clear_path
-from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
+from api.experiment_api_helper import extract_and_validate_imzml_zip
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import safe_cleanup_preflight_record
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
+from constants.file_constants import (
+    PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS,
+)
+
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
-from storage_backend.oss_client import create_oss_client
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB
@@ -49,16 +50,22 @@ async def process_imzml_experiment_background(
             # 阶段1: 查询文件记录并创建实验记录
             # 查询源文件
             source_file = await get_file_record_by_id(source_file_id, async_session)
+            storage_type = source_file.storage_type
 
             # 创建实验记录
             experiment_record = await create_experiment_record(async_session, experiment_name, source_file_id)
+            assert experiment_record.id is not None
 
             #阶段2: 处理实验文件
             # 创建正式目录（helper 层）
-            experiment_dir = create_experiment_directories(experiment_record.id)#type:ignore
+            experiment_dir = None
+            if storage_type == 'local':
+                experiment_dir = create_local_experiment_directories(experiment_record.id)
+            elif storage_type == 'oss':
+                experiment_dir = create_oss_experiment_directories(experiment_record.id)
 
             # 解压和验证
-            final_imzml_path, final_ibd_path = extract_and_validate_imzml_zip(Path(source_file.path), experiment_dir)
+            final_imzml_path, final_ibd_path = extract_and_validate_imzml_zip(Path(source_file.path), experiment_dir) # type:ignore
 
             # 更新实验记录
             await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
@@ -178,43 +185,6 @@ async def cleanup_old_download_zips(
 
     logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
     return cleaned
-
-
-@celery_app.task()
-async def check_oss_file(filename: str, size: int) -> bool:
-    """检查OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
-    try:
-        # 创建OSS客户端
-        oss_client = create_oss_client()
-        if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
-
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
-
-        # 发送请求
-        req = HeadObjectRequest(bucket=bucket_name, key=filename) # type: ignore
-        meta = await oss_client.head_object(req)
-
-        # 检查文件是否存在
-        if meta.status_code != status.HTTP_200_OK:
-            return False
-
-        # 检查文件大小是否一致
-        actual_size = meta.content_length
-        if actual_size != size:
-            return False
-
-        # TODO:oss默认不包含sha256只包含md5信息，考虑验证计算方式？
-        # 检查md5
-
-        return True
-
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to check oss file: {e}")
-        return False
 
 
 @celery_app.task()

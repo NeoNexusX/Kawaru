@@ -9,6 +9,7 @@ from tools import utc_time,get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
+from models.auth import OssStsToken
 
 
 # 获取服务器状态模块的日志器
@@ -83,7 +84,8 @@ class FilePublic(FileBase):
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
-    oss_upload_path: str | None = Field(default=None, max_length=256, description="OSS上传路径(仅用于OSS存储类型)")
+    oss_sts_token: OssStsToken | None = Field(default=None)
+    oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
 
 
 class FileListResponse(SQLModel):

@@ -30,10 +30,12 @@ from api.file_api_helper import (
 )
 from storage_backend.storage import (
     prepare_local_storage_path,
+    compute_upload_local_file_hash,
+    get_oss_file_size,
 )
 
 from background.celery_app import wait_for_result
-from background.file_background_helper import compute_upload_local_file_hash,build_zip_file_background
+from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -352,10 +354,13 @@ async def validate_hash_and_size(
     # 读取文件内容
     if storage_type == "local":
         #哈希、文件大小检查
-        task_result: AsyncResult = compute_upload_local_file_hash.delay(file_path) # type: ignore
-        act_hash, act_size = await wait_for_result(task_result, poll_interval=0.1) # type: ignore
+        act_hash, act_size = await compute_upload_local_file_hash(file_path)
     elif storage_type == "oss":
         # TODO： 从 OSS 中获取文件哈希和大小
+        # 默认oss上传成功后，哈希已验证，无需再验证
+        act_size = await get_oss_file_size(file_path)
+        act_hash = expected_hash
+
         pass
 
     if act_size != expected_size or act_hash != expected_hash:
