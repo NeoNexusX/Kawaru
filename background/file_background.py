@@ -123,7 +123,7 @@ async def cleanup_stale_preflights_all_users(
         # 直接查询所有过期预检记录（path 为空且 uploaded_at < cutoff_time）
         # 通过 UserFileLink 关联获取用户
         records = (await session.exec(
-            select(FileInDB, UserFileLink.user_id)
+            select(FileInDB, UserInDB)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
