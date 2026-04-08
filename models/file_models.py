@@ -18,6 +18,7 @@ logger = get_logger("models.file_models")
 config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
+user_config = config.user
 
 
 class FileBase(SQLModel):
@@ -84,6 +85,7 @@ class FilePublic(FileBase):
     download_count: int
     last_downloaded_at: datetime
     oss_upload_path: str | None = Field(default=None, max_length=256, description="OSS上传路径(仅用于OSS存储类型)")
+    first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
 
 
 class FileListResponse(SQLModel):
@@ -100,6 +102,7 @@ class FileInDB(FileBase, table=True):
     is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
+    first_uploaded_by: str | None = Field(default=None, max_length=user_config.max_username_length, description="首次上传该文件的用户名")
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
     uploaded_at: datetime = Field(default_factory=utc_time, index=True)  # 上传时间

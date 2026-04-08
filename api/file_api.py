@@ -85,7 +85,7 @@ async def preflight_create_file(
     流程:
     1. 参数验证(存储类型、文件名、文件类型、用户配额检查)
     2. 重复文件检查(文件名、哈希)
-    3. 尝试复用已存在的相同哈希文件(秒传)
+    3. 尝试复用已存在的相同哈希md5文件(秒传)
     4. 如果无法复用,创建新的文件记录(预检状态)
 
     注意:
@@ -111,6 +111,7 @@ async def preflight_create_file(
         file_record = FileInDB(
             **file_data.model_dump(),
             path="",  # 预检时设置为空字符串,上传成功后再更新
+            first_uploaded_by=current_user.username,
         )
         async_session.add(file_record)
         await async_session.flush()  # 获取 file_id
@@ -364,8 +365,7 @@ async def list_user_files( #TODO: 这个接口后续可以增加查询筛选参�
     - 批量查询文件记录
 
     注意:
-    - 只返回用户拥有的文件(file_id 在 user.file_ids 中)
-    - 不包括预检记录(未完成上传的文件)
+    - 只返回用户拥有的文件,包括预检记录(未完成上传的文件)
     """
     # 1. 快速返回:用户没有任何文件
     assert current_user.id is not None
@@ -378,16 +378,10 @@ async def list_user_files( #TODO: 这个接口后续可以增加查询筛选参�
     statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
     all_results = (await session.exec(statement)).all()
 
-    # 3. 只保留真正上传的文件
-    filtered_results = []
-    for file_record in all_results:
-        if await valid_file_uploaded(session, file_record):
-            filtered_results.append(file_record)
+    logger.info(f"list user files user={current_user.id} count={len(all_results)}")
 
-    logger.info(f"list user files user={current_user.id} count={len(filtered_results)}")
-
-    return FileListResponse(total=len(filtered_results),
-                            files=list(filtered_results), # type: ignore
+    return FileListResponse(total=len(all_results),
+                            files=list(all_results), # type: ignore
                             user_id=current_user.id)
 
 
