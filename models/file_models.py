@@ -88,13 +88,6 @@ class FilePublic(FileBase):
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
 
 
-class FileListResponse(SQLModel):
-    """文件列表响应模型"""
-    total: int = Field(description="文件总数")
-    files: list[FilePublic] = Field(description="文件列表")
-    user_id: int = Field(description="用户ID")
-
-
 class FileInDB(FileBase, table=True):
     """数据库模型"""
 

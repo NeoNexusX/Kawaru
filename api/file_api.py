@@ -56,7 +56,6 @@ from models.file_models import (
     FileCreate,
     FileDownloadMeta,
     FileInDB,
-    FileListResponse,
     FilePublic,
     PartCreate,
     PartInDB,
@@ -351,38 +350,92 @@ async def upload_simple_file(
     return pre_record # type: ignore
 
 
-async def list_user_files( #TODO: 这个接口后续可以增加查询筛选参数（筛选个人id），可以参考另一个接口
-    current_user: Annotated[UserInDB, Depends(token_authen)], session: AsyncSessionDep
-) -> FileListResponse:
+async def list_user_files(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    session: AsyncSessionDep,
+    filters: FileFilter,
+    page: int ,
+    size: int
+) -> ListDataResponse:
     """
-    【文件列表查询接口】
+    【个人文件列表查询接口】
 
-    功能:查询当前用户的全部文件记录
-    返回:包含文件总数、文件列表和用户ID的JSON对象
+    功能:查询当前用户的文件记录，支持分页和过滤
+    返回:包含分页元数据和文件列表的JSON对象
 
     查询逻辑:
     - 从用户的 file_ids 列表中获取文件ID
-    - 批量查询文件记录
+    - 应用过滤器（文件名模糊匹配、实验类型等）
+    - 分页查询文件记录
 
     注意:
-    - 只返回用户拥有的文件,包括预检记录(未完成上传的文件)
+    - 只返回用户拥有的文件，包括预检记录
+    - 支持模糊查询文件名
     """
-    # 1. 快速返回:用户没有任何文件
-    assert current_user.id is not None
-    user_file_ids = await get_user_file_ids(session=session, user_id=current_user.id)
+    try:
+        # 1. 获取用户文件ID列表
+        assert current_user.id is not None
+        user_file_ids = await get_user_file_ids(session=session, user_id=current_user.id)
 
-    if not user_file_ids:
-        return FileListResponse(total=0,files=[],user_id=current_user.id)
+        if not user_file_ids:
+            pagination_meta = PaginationMeta(
+                current_page=page,
+                current_records=0,
+                total_pages=0,
+                total_records=0
+            )
+            return ListDataResponse(meta=pagination_meta, data=[])
 
-    # 2. 批量查询文件记录(使用 IN 查询,效率高)
-    statement = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
-    all_results = (await session.exec(statement)).all()
+        # 2. 构建查询语句
+        file_query = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
 
-    logger.info(f"list user files user={current_user.id} count={len(all_results)}")
+        # 3. 应用过滤器
+        file_query = file_query.filter(
+            and_(
+                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
+                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
+                FileInDB.organism == filters.organism if filters.organism else True,
+                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
+                FileInDB.condition == filters.condition if filters.condition else True,
+                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
+                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
+                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
+                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
+                FileInDB.solvent == filters.solvent if filters.solvent else True,
+            )
+        )
 
-    return FileListResponse(total=len(all_results),
-                            files=list(all_results), # type: ignore
-                            user_id=current_user.id)
+        # 4. 计算总数
+        total_records = await count_items(session, file_query, FileInDB)
+
+        # 5. 计算总页数
+        total_pages = (total_records + size - 1) // size
+
+        # 6. 分页查询
+        offset = (page - 1) * size
+        data = (await session.exec(file_query.offset(offset).limit(size))).all() or []
+
+        # 7. 分页元数据
+        pagination_meta = PaginationMeta(
+            current_page=page,
+            current_records=len(data),
+            total_pages=total_pages,
+            total_records=total_records
+        )
+
+        # 8. 构建响应
+        list_file_response = ListDataResponse(
+            meta=pagination_meta,
+            data=[FilePublic(**file.model_dump()) for file in data]
+        )
+
+        logger.info(f"list user files user={current_user.id} page={page} size={size} total={total_records}")
+
+        return list_file_response
+
+    except Exception as e:
+        logger.error(f"failed to list_user_files: {e}")
+        raise internal_server_error_exception from e
 
 
 async def delete_user_file(
@@ -625,7 +678,7 @@ async def oss_upload_complete(file_id: int, async_session: AsyncSessionDep):
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
-ListFilesDep = Annotated[FileListResponse, Depends(list_user_files)]
+ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]

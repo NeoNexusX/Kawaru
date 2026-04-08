@@ -28,7 +28,7 @@ async def upload_simple_file(file_record: SimpleUploadDep):
     return file_record
 
 
-@file_router.get("")#查询用户文件
+@file_router.post("/list_user_files", response_model=ListDataResponse)#查询用户文件
 async def list_user_files(files: ListFilesDep):
     """查询用户文件"""
     return files
