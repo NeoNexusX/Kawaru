@@ -864,7 +864,7 @@ async def validate_upload_request(
         return False
 
     # 2. 文件名和类型验证
-    if not validate_file_metadata(file_data.filename):
+    if not validate_file_metadata(file_data.filename, file_data.file_type):
         return False
 
     # 3. 实验类型验证(如果提供)

@@ -294,12 +294,15 @@ async def update_user(
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
 
-    # 验证邮箱验证码（update 接口 require）
-    if not (
-        "verify_code" in user_data
-        and user_data["verify_code"]
-        and TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window)):
-        raise user_verification_bad_exception
+    # 验证邮箱验证码（只有更新邮箱时需要）
+    if "email" in user_data and user_data["email"] is not None:
+        if not (
+            "verify_code" in user_data
+            and user_data["verify_code"]
+            and TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window)):
+            raise user_verification_bad_exception
+        # 移除验证码，不更新到数据库
+        user_data.pop("verify_code", None)
 
     # 校验其他字段
     user_data = await validate_update_user_data(user_data, user_past, async_session)

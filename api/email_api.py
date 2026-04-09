@@ -99,7 +99,7 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
     print(f"request_data: {request_data}")
 
     task_result = send_smtp_email_task.delay(request_data.model_dump()) # type: ignore
-    response = await wait_for_result(task_result, poll_interval=0.1, timeout=20)
+    response = await wait_for_result(task_result, poll_interval=0.1)
     if not response or not response.get("success"):
         raise email_send_exception
     return EmailConfirmResponseBase.model_validate(response["data"])

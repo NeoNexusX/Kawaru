@@ -281,21 +281,16 @@ def validate_filename(filename: str) -> bool:
     return True
 
 
-def validate_file_type(filename: str) -> bool:
+def validate_file_type(file_type: str) -> bool:
     """
     校验文件类型是否在允许列表中
 
-    通过文件扩展名判断,必须有扩展名且在 ALLOWED_FILE_TYPES 中
+    直接检查 file_type 是否在 ALLOWED_FILE_TYPES 中
     """
-    if not filename:
+    if not file_type:
         return False
 
-    file_ext = Path(filename).suffix.lstrip(".")
-
-    if not file_ext:
-        return False
-
-    if file_ext not in ALLOWED_FILE_TYPES:
+    if file_type not in ALLOWED_FILE_TYPES:
         return False
 
     return True
@@ -311,17 +306,18 @@ def validate_total_parts(total_parts: int) -> bool:
     return 0 < total_parts <= MAX_PARTS_PER_UPLOAD
 
 
-def validate_file_metadata(filename: str) -> bool:
+def validate_file_metadata(filename: str, file_type: str) -> bool:
     """
     验证文件元数据(文件名和类型)
 
     Args:
-        filename: 文件名
+        filename: 文件名（无后缀）
+        file_type: 文件类型
 
     Returns:
         True 表示验证通过,False 表示验证失败
     """
-    return validate_filename(filename) and validate_file_type(filename)
+    return validate_filename(filename) and validate_file_type(file_type)
 
 
 def validate_upload_params(
@@ -358,8 +354,8 @@ def validate_upload_params(
     if expected_filename and filename != expected_filename:
         return False
 
-    # 5. 文件名和类型验证
-    if not validate_file_metadata(filename):
+    # 5. 文件名验证（类型验证需要 file_type 参数，此处跳过）
+    if not validate_filename(filename):
         return False
 
     return True

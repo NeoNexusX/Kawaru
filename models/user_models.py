@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
-from sqlmodel import Field, SQLModel, Relationship,Column, String
+from sqlmodel import Field, SQLModel, Relationship,Column, String,BigInteger
 from tools.logger import get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
@@ -42,7 +42,7 @@ class UserInDB(UserBase, table=True):
     # 与 FileInDB 的多对多关系
     files: list["FileInDB"] = Relationship(back_populates="owners", link_model=UserFileLink) # 每次访问需考虑性能开销，按需访问
     file_count: int = Field(default=0, description="用户文件数量")
-    total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
+    total_file_size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0), description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
 
 
