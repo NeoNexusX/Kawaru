@@ -45,6 +45,7 @@ celery:
   worker_log_level: "INFO"
   worker_log_file: "kawaru_logs/celery.log"
   worker_disable_rate_limits: True
+  worker_pool: "prefork"
 
 storage:
   root: ../

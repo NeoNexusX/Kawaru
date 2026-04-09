@@ -28,12 +28,7 @@ class CeleryAsyncTask(CeleryTask): # pylint: disable=abstract-method
     def __call__(self, *args, **kwargs):
         result = self.run(*args, **kwargs)
         if asyncio.iscoroutine(result):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            return loop.run_until_complete(result)
+            return asyncio.run(result)
         return result
 
 
@@ -67,6 +62,7 @@ def celery_create(
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
         'imports': CELERY_MODULE_IMPORTS,
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
+        "worker_pool_restarts": False,
         'task_async_backend': 'asyncio',
         'timezone': 'UTC',
         'enable_utc': True,
@@ -99,12 +95,12 @@ def celery_create(
     return app
 
 
-# 如果子进程通过 env 指示需要在 import 时创建 celery app（用于 celery CLI 子进程）
-def init_celery_in_subprocess() -> Celery | None:
+def _init_celery_in_subprocess() -> Celery | None:
     """
     本函数用于在启动celery worker时，
     在celery worker子进程内初始化celery配置，创建celery_app
     """
+    global celery_app # pylint: disable=global-statement
     # pylint:disable = C0415
     from boot.bootstrap import init_config
     from boot.bootstrap import init_logging
@@ -129,12 +125,13 @@ def init_celery_in_subprocess() -> Celery | None:
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # 不要抛异常阻止 celery CLI 启动，记录日志即可
         _logger.error("Failed to auto-create celery app on import: %s", exc)
-
+        return None
+    celery_app = _celery_app
     return _celery_app
 
 
 if os.getenv("CREATE_CELERY_SUB"):
-    celery_app  = init_celery_in_subprocess()
+    celery_app  = _init_celery_in_subprocess()
 else:
     celery_app: "Celery | None" = None
 

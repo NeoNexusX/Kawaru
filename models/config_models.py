@@ -46,6 +46,7 @@ class CelerySettings(BaseModel):
     worker_log_level: str
     worker_log_file: str
     worker_disable_rate_limits: bool
+    worker_pool: str
 
 
 class EmailSettings(BaseModel):

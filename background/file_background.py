@@ -39,7 +39,7 @@ async def cleanup_stale_preflights_all_users(
     Returns:
         清理的记录数量
     """
-    async with AsyncSession(get_async_engine()) as session:
+    async with AsyncSession(get_async_engine(standalone=True)) as session:
         logger.info(f"starting cleanup stale preflights for all users with TTL {ttl_minutes} minutes...")
 
         # 代表 uploaded_at 超过 TTL 的时间点
@@ -89,7 +89,7 @@ async def cleanup_old_download_zips(
     cutoff_time = now - timedelta(days=retention_days)
     cleaned = 0
 
-    async with AsyncSession(get_async_engine()) as session:
+    async with AsyncSession(get_async_engine(standalone=True)) as session:
         records = (await session.exec(
             select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time).limit(batch_size))).all()
         for rec in records:
