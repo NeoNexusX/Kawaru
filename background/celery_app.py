@@ -18,6 +18,7 @@ CELERY_MODULE_IMPORTS = [
     "background.file_background",
     "background.api_background",
     "background.file_background_helper",
+    "background.experiment_background",
 ]
 
 
@@ -27,7 +28,12 @@ class CeleryAsyncTask(CeleryTask): # pylint: disable=abstract-method
     def __call__(self, *args, **kwargs):
         result = self.run(*args, **kwargs)
         if asyncio.iscoroutine(result):
-            return asyncio.run(result)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            return loop.run_until_complete(result)
         return result
 
 
@@ -61,13 +67,15 @@ def celery_create(
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
         'imports': CELERY_MODULE_IMPORTS,
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
+        'task_async_backend': 'asyncio',
         'timezone': 'UTC',
         'enable_utc': True,
         'worker_disable_rate_limits': cfg.celery.worker_disable_rate_limits,
         'beat_schedule': {
+            # tips: 任务时间间隔尽量错开，避免为彼此的整数倍，导致多个任务并发执行可能会诱发asyncio异步错误
             "heartbeat": {
                 "task": "background.file_background.heartbeat",
-                "schedule": 10.0,
+                "schedule": 67.0,
             },
             "cleanup_old_download_zips": {
                 "task": "background.file_background.cleanup_old_download_zips",
@@ -183,12 +191,12 @@ class TaskManager:
         return False
 
 
-async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 20): #TODO 压缩任务时间要求会长一点
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 20):
     """异步轮询等待 Celery 结果
 
     :param result: Celery AsyncResult 对象
     :param poll_interval: 轮询间隔（秒）
-    :param timeout: 最长等待时间（秒），为 None 时表示不限制
+    :param timeout: 最长等待时间（秒），为 None 时表示不限制，根据实际情况调整
     """
     async def _poll_until_ready():
         while not result.ready():
@@ -204,4 +212,5 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
     try:
         return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
     except asyncio.TimeoutError:
-        raise asyncio.TimeoutError("Celery task timeout") # pylint:disable = raise-missing-from
+        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}")
+        return None

@@ -14,6 +14,8 @@ from fastapi import UploadFile
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, exists, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+from storage_backend.storage import LocalStorage, OssStorage
 from models.file_models import FileInDB, UserFileLink
 from models.user_models import UserInDB
 from exceptions import file_not_found_exception
@@ -70,45 +72,6 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
 ########
 # file 删
 ########
-#TODO:替换为 delete_file_by_storage,支持分布式存储删除
-def delete_local_file(path: str | Path) -> None:
-    """
-    删除本地文件
-
-    同步操作,因为文件删除只是删除元数据
-    使用 missing_ok=True,文件不存在时不会抛出异常
-
-    异常处理：不捕获,让异常传播到调用方
-
-    Args:
-        path: 文件路径(字符串或 Path 对象)
-    """
-    # 验证路径不为空
-    if not path:
-        logger.warning("empty path for deletion, skipping")
-        return
-
-
-    # 转换为字符串进行验证
-    path_str = str(path).strip()
-
-    # 验证路径不是特殊值
-    if not path_str or any(x in path_str for x in ('..', '\\')):
-        logger.warning("invalid path for deletion: %r, skipping", path_str)
-        return
-
-    # 转换为 Path 对象
-    path_obj = Path(path_str)
-
-    # 验证路径不是目录
-    if path_obj.exists() and path_obj.is_dir():
-        logger.warning("cannot delete directory: %s, skipping", path_str)
-        return
-
-    # 删除文件
-    path_obj.unlink(missing_ok=True)
-
-
 async def delete_files_async(file_paths: list[str | Path]) -> int:
     """
     异步删除多个文件
@@ -122,16 +85,16 @@ async def delete_files_async(file_paths: list[str | Path]) -> int:
 
     deleted_count = 0
     for file_path in file_paths:
-        await asyncio.to_thread(lambda p=file_path: delete_local_file(p))
+        await asyncio.to_thread(lambda p=file_path: LocalStorage.delete_file(p))
         deleted_count += 1
     return deleted_count
 
 
-def delete_file_by_storage(path,storage_type) -> None:
+async def delete_file_by_storage(path: str | Path, storage_type: str) -> None:
     """
     根据存储类型删除文件
 
-    目前仅支持 local 存储类型,分布式存储待实现
+    目前仅支持 local 和 oss 存储类型
 
     异常处理：不捕获,让异常传播到调用方
 
@@ -143,13 +106,15 @@ def delete_file_by_storage(path,storage_type) -> None:
         OSError: 文件删除失败时
     """
     if storage_type == "local":
-        delete_local_file(path)
+        LocalStorage.delete_file(path)
 
     elif storage_type == "oss":
-        raise NotImplementedError("Distributed storage delete not implemented")
+        res = await OssStorage.delete_file(str(path))
+        if not res:
+            raise OSError(f"Failed to delete oss file: {path}")
 
     else:
-        raise NotImplementedError(f"Unsupported storage type: {storage_type.storage_type}")
+        raise NotImplementedError(f"Unsupported storage type: {storage_type}")
 
 
 ########

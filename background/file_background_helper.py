@@ -18,7 +18,7 @@ from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_oss_v2 import HeadObjectRequest
+from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest
 
 from background.celery_app import celery_app
 assert celery_app is not None, "celery_app is None"
@@ -88,8 +88,8 @@ async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]
 
 
 @celery_app.task()
-async def check_oss_file_task(file_path: str, size: int) -> bool:
-    """检查OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+async def validate_oss_file_task(file_path: str, size: int) -> bool:
+    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
     try:
         # 创建OSS客户端
         oss_client = create_oss_client()
@@ -107,7 +107,7 @@ async def check_oss_file_task(file_path: str, size: int) -> bool:
 
         # 检查文件是否存在
         if meta.status_code != status.HTTP_200_OK:
-            logger.warning(f"oss file {file_path} not found")
+            logger.warning(f"oss file {file_path} not exist")
             return False
 
         # 检查文件大小是否一致
@@ -117,6 +117,35 @@ async def check_oss_file_task(file_path: str, size: int) -> bool:
             return False
 
         # TODO:oss简单上传下md5和etag一致，但是分片上传则不一致，考虑验证计算方式？
+
+        return True
+
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to validate oss file: {e}")
+        return False
+
+@celery_app.task()
+async def check_oss_file_exist_task(file_path: str) -> bool:
+    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        meta = await oss_client.head_object(req)
+
+        # 检查文件是否存在
+        if meta.status_code != status.HTTP_200_OK:
+            logger.warning(f"oss file {file_path} not exist")
+            return False
 
         return True
 
@@ -221,3 +250,38 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     result = response.body.credentials.to_map()
 
     return result
+
+
+@celery_app.task()
+async def delete_oss_file_task(file_path: str) -> bool | None:
+    """
+    删除OSS文件
+
+    :param file_path: OSS文件路径（如"folder/file.zip")
+
+    :return: bool 是否删除成功
+    """
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        res = await oss_client.delete_object(req)
+
+        if res.status_code != status.HTTP_200_OK:
+            logger.error(f"oss file {file_path} deleted failed")
+            return False
+
+        logger.info(f"oss file {file_path} deleted")
+        return True
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to delete oss file: {e}")
+        return False

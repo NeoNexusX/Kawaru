@@ -48,6 +48,11 @@ user_homepage_invalid_exception = HTTPException(
     detail=format_exception_detail("User homepage is invalid")
 )
 
+user_not_found_exception = HTTPException(
+    status_code=status.HTTP_404_NOT_FOUND,#用户不存在
+    detail=format_exception_detail("User not found")
+)
+
 identity_not_allowed_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,#identity必须为空，不允许传入
     detail=format_exception_detail("Identity field must be None, it will be set by the API endpoint")
@@ -65,4 +70,5 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "user_orcid_not_exist_exception",
     "user_homepage_invalid_exception",
     "identity_not_allowed_exception",
+    "user_not_found_exception",
 ]

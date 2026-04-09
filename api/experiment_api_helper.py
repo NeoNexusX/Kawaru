@@ -15,7 +15,6 @@ from tools.logger import get_logger
 logger = get_logger("api.experiment_api_helper")
 
 
-# operation part
 def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
