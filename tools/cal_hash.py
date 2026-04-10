@@ -57,12 +57,12 @@ async def main():
     """使用示例"""
     try:
         # 计算文件哈希值
-        hash_value, file_size = await compute_file_md5("1.zip")
+        hash_value, file_size = await compute_file_md5("2.zip")
         print(f"文件大小: {file_size} bytes")
         print(f"MD5值: {hash_value}")
 
         # 检查文件是否存在
-        exists = await file_exists("1.zip")
+        exists = await file_exists("2.zip")
         print(f"文件存在: {exists}")
 
     except FileNotFoundError as e:

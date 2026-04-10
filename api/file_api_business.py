@@ -271,7 +271,7 @@ async def prepare_download_file(
             raise file_content_missing_exception
 
         # 创建 ZIP 包(存放在本地存储根目录下)
-        zip_filename = file_record.filename
+        zip_filename = f"{file_record.filename}.{file_record.file_type }"
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
@@ -530,6 +530,9 @@ async def rollback_simple_upload(
         2026.3.3 Neo checked
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
+    if pre_record is None:
+        return
+
     assert pre_record is not None
     _record_id = pre_record.file_id
     _user_id = current_user.id
