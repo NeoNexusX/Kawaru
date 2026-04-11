@@ -9,6 +9,7 @@ from tools import utc_time,get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
+from models.auth import OssStsToken
 
 
 # 获取服务器状态模块的日志器
@@ -84,8 +85,16 @@ class FilePublic(FileBase):
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
-    oss_upload_path: str | None = Field(default=None, max_length=256, description="OSS上传路径(仅用于OSS存储类型)")
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
+    oss_sts_token: OssStsToken | None = Field(default=None)
+    oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
+
+
+class FileListResponse(SQLModel):
+    """文件列表响应模型"""
+    total: int = Field(description="文件总数")
+    files: list[FilePublic] = Field(description="文件列表")
+    user_id: int = Field(description="用户ID")
 
 
 class FileInDB(FileBase, table=True):

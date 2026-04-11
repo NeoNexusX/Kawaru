@@ -18,6 +18,7 @@ CELERY_MODULE_IMPORTS = [
     "background.file_background",
     "background.api_background",
     "background.file_background_helper",
+    "background.experiment_background",
 ]
 
 
@@ -61,13 +62,16 @@ def celery_create(
         'redbeat_redis_url': f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_redbeat_db_index}",
         'imports': CELERY_MODULE_IMPORTS,
         'beat_scheduler': "redbeat.schedulers.RedBeatScheduler",
+        "worker_pool_restarts": False,
+        'task_async_backend': 'asyncio',
         'timezone': 'UTC',
         'enable_utc': True,
         'worker_disable_rate_limits': cfg.celery.worker_disable_rate_limits,
         'beat_schedule': {
+            # tips: 任务时间间隔尽量错开，避免为彼此的整数倍，导致多个任务并发执行可能会诱发asyncio异步错误
             "heartbeat": {
                 "task": "background.file_background.heartbeat",
-                "schedule": 10.0,
+                "schedule": 67.0,
             },
             "cleanup_old_download_zips": {
                 "task": "background.file_background.cleanup_old_download_zips",
@@ -91,12 +95,12 @@ def celery_create(
     return app
 
 
-# 如果子进程通过 env 指示需要在 import 时创建 celery app（用于 celery CLI 子进程）
-def init_celery_in_subprocess() -> Celery | None:
+def _init_celery_in_subprocess() -> Celery | None:
     """
     本函数用于在启动celery worker时，
     在celery worker子进程内初始化celery配置，创建celery_app
     """
+    global celery_app # pylint: disable=global-statement
     # pylint:disable = C0415
     from boot.bootstrap import init_config
     from boot.bootstrap import init_logging
@@ -121,12 +125,13 @@ def init_celery_in_subprocess() -> Celery | None:
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # 不要抛异常阻止 celery CLI 启动，记录日志即可
         _logger.error("Failed to auto-create celery app on import: %s", exc)
-
+        return None
+    celery_app = _celery_app
     return _celery_app
 
 
 if os.getenv("CREATE_CELERY_SUB"):
-    celery_app  = init_celery_in_subprocess()
+    celery_app  = _init_celery_in_subprocess()
 else:
     celery_app: "Celery | None" = None
 
@@ -188,11 +193,15 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
 
     :param result: Celery AsyncResult 对象
     :param poll_interval: 轮询间隔（秒）
-    :param timeout: 最长等待时间（秒），为 None 时表示不限制
+    :param timeout: 最长等待时间（秒），为 None 时表示不限制，根据实际情况调整
     """
     async def _poll_until_ready():
         while not result.ready():
             await asyncio.sleep(poll_interval)
+
+        if result.failed():
+            raise result.result
+
         return result.result
 
     if timeout is None:
@@ -200,4 +209,5 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
     try:
         return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
     except asyncio.TimeoutError:
-        raise asyncio.TimeoutError("Celery task timeout") # pylint:disable = raise-missing-from
+        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}")
+        return None

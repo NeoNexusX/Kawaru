@@ -18,6 +18,7 @@ storage_config = config.storage
 STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
+OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
@@ -54,6 +55,7 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS = int(getattr(storage_config, "cleanup_dow
 
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
+OSS_REGION_ID = config.oss.region_id
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
@@ -77,4 +79,5 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "CLEANUP_PREFLIGHTS_INTERVAL_SECONDS",
     "DOWNLOAD_ZIP_RETENTION_DAYS",
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS",
+    "OSS_ZIP_STORAGE_ROOT",
 ]

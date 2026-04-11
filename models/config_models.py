@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ServerSettings(BaseModel):
@@ -46,6 +46,7 @@ class CelerySettings(BaseModel):
     worker_log_level: str
     worker_log_file: str
     worker_disable_rate_limits: bool
+    worker_pool: str
 
 
 class EmailSettings(BaseModel):
@@ -86,6 +87,10 @@ class OSSSettings(BaseModel):
     """OSS配置模型"""
     region_id: str | None  = None
     bucket_name: str | None = None
+    oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
+    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
+    oss_zip_storage_root: str | None = None
+    oss_experiment_storage_root: str | None = None
 
 
 class UserSettings(BaseModel):

@@ -3,17 +3,11 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi import Depends, File, Form, UploadFile
 from sqlmodel import select, and_, or_, col
 
-from background.celery_app import wait_for_result
 from background.experiment_background import trigger_experiment_extraction
-from background.file_background import check_oss_file
-from storage_backend.storage import (
-    ensure_local_storage_dirs,
-    prepare_local_storage_path,
-    prepare_oss_storage_path
-)
+from storage_backend.storage import LocalStorage, OssStorage
 from api.file_api_business import (
     assert_file_owner,
     delete_file_and_parts,
@@ -40,7 +34,7 @@ from api.file_api_helper import (
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
-from api.user_api_helper import count_items
+from api.user_api_helper import count_items, get_user_by_id
 from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
@@ -51,6 +45,7 @@ from exceptions.file_exceptions import (
     user_download_limit_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
+from exceptions.user_exceptions import user_not_found_exception
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -93,7 +88,7 @@ async def preflight_create_file(
     """
     # 只有全局配置允许local存储时，才创建本地存储目录
     if "local" in ALLOWED_STORAGE_TYPES:
-        ensure_local_storage_dirs()
+        LocalStorage.ensure_storage_dirs()
 
     # 参数验证
     if not await validate_upload_request(async_session, current_user, file_data):
@@ -133,7 +128,6 @@ async def upload_file_part(
     part: Annotated[UploadFile, File()],
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    background_tasks: BackgroundTasks,
 ) -> PartPublic:
     """
     【分片上传接口】
@@ -159,7 +153,7 @@ async def upload_file_part(
     try:
         # 只有全局配置允许local存储时，才创建本地存储目录
         if "local" in ALLOWED_STORAGE_TYPES:
-            ensure_local_storage_dirs()
+            LocalStorage.ensure_storage_dirs()
 
         part_data = PartCreate(**json.loads(part_data_json))
         logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
@@ -186,7 +180,7 @@ async def upload_file_part(
         # 5. 尝试合并
         is_merged = await validate_and_merge_parts(async_session, file_record, current_user)
         if is_merged:
-            trigger_experiment_extraction(background_tasks, file_record, current_user, file_record.experiment_type)
+            await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
 
         await async_session.commit()
         await async_session.refresh(current_user)
@@ -260,7 +254,6 @@ async def get_part_upload_status(
 async def upload_simple_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    background_tasks: BackgroundTasks,
     storage_type: str = Form("local"),
     pre_file_id: int = Form(...),
     file: UploadFile = File(...),
@@ -290,12 +283,13 @@ async def upload_simple_file(
 
     pre_record = None
     final_path = None
-    oss_upload_path = None
+    oss_path = None
+    oss_sts_token = None
 
     try:
         # 只有全局配置允许local存储时，才创建本地存储目录
         if "local" in ALLOWED_STORAGE_TYPES:
-            ensure_local_storage_dirs()
+            LocalStorage.ensure_storage_dirs()
 
         # 查询预检记录
         pre_record = await get_file_record_by_id(pre_file_id, async_session)
@@ -304,9 +298,11 @@ async def upload_simple_file(
         await validate_simple_upload(current_user, file, pre_record, storage_type)
 
         # 根据存储类型动态处理不同的存储逻辑
+        assert file.filename is not None # 已经在validate_simple_upload 里面校验了
+        assert pre_record.hash_md5 is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
             # 如果是本地存储，保存文件并更新最终文件记录
-            final_path = prepare_local_storage_path(file.filename) #type: ignore 已经在validate_simple_upload 里面校验了
+            final_path = LocalStorage.prepare_storage_path(file.filename)
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
             # 校验文件哈希和大小
@@ -328,10 +324,11 @@ async def upload_simple_file(
 
         elif storage_type == "oss":
             # 如果是oss存储，向前端返回带oss_upload_path的URL，前端需要根据URL上传文件到oss
-            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录
-
-            # TODO: 实现预签名URL/STS授权，临时授予用户上传权限，返回的final_path应该是带权限的URL
-            oss_upload_path = prepare_oss_storage_path(file.filename) #type: ignore
+            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务(或通过oss回调进行通知)
+            oss_path = OssStorage.prepare_storage_path(file.filename) # oss 存储路径(如)
+            oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
+            if not oss_sts_token or not oss_path:
+                raise internal_server_error_exception
 
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
@@ -340,12 +337,13 @@ async def upload_simple_file(
 
     # 如果是本地存储，在此处触发实验文件提取任务
     if storage_type == "local":
-        trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+        await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
 
-    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_upload_path（仅供返回前端）
-    if oss_upload_path:
+    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_path和oss_sts_token（仅供返回前端）
+    if oss_path and oss_sts_token:
         pre_record = FilePublic.model_validate(pre_record)
-        pre_record.oss_upload_path = oss_upload_path
+        pre_record.oss_path = oss_path
+        pre_record.oss_sts_token = oss_sts_token
 
     return pre_record # type: ignore
 
@@ -647,27 +645,40 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
-async def oss_upload_complete(file_id: int, async_session: AsyncSessionDep):
+async def oss_upload_complete(file_id: int, current_user_id: int, async_session: AsyncSessionDep):
     """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
+    # TODO: 需确认是通过前端调用还是oss上传完成的callback调用？
+    # 如为前端调用，应有token依赖注入验证用户身份；如由callback调用，则直接传user_id即可），但需要限制该接口只能由aliyun oss调用
+    pre_record = None
+    current_user = None
+    oss_path = None
     try:
         # 查询预检记录
         pre_record = await get_file_record_by_id(file_id, async_session)
+        current_user = await get_user_by_id(current_user_id, async_session)
         if pre_record is None:
             raise FileNotFoundError(f"preflight_file_id={file_id} not found")
+        if current_user is None:
+            raise user_not_found_exception
 
-        # celery任务鉴定bucket是否存在
-        res = check_oss_file.delay(filename=pre_record.filename, size=pre_record.size) # type:ignore
-        is_file_exist = await wait_for_result(res, poll_interval=0.1)
+        # 构建OSS文件路径
+        oss_path = OssStorage.prepare_storage_path(pre_record.filename)
+
+        # celery任务验证oss文件是否存在
+        is_file_exist = await OssStorage.validate_file(oss_path, pre_record.size)
         if not is_file_exist:
-            raise FileNotFoundError(f"oss_file={pre_record.filename} not found")
+            oss_path = None
+            raise FileNotFoundError(f"file_id={file_id}, oss_file_name={pre_record.filename} not found")
 
-        # TODO: 更新文件路径
-        pre_record.path = "此处为oss路径，后续替换为实际路径"
+        # 更新文件路径
+        pre_record.path = oss_path
         await async_session.commit()
         await async_session.refresh(pre_record)
 
     except Exception as e:
         logger.error(f"oss_upload_complete failed: {e}")
+        if current_user is not None:
+            await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
         raise internal_server_error_exception from e
 
     # TODO: 触发实验文件提取任务的oss版本
