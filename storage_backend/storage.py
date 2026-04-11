@@ -130,7 +130,7 @@ class OssStorage:
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.lstrip('/')}/exp_{experiment_id}"
+        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}"
 
         return processed_dir
 

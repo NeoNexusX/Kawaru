@@ -1,23 +1,16 @@
 from datetime import timedelta
 
-from fastapi import HTTPException, status
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-
-from api.experiment_api_business import (
-    create_experiment_record,
-    mark_experiment,
-    delete_source_file_and_clear_path,
-    delete_experiment_files,
-)
-from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
+from api.experiment_api_business import delete_experiment_files
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import (
     safe_cleanup_preflight_record,
     delete_file_and_parts,
 )
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
+
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from models.file_models import FileInDB
@@ -69,10 +62,9 @@ async def cleanup_stale_preflights_all_users(
         if not records:
             return 0
 
-        for file_record, user_id in records:
+        for file_record, user in records:
             # 清理预检记录
-            assert user_id is not None
-            user = await get_user_by_id(user_id, session)
+            assert user is not None
             await safe_cleanup_preflight_record(session, user, file_record) # type: ignore[arg-type]
             total_cleaned += 1
 

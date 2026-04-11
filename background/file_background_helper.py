@@ -124,7 +124,7 @@ async def validate_oss_file_task(file_path: str, size: int) -> bool:
 
 @celery_app.task()
 async def check_oss_file_exist_task(file_path: str) -> bool:
-    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+    """验证OSS文件，存在返回True，不存在则返回False"""
     try:
         # 创建OSS客户端
         oss_client = create_oss_client()

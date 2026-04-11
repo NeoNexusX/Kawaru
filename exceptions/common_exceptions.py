@@ -9,7 +9,7 @@ non_admin_operation_not_allowed_exception = HTTPException(
 )
 
 
-# 内部服务器错误异常 # TODO:可考虑所有其他的 exception 统一抛出该异常
+# 内部服务器错误异常，所有其他的 exception 可统一抛出该异常
 internal_server_error_exception = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     detail=format_exception_detail("Internal server error")

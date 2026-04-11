@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fastapi import HTTPException
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from celery.result import AsyncResult
@@ -328,9 +329,12 @@ async def prepare_download_file(
             elif storage_type == "oss":
                 # TODO: 实现 OSS 下载逻辑
                 pass
-              
+
         raise file_content_missing_exception
 
+    except HTTPException as e:
+        logger.error(f"prepare_download_file failed: {e}")
+        raise e
     except Exception as e:
         logger.error(f"prepare_download_file failed: {e}")
         raise internal_server_error_exception from e

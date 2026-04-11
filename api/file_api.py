@@ -299,7 +299,7 @@ async def upload_simple_file(
 
         # 根据存储类型动态处理不同的存储逻辑
         assert file.filename is not None # 已经在validate_simple_upload 里面校验了
-        assert pre_record.hash_md5 is not None # 已经在validate_simple_upload 里面校验了
+        assert pre_record.file_verify_code is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
             # 如果是本地存储，保存文件并更新最终文件记录
             final_path = LocalStorage.prepare_storage_path(file.filename)

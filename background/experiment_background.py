@@ -47,7 +47,23 @@ async def process_imzml_experiment_background(
     user_id: int,
     source_file_id: int,
     experiment_name: str
-):
+) -> None:
+    """
+    后台处理 ImzML 实验的任务
+
+    存储路径：
+    - 临时目录:experiments/temp/exp_{id}/
+    - 正式目录:experiments/processed/exp_{id}/
+    """
+    process_imzml_experiment_background_task.delay(user_id, source_file_id, experiment_name) # type: ignore
+
+
+@celery_app.task()
+async def process_imzml_experiment_background_task(
+    user_id: int,
+    source_file_id: int,
+    experiment_name: str
+) -> None:
     """
     后台处理 ImzML 实验的任务
 
@@ -119,40 +135,7 @@ async def process_imzml_experiment_background(
             raise
 
 
-async def extract_and_validate_local_imzml_zip(
-    zip_file_path: Path,
-    target_dir: Path,
-) -> tuple[Path, Path]:
-    """
-    解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
-
-    Args:
-        zip_file_path: ZIP 文件路径
-        target_dir: 解压目标目录
-
-    Returns:
-        成功时返回 (imzml_path, ibd_path) 元组
-
-    Raise:
-        - zipfile.BadZipFile: ZIP 文件无效
-        - FileNotFoundError: 缺少 .imzML 或 .ibd 文件
-        - ValueError: ZIP 文件包含不安全的路径
-    """
-    try:
-        res = extract_and_validate_local_imzml_zip_task.delay(str(zip_file_path), str(target_dir)) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=30) # type: ignore # 针对大文件此处timeout需要调大
-        if result is None:
-            logger.error(f"failed to extract and validate imzml zip due to server timeout: {zip_file_path}")
-            raise TimeoutError("extract and validate imzml zip timeout")
-    except Exception as e:
-        logger.error(f"extract and validate imzml zip failed error={e}")
-        raise e
-    imzml_path_str, ibd_path_str = result
-    return Path(imzml_path_str), Path(ibd_path_str)
-
-
-@celery_app.task()
-def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
+def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 
@@ -169,8 +152,6 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         - ValueError: ZIP 文件包含不安全的路径
     """
     # 任务队列传过来是str，这里转换回来方便操作
-    target_dir = Path(target_dir_str)
-    zip_file_path = Path(zip_file_path_str)
 
     try:
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
@@ -210,4 +191,4 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
 
-    return str(imzml_path), str(ibd_path)
+    return imzml_path, ibd_path
