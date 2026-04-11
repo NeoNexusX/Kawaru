@@ -19,6 +19,7 @@ from api.auth_api import (
     token_invalid_exception,
     token_expired_exception,
 )
+from api.file_api_business import get_user_file_ids
 from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
 from api.user_api_helper import (
     validate_url,
@@ -32,7 +33,8 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from background.celery_app import TaskManager
+from background.celery_app import TaskManager, wait_for_result
+from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
@@ -319,6 +321,13 @@ async def del_user(
     user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
 ):
     """删除当前登录用户"""
+    file_ids = []
+    file_ids = await get_user_file_ids(async_session, user.id) # type: ignore
+
+    if file_ids:
+        task = clean_user_all_task.delay(file_ids, user.id)  # type: ignore
+        await wait_for_result(task, poll_interval=1.0)
+
     await async_session.delete(user)
     await async_session.commit()
     return user

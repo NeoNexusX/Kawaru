@@ -3,15 +3,23 @@ import zipfile
 from pathlib import Path
 
 from fastapi import HTTPException, status
-from sqlmodel import select
+from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from alibabacloud_oss_v2 import HeadObjectRequest
 
 
-from api.experiment_api_business import create_experiment_record, mark_experiment, delete_source_file_and_clear_path
+from api.experiment_api_business import (
+    create_experiment_record,
+    mark_experiment,
+    delete_source_file_and_clear_path,
+    delete_experiment_files,
+)
 from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
-from api.file_api_business import safe_cleanup_preflight_record
+from api.file_api_business import (
+    safe_cleanup_preflight_record,
+    delete_file_and_parts,
+)
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
@@ -178,6 +186,79 @@ async def cleanup_old_download_zips(
 
     logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
     return cleaned
+
+
+@celery_app.task()  # type: ignore
+async def clean_user_all_task(
+    file_ids: list[int],
+    deleted_user_id: int | None = None,
+    batch_size: int = 100,
+) -> dict:
+    """
+    清理指定用户删除后保留的文件数据。
+
+    传入 file_ids 后，按 delete_user_file 的逻辑处理每个 file_id:
+    - 先解除已删除用户与文件的关联（如果存在）
+    - 如果文件被多个用户共享，仅解除关联
+    - 如果文件仅属于该用户时，完全删除文件和分片
+    """
+    async with AsyncSession(get_async_engine()) as session:
+        logger.info(
+            "starting clean_user_all_task for deleted_user_id=%s file_count=%s",
+            deleted_user_id,len(file_ids),)
+
+        total_unlinked = 0
+        total_deleted = 0
+        total_errors = 0
+
+        for file_id in file_ids[:batch_size]:
+            try:
+                # 先删除已删除用户的链接（如果存在） # TODO 这里可以考虑复用 remove_file_link
+                links = (await session.exec(
+                    select(UserFileLink).where(
+                        UserFileLink.user_id == deleted_user_id,
+                        UserFileLink.file_id == file_id,))).all()
+                for link in links:
+                    await session.delete(link)
+
+                # 检查剩余所有者数量
+                owner_count = (await session.exec(
+                    select(func.count()).where(UserFileLink.file_id == file_id))).one()
+
+                if owner_count > 0:
+                    # 还有其他用户持有，只解除关联
+                    total_unlinked += 1
+                else:
+                    # 没有其他用户持有，执行完全删除
+                    file_record = await get_file_record_by_id(file_id, session)
+                    if file_record.experiment_type == "imzML":
+                        await delete_experiment_files(session, file_id)
+
+                    # 创建一个临时的 user 对象用于删除
+                    user_obj = UserInDB( # type: ignore
+                        id=deleted_user_id,
+                        username="deleted_user",
+                        email="",
+                        hashed_password="",
+                    )
+                    await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
+                                                                            # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
+                    total_deleted += 1
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                total_errors += 1
+                logger.error(
+                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",
+                    deleted_user_id,file_id,exc,
+                )
+
+            await session.commit()
+
+        result = {
+            "deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
+            "files_deleted": total_deleted,"errors": total_errors,
+        }
+        logger.info("clean_user_all_task completed %s", result)
+        return result
 
 
 @celery_app.task()
