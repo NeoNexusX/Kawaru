@@ -41,8 +41,8 @@ class EmailSMTPRequest(EmailConfirmResponseBase):
     smtp_server: str
 
 
-class MailgunEmailPayload(BaseModel):
-    """Mailgun邮件发送负载模型，包含Mailgun API相关字段和邮件内容"""
+class MailgunEmailPayload(EmailConfirmResponseBase):
+    """Mailgun邮件发送负载模型，包含基础邮件确认字段和 Mailgun API 相关字段"""
     from_: str
     to: str
     subject: str

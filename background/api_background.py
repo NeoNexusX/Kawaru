@@ -100,14 +100,21 @@ async def send_mailgun_message_task(email_payload: dict) -> dict:
                 mailgun_api_url, # type: ignore
                 auth=("api", mailgun_api_key), # type: ignore
                 data={
-                    "from": email_payload.get("from"),
+                    "from": email_payload.get("from_"),
                     "to": email_payload.get("to"),
                     "subject": email_payload.get("subject"),
                     "text": email_payload.get("text"),
                 },
             )
             response.raise_for_status()
-            return {"success": True, "data": email_payload}
+            return {
+                "success": True,
+                "data": {
+                    "email": email_payload.get("email") or email_payload.get("to"),
+                    "send_time": email_payload.get("send_time"),
+                    "purpose": email_payload.get("purpose"),
+                },
+            }
     except httpx.HTTPStatusError as exc:
         logger.error("Mailgun HTTP error: %s", exc)
         return {"success": False, "error": f"HTTP {exc.response.status_code}: {exc.response.text}"}

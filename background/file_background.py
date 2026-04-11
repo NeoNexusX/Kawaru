@@ -135,6 +135,7 @@ async def cleanup_stale_preflights_all_users(
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
+            .distinct()
             .limit(batch_size)
         )).all()
 
@@ -223,7 +224,7 @@ async def clean_user_all_task(
 
                 # 检查剩余所有者数量
                 owner_count = (await session.exec(
-                    select(func.count()).where(UserFileLink.file_id == file_id))).one()
+                    select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
 
                 if owner_count > 0:
                     # 还有其他用户持有，只解除关联

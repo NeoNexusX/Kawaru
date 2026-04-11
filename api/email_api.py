@@ -58,12 +58,13 @@ async def send_mailgun_message(email_info: EmailConfirmResponseBase, db: AsyncSe
 
     mailgun_payload = MailgunEmailPayload.model_validate(
         {
-        "from_": f"Mailgun Sandbox <postmaster@{email_config.mailgun_domain}>",
-        "to": request_data.email,
-        "subject": request_data.subject,
-        "text": request_data.text_content,
-        "mailgun_api_key": mailgun_api_key,
-        "mailgun_api_url": f"https://api.mailgun.net/v3/{email_config.mailgun_domain}/messages"
+            **email_info.model_dump(),
+            "from_": f"Mailgun Sandbox <postmaster@{email_config.mailgun_domain}>",
+            "to": request_data.email,
+            "subject": request_data.subject,
+            "text": request_data.text_content,
+            "mailgun_api_key": mailgun_api_key,
+            "mailgun_api_url": f"https://api.mailgun.net/v3/{email_config.mailgun_domain}/messages"
         }
     )
 
