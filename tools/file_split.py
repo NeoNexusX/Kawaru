@@ -10,7 +10,7 @@ def calculate_md5(data):
     return md5_hash.hexdigest()
 
 def split_file(file_path, num_chunks):
-    """"将文件分割成指定数量的分片，并计算每个分片的 MD5 哈希值。"""
+    """将文件分割成指定数量的分片，并计算每个分片的 MD5 哈希值。"""
     if not os.path.exists(file_path):
         print(f"错误: 文件 '{file_path}' 不存在。")
         return

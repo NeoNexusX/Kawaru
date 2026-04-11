@@ -39,7 +39,6 @@ class EmailSMTPRequest(EmailConfirmResponseBase):
     smtp_passwd: str
     smtp_from_email: str
     smtp_server: str
-    email: str
 
 
 class MailgunEmailPayload(BaseModel):
