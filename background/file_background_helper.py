@@ -4,14 +4,28 @@
 #########################
 from __future__ import annotations
 
+import os
+import json
 import asyncio
 import zipfile
 import hashlib
 from pathlib import Path
+from fastapi import HTTPException, status
 import aiofiles
-from constants.file_constants import CHUNK_BUFFER_SIZE
+
+from alibabacloud_credentials.client import Client as CredentialClient
+from alibabacloud_credentials.models import Config as CredentialConfig
+from alibabacloud_sts20150401.client import Client as StsClient
+from alibabacloud_sts20150401.models import AssumeRoleRequest
+from alibabacloud_tea_openapi import models as open_api_models
+from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest
+
 from background.celery_app import celery_app
 assert celery_app is not None, "celery_app is None"
+
+from storage_backend.oss_client import create_oss_client
+
+from constants.file_constants import CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME
 
 from tools.logger import get_logger
 
@@ -54,7 +68,7 @@ async def build_zip_file_background(
 
 
 @celery_app.task # type: ignore
-async def compute_upload_local_file_hash(file_path: str) -> tuple[str, int]:
+async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]:
     """
     计算上传文件元数据的本地版本(md值和大小)
     分片读取指定本地路径的文件内容,避免一次性加载到内存
@@ -71,3 +85,203 @@ async def compute_upload_local_file_hash(file_path: str) -> tuple[str, int]:
             size += len(chunk)
     logger.info(f"computed hash={md5.hexdigest()} size={size} for file={file_path}")
     return md5.hexdigest(), size
+
+
+@celery_app.task()
+async def validate_oss_file_task(file_path: str, size: int) -> bool:
+    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        meta = await oss_client.head_object(req)
+
+        # 检查文件是否存在
+        if meta.status_code != status.HTTP_200_OK:
+            logger.warning(f"oss file {file_path} not exist")
+            return False
+
+        # 检查文件大小是否一致
+        actual_size = meta.content_length
+        if actual_size != size:
+            logger.warning(f"oss file {file_path} size not match, expect {size}, but actual {actual_size}")
+            return False
+
+        # TODO:oss简单上传下md5和etag一致，但是分片上传则不一致，考虑验证计算方式？
+
+        return True
+
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to validate oss file: {e}")
+        return False
+
+@celery_app.task()
+async def check_oss_file_exist_task(file_path: str) -> bool:
+    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        meta = await oss_client.head_object(req)
+
+        # 检查文件是否存在
+        if meta.status_code != status.HTTP_200_OK:
+            logger.warning(f"oss file {file_path} not exist")
+            return False
+
+        return True
+
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to check oss file: {e}")
+        return False
+
+
+@celery_app.task()
+async def get_oss_file_size_task(file_path: str) -> int | None:
+    """
+    获取OSS文件大小
+
+    :param file_path: OSS文件路径（如"folder/file.zip")
+    :return: 文件大小
+    """
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        meta = await oss_client.head_object(req)
+
+        # 检查文件是否存在
+        if meta.status_code != status.HTTP_200_OK:
+            logger.warning(f"oss file {file_path} not found")
+            return None
+
+        # 返回文件大小
+        return meta.content_length
+
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to get oss file size: {e}")
+        return None
+
+
+@celery_app.task()
+def get_oss_upload_sts_token_task(file_path: str) -> dict:
+    """
+    获取OSS上传STS Token
+
+    :param file_path: 文件路径（如"folder/file.zip")
+    """
+    # 从环境变量获取OSS角色权限相关配置
+    access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
+    role_arn = os.getenv("OSS_ROLE_ARN")
+    region_id = OSS_REGION_ID
+
+    if not access_key_id or not access_key_secret or not role_arn or not region_id:
+        raise ValueError("oss access_key_id or access_key_secret or role_arn or region_id not set")
+
+    # 构建STS策略
+    policy = {
+        "Version": "1",
+        "Statement": [
+            {
+            "Effect": "Allow",
+            "Action": ["oss:PutObject"],
+            "Resource": [
+               f"acs:oss:*:*:{OSS_BUCKET_NAME}/{file_path}"
+            ]
+            }
+        ]
+    }
+
+    # 创建配置
+    credential_config = CredentialConfig(
+        type='access_key',
+        access_key_id=access_key_id,
+        access_key_secret=access_key_secret
+    )
+
+    credential = CredentialClient(credential_config)
+
+    client_config = open_api_models.Config(
+        credential=credential,
+        region_id=region_id,
+    )
+
+    # 创建STS客户端
+    sts_client = StsClient(client_config)
+
+    # 创建请求
+    request = AssumeRoleRequest(
+        role_arn=role_arn,
+        role_session_name=f"upload-session-{file_path}",
+        policy=json.dumps(policy),
+        duration_seconds=3600
+    )
+
+    # 发送请求并获取响应
+    response = sts_client.assume_role(request)
+    result = response.body.credentials.to_map()
+
+    return result
+
+
+@celery_app.task()
+async def delete_oss_file_task(file_path: str) -> bool | None:
+    """
+    删除OSS文件
+
+    :param file_path: OSS文件路径（如"folder/file.zip")
+
+    :return: bool 是否删除成功
+    """
+    try:
+        # 创建OSS客户端
+        oss_client = create_oss_client()
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 发送请求
+        req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+        res = await oss_client.delete_object(req)
+
+        if res.status_code != status.HTTP_200_OK:
+            logger.error(f"oss file {file_path} deleted failed")
+            return False
+
+        logger.info(f"oss file {file_path} deleted")
+        return True
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to delete oss file: {e}")
+        return False

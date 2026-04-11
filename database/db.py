@@ -51,8 +51,32 @@ def get_sync_engine():
     return _SYNC_ENGINE
 
 
-def get_async_engine():
-    """懒加载异步引擎"""
+def get_async_engine(standalone: bool = False):
+    """
+    加载异步引擎
+
+    :param standalone: 是否独立运行，避免使用全局单例，适用于celery子进程中的数据库操作
+
+    :return: 异步引擎实例
+    """
+    if standalone:
+        config = get_config()
+        db_password = _check_database_env()
+
+        _async_engine = create_async_engine(
+            f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
+            f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
+            f"?charset=utf8mb4",
+            pool_pre_ping=True,
+            pool_size=config.database.pool_size,# 连接池大小
+            max_overflow=config.database.max_overflow, # 最大溢出连接数
+            echo_pool=config.database.echo_pool, # 不输出连接池日志（生产环境建议False）
+            pool_recycle=config.database.pool_recycle,# 连接回收时间（秒），防止 MySQL 断开连接
+            # connect_args={"ssl": True}  # 暂时禁用 SSL 以解决连接中断问题
+        )
+        logger.info("Standalone async database engine initialized")
+        return _async_engine
+
     global _ASYNC_ENGINE # pylint: disable=global-statement
     if _ASYNC_ENGINE is None:
         config = get_config()

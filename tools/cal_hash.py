@@ -4,6 +4,7 @@
 计算文件SHA256哈希值的异步模块
 """
 
+import argparse
 import hashlib
 from pathlib import Path
 import aiofiles
@@ -56,13 +57,15 @@ async def file_exists(file_path: str) -> bool:
 async def main():
     """使用示例"""
     try:
-        # 计算文件哈希值
-        hash_value, file_size = await compute_file_md5("1.zip")
+        parser = argparse.ArgumentParser(description="计算文件哈希值")
+        parser.add_argument("file_path", type=str, help="要计算哈希值的文件路径")
+        args = parser.parse_args()
+        hash_value, file_size = await compute_file_md5(args.file_path)
         print(f"文件大小: {file_size} bytes")
         print(f"MD5值: {hash_value}")
 
         # 检查文件是否存在
-        exists = await file_exists("1.zip")
+        exists = await file_exists(args.file_path)
         print(f"文件存在: {exists}")
 
     except FileNotFoundError as e:

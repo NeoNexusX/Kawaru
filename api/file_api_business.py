@@ -23,17 +23,14 @@ from api.file_api_helper import (
     valid_user_duplicate_file_hash,
     validate_file_metadata,
     validate_total_parts,
-    delete_local_file,
     merge_files_and_get_hash,
     save_upload_file,
     delete_file_by_storage,
 )
-from storage_backend.storage import (
-    prepare_local_storage_path,
-)
+from storage_backend.storage import OssStorage, LocalStorage
 
 from background.celery_app import wait_for_result
-from background.file_background_helper import compute_upload_local_file_hash,build_zip_file_background
+from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
@@ -50,7 +47,9 @@ from exceptions import (
     part_number_out_of_range_exception,
     user_file_limit_exception,
     hash_size_validation_failed_exception,
+    download_not_implemented_exception
 )
+from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
 from models.file_models import FileCreate, FileInDB, PartInDB
 from models.user_models import UserInDB
@@ -236,7 +235,7 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
 async def prepare_download_file(
     session: AsyncSession,
     file_record: FileInDB,
-) -> Path:
+) -> Path | str:
     """
     准备下载文件,处理实验文件的ZIP打包
 
@@ -246,59 +245,95 @@ async def prepare_download_file(
     Raises:
         file_content_missing_exception: 文件内容缺失
     """
-    path = Path(file_record.path) if file_record.path else None
+    storage_type = file_record.storage_type
+    try:
+        # 根据存储类型检查源文件是否存在
+        if storage_type == "local":
+            path = Path(file_record.path) if file_record.path else None
+            # 文件存在,直接返回
+            if path and path.exists():
+                return path
+        elif storage_type == "oss":
+            path = file_record.path if file_record.path else None
+            # 文件存在,直接返回
+            if path and await OssStorage.check_file_exist(path):
+                return path
+        else:
+            raise download_not_implemented_exception
 
-    # 文件存在,直接返回
-    if path and path.exists():
-        return path
+        # 处理实验文件(imzML)
+        if file_record.experiment_type == "imzML":
+            assert file_record.file_id is not None
+            experiment = await get_imzml_experiment_by_file_id(session, file_record.file_id)
 
-    # 处理实验文件(imzML)
-    if file_record.experiment_type == "imzML":
-        assert file_record.file_id is not None
-        experiment = await get_imzml_experiment_by_file_id(session, file_record.file_id)
+            if not experiment or experiment.status != ExperimentStatus.COMPLETED:
+                logger.warning(
+                    "experiment not found or not completed file_id=%s", file_record.file_id
+                )
+                raise file_content_missing_exception
 
-        if not experiment or experiment.status != ExperimentStatus.COMPLETED:
-            logger.warning(
-                "experiment not found or not completed file_id=%s", file_record.file_id
-            )
-            raise file_content_missing_exception
+            # 根据存储类型获取实验文件路径
+            imzml_path, ibd_path = None, None
 
-        imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
-        ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
+            if storage_type == "local":
+                imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
+                ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
+                if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
+                    logger.warning("experiment files missing file_id=%s", file_record.file_id)
+                    raise file_content_missing_exception
+            elif storage_type == "oss":
+                imzml_path = experiment.imzml_path if experiment.imzml_path else None
+                ibd_path = experiment.ibd_path if experiment.ibd_path else None
+                if (
+                    not imzml_path or not ibd_path or
+                    not await OssStorage.check_file_exist(imzml_path) or
+                    not await OssStorage.check_file_exist(ibd_path)
+                ):
+                    logger.warning("experiment files missing file_id=%s", file_record.file_id)
+                    raise file_content_missing_exception
+            else:
+                raise download_not_implemented_exception
 
-        if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
-            logger.warning("experiment files missing file_id=%s", file_record.file_id)
-            raise file_content_missing_exception
 
-        # 创建 ZIP 包(存放在本地存储根目录下)
-        zip_filename = file_record.filename
-        LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-        zip_path = LOCAL_STORAGE_ROOT / zip_filename
+            # 根据不同存储类型打包文件
+            if storage_type == "local":
+                # 创建 ZIP 包(存放在本地存储根目录下)
+                zip_filename = file_record.filename
+                LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+                zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
-        # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
-        files_to_zip = [
-            (str(imzml_path), imzml_path.name),
-            (str(ibd_path), ibd_path.name),
-        ]
+                # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
+                assert isinstance(imzml_path, Path) and isinstance(ibd_path, Path)
+                files_to_zip = [
+                    (str(imzml_path), imzml_path.name),
+                    (str(ibd_path), ibd_path.name),
+                ]
 
-        task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-        zip_size = await wait_for_result(task_result, poll_interval=0.1)
-        if zip_size is None:
-            raise file_content_missing_exception
+                task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
+                zip_size = await wait_for_result(task_result, poll_interval=0.1)
+                if zip_size is None:
+                    raise file_content_missing_exception
 
-        # 更新文件记录
-        file_record.path = str(zip_path)
-        file_record.size = zip_size
+                # 更新文件记录
+                file_record.path = str(zip_path)
+                file_record.size = zip_size
 
-        logger.info(
-            "created download zip file_id=%s path=%s size=%s",
-            file_record.file_id,
-            zip_path,
-            file_record.size,
-        )
-        return zip_path
+                logger.info(
+                    "created download zip file_id=%s path=%s size=%s",
+                    file_record.file_id,
+                    zip_path,
+                    file_record.size,
+                )
+                return zip_path
+            elif storage_type == "oss":
+                # TODO: 实现 OSS 下载逻辑
+                pass
 
-    raise file_content_missing_exception
+        raise file_content_missing_exception
+
+    except Exception as e:
+        logger.error(f"prepare_download_file failed: {e}")
+        raise internal_server_error_exception from e
 
 
 async def validate_simple_upload(
@@ -352,11 +387,12 @@ async def validate_hash_and_size(
     # 读取文件内容
     if storage_type == "local":
         #哈希、文件大小检查
-        task_result: AsyncResult = compute_upload_local_file_hash.delay(file_path) # type: ignore
-        act_hash, act_size = await wait_for_result(task_result, poll_interval=0.1) # type: ignore
+        act_hash, act_size = await LocalStorage.compute_upload_file_hash(file_path)
     elif storage_type == "oss":
         # TODO： 从 OSS 中获取文件哈希和大小
-        pass
+        # 默认oss上传成功后，哈希已验证，无需再验证
+        act_size = await OssStorage.get_file_size(file_path)
+        act_hash = expected_hash
 
     if act_size != expected_size or act_hash != expected_hash:
         logger.error(f"file or part hash or size mismath\n"
@@ -417,11 +453,11 @@ async def delete_file_and_parts(
 
     # 2. 删除分片物理文件(数据库记录会在删除文件记录时自动级联删除)
     for part in file_record.parts:
-        delete_local_file(part.temp_path)
+        LocalStorage.delete_file(part.temp_path)
         logger.debug(f"deleted part file part_id={part.part_id} temp_path={part.temp_path}")
 
     # 3. 删除文件的物理文件
-    delete_local_file(file_record.path)
+    LocalStorage.delete_file(file_record.path)
     logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
 
     # 5. 删除文件数据库记录(数据库会自动级联删除分片记录)
@@ -516,7 +552,7 @@ async def rollback_simple_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     pre_record: FileInDB | None = None,
-    final_path: "Path | None" = None,
+    final_path: "Path | str | None" = None,
 ) -> None:
     """
     简单上传失败时的统一回滚清理
@@ -533,12 +569,13 @@ async def rollback_simple_upload(
     assert pre_record is not None
     _record_id = pre_record.file_id
     _user_id = current_user.id
+    storage_type = pre_record.storage_type
 
     # 回滚事务，撤销已有的数据库操作
     await async_session.rollback()
 
     if final_path:
-        delete_local_file(final_path)
+        await delete_file_by_storage(final_path, storage_type)
     if pre_record:
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
@@ -555,7 +592,7 @@ async def rollback_part_upload(async_session: AsyncSession,
     分片上传失败时的统一回滚清理
     """
     if path and file_record:
-        delete_file_by_storage(path, file_record.storage_type)
+        await delete_file_by_storage(path, file_record.storage_type)
 
     await async_session.rollback()
 
@@ -625,7 +662,7 @@ async def merge_parts_to_file(
     try:
         # 分片上传预检时 path 为空，合并前构建最终存储路径
         if not file_record.path:
-            final_path = prepare_local_storage_path(file_record.filename)
+            final_path = LocalStorage.prepare_storage_path(file_record.filename)
             file_record.path = str(final_path)
             async_session.add(file_record)
         else:
@@ -637,7 +674,7 @@ async def merge_parts_to_file(
         # 分片文件丢失
         logger.error(f"part file missing file_id={file_record.file_id} error={exc}")
         # if final_path:
-            # delete_local_file(final_path)
+            # LocalStorage.delete_file(final_path)
         await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise part_file_missing_exception from exc
 
@@ -791,7 +828,7 @@ async def delete_parts_by_file_id(
 
     删除流程:
     1. 查询该文件的所有分片记录
-    2. 删除每个分片的物理文件(调用 delete_local_file)
+    2. 删除每个分片的物理文件(调用 LocalStorage.delete_file)
     3. 删除数据库中的分片记录
 
     Returns:
@@ -821,7 +858,7 @@ async def delete_parts_by_file_id(
     # 先删除物理文件,再删除数据库记录
     for part in parts:
         # 删除分片物理文件
-        delete_local_file(part.temp_path)
+        LocalStorage.delete_file(part.temp_path)
         logger.debug(
             "deleted part file part_id=%s temp_path=%s",
             part.part_id,

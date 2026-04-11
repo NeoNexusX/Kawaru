@@ -8,7 +8,6 @@ from __future__ import annotations
 import zipfile
 import shutil
 from pathlib import Path
-from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT
 from constants.file_constants import ALLOWED_EXPERIMENT_TYPES
 from tools.logger import get_logger
 
@@ -16,7 +15,6 @@ from tools.logger import get_logger
 logger = get_logger("api.experiment_api_helper")
 
 
-# operation part
 def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
@@ -72,22 +70,6 @@ def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tup
         raise
 
     return imzml_path, ibd_path
-
-
-#TODO: 没有考虑到文件系统不在本地的情况
-def create_experiment_directories(experiment_id: int) -> Path:
-    """
-    创建并返回 实验目录
-    Return:
-        tuple[Path, Path]
-        (temp_dir, processed_dir)
-    Raise:
-        None
-    """
-    processed_dir = EXPERIMENT_STORAGE_ROOT / f"exp_{experiment_id}"
-    processed_dir.mkdir(parents=True, exist_ok=True)
-
-    return processed_dir
 
 
 def validate_experiment_type(experiment_type: str) -> bool:
