@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import json
-import asyncio
 import zipfile
 import hashlib
 from pathlib import Path

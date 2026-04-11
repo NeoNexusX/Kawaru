@@ -1,23 +1,18 @@
 from datetime import timedelta
 
-from fastapi import HTTPException, status
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
-from api.experiment_api_business import (
-    create_experiment_record,
-    mark_experiment,
-    delete_source_file_and_clear_path,
-    delete_experiment_files,
-)
-from api.experiment_api_helper import create_experiment_directories, extract_and_validate_imzml_zip
+from api.experiment_api_business import delete_experiment_files
+
+from api.user_api_helper import get_user_by_id
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import (
     safe_cleanup_preflight_record,
     delete_file_and_parts,
 )
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from models.file_models import FileInDB
@@ -134,7 +129,7 @@ async def clean_user_all_task(
     - 如果文件被多个用户共享，仅解除关联
     - 如果文件仅属于该用户时，完全删除文件和分片
     """
-    async with AsyncSession(get_async_engine()) as session:
+    async with AsyncSession(get_async_engine(standalone=True)) as session:
         logger.info(
             "starting clean_user_all_task for deleted_user_id=%s file_count=%s",
             deleted_user_id,len(file_ids),)

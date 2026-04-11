@@ -101,7 +101,7 @@ class LocalStorage:
         分片读取指定本地路径的文件内容,避免一次性加载到内存
         """
         res = compute_upload_local_file_hash_task.delay(file_path) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=20) # type: ignore # 针对大文件此处timeout需要调大
+        result = await wait_for_result(res, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
         if result is None:
             logger.error(f"failed to compute upload file hash due to server timeout: {file_path}")
             return ("", 0)
