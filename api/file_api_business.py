@@ -145,7 +145,7 @@ async def get_file_record_by_hash(
     """
     file_record = (
         await async_session.exec(
-            select(FileInDB).where(FileInDB.hash_md5 == file_hash)
+            select(FileInDB).where(FileInDB.file_verify_code == file_hash)
         )
     ).first()
     if not file_record:
@@ -181,7 +181,7 @@ async def get_reuse_file_by_hash(
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
-            .where(FileInDB.hash_md5 == hash_md5)
+            .where(FileInDB.file_verify_code == hash_md5)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -298,7 +298,7 @@ async def prepare_download_file(
             # 根据不同存储类型打包文件
             if storage_type == "local":
                 # 创建 ZIP 包(存放在本地存储根目录下)
-                zip_filename = file_record.filename
+                zip_filename = f"{file_record.filename}.{file_record.file_type }"
                 LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
                 zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
@@ -328,7 +328,7 @@ async def prepare_download_file(
             elif storage_type == "oss":
                 # TODO: 实现 OSS 下载逻辑
                 pass
-
+              
         raise file_content_missing_exception
 
     except Exception as e:
@@ -566,6 +566,9 @@ async def rollback_simple_upload(
         2026.3.3 Neo checked
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
+    if pre_record is None:
+        return
+
     assert pre_record is not None
     _record_id = pre_record.file_id
     _user_id = current_user.id
@@ -668,7 +671,7 @@ async def merge_parts_to_file(
         else:
             final_path = Path(file_record.path)
         # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_and_get_hash(part_paths, final_path, file_record.hash_md5)
+        await merge_files_and_get_hash(part_paths, final_path, file_record.file_verify_code)
 
     except FileNotFoundError as exc:
         # 分片文件丢失
@@ -901,7 +904,7 @@ async def validate_upload_request(
         return False
 
     # 2. 文件名和类型验证
-    if not validate_file_metadata(file_data.filename):
+    if not validate_file_metadata(file_data.filename, file_data.file_type):
         return False
 
     # 3. 实验类型验证(如果提供)
@@ -921,8 +924,8 @@ async def validate_upload_request(
         raise duplicate_file_exception
 
     # 7. 重复文件哈希检查
-    assert file_data.hash_md5 is not None
-    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.hash_md5):
+    assert file_data.file_verify_code is not None
+    if await valid_user_duplicate_file_hash(async_session, current_user, file_data.file_verify_code):
         raise duplicate_file_exception
 
     return True

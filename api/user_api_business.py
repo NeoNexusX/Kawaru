@@ -52,7 +52,7 @@ async def validate_orcid(orcid: str) -> bool:
     """
     try:
         task_result = validate_orcid_task.delay(orcid) # type: ignore
-        result = await wait_for_result(task_result, poll_interval=0.1, timeout=120)
+        result = await wait_for_result(task_result, poll_interval=0.1)
         return bool(result)
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error(f"ORCID validation task failed for {orcid}: {exc}")
@@ -67,7 +67,7 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
     if user_data.get("username") is None or user_past.username != user_data.get("username"):
         raise user_name_bad_exception
 
-    # 校验 email 是否重复 TODO 只需要在这里验证验证码
+    # 校验 email 是否重复
     if "email" in user_data and user_data["email"]:
         existing_user = await get_user_by_email(user_data["email"], async_session)
         if existing_user and existing_user.id != user_past.id:

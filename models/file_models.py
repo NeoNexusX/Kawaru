@@ -4,7 +4,7 @@ from typing import AsyncGenerator, Optional, List
 import aiofiles
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Column, Integer, ForeignKey,BigInteger
 from tools import utc_time,get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
@@ -19,6 +19,7 @@ logger = get_logger("models.file_models")
 config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
+user_config = config.user
 
 
 class FileBase(SQLModel):
@@ -30,9 +31,9 @@ class FileBase(SQLModel):
     experiment_type: str = Field(default="",
                                  description="实验类型(imzml/raw等),用于定位实验表",
                                  max_length=sample_config.max_experiment_type_length,)
-    size: int = Field(default=0)
+    size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0))
     storage_type: str = Field(default="local", max_length=64)
-    hash_md5: str | None = Field(default=None, max_length=32)
+    file_verify_code: str | None = Field(default=None, max_length=32)
 
     # 样本信息字段
     organism: str = Field(default="",description="样本所属物种",max_length=sample_config.max_organism_length,)
@@ -84,6 +85,7 @@ class FilePublic(FileBase):
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
+    first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
     oss_sts_token: OssStsToken | None = Field(default=None)
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
 
@@ -102,6 +104,7 @@ class FileInDB(FileBase, table=True):
     is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
+    first_uploaded_by: str | None = Field(default=None, max_length=user_config.max_username_length, description="首次上传该文件的用户名")
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
     uploaded_at: datetime = Field(default_factory=utc_time, index=True)  # 上传时间
@@ -219,7 +222,7 @@ class FileDownloadMeta(FileBase):
             file_type=record.file_type,
             size=record.size,
             storage_type=record.storage_type,
-            hash_md5=record.hash_md5,
+            file_verify_code=record.file_verify_code,
             path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,

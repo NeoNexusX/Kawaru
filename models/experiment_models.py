@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey
+from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey, BigInteger
 from tools import utc_time
 from boot.config import get_config
 
@@ -74,9 +74,9 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
 
     # 核心文件信息
     imzml_path: str = Field(default="", description=".imzML 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
-    imzml_size: int = Field(default=0, ge=0, description=".imzML 文件大小(字节)")
+    imzml_size: int = Field(default=0, ge=0,sa_column=Column(BigInteger, nullable=False, default=0),description=".imzML 文件大小(字节)")
     ibd_path: str = Field(default="", description=".ibd 文件的绝对存储路径", max_length=getattr(storage_config, 'max_path_length', 255))
-    ibd_size: int = Field(default=0, ge=0, description=".ibd 文件大小(字节)")
+    ibd_size: int = Field(default=0, ge=0,sa_column=Column(BigInteger, nullable=False, default=0), description=".ibd 文件大小(字节)")
     # 元数据
     created_at: datetime = Field(default_factory=utc_time, description="创建时间")
     status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)

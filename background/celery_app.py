@@ -188,7 +188,7 @@ class TaskManager:
         return False
 
 
-async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 20):
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 1000): #TODO 20其实更合理，100只是为了测试方便
     """异步轮询等待 Celery 结果
 
     :param result: Celery AsyncResult 对象

@@ -55,14 +55,12 @@ async def build_zip_file_background(
     files_path = [(Path(fp), arc) for fp, arc in files]
     output_str = str(output)
 
-    def _create_zip() -> None:
-        with zipfile.ZipFile(output_str, "w", compression) as zf:
-            for file_path, arc_name in files_path:
-                if not file_path.exists():
-                    raise FileNotFoundError(f"Source file not found: {file_path}")
-                zf.write(file_path, arc_name)
+    with zipfile.ZipFile(output_str, "w", compression) as zf:
+        for file_path, arc_name in files_path:
+            if not file_path.exists():
+                raise FileNotFoundError(f"Source file not found: {file_path}")
+            zf.write(file_path, arc_name)
 
-    await asyncio.to_thread(_create_zip)
     logger.info(f"ZIP file created at {output_str}")
     return output.stat().st_size
 

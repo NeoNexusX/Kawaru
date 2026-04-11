@@ -25,6 +25,7 @@ class FileFilter(SQLModel):
     filename: str | None = Field(default=None, description="文件名")
     experiment_type: str | None = Field(default=None, description="实验类型")
     username: str | None = Field(default=None, description="所属用户名")
+    first_uploaded_by: str | None = Field(default=None, description="首次上传用户名")
     organism: str | None = Field(default=None, description="样本所属物种")
     organism_part: str | None = Field(default=None, description="样本来源组织")
     condition: str | None = Field(default=None, description="样本生长或处理条件")
