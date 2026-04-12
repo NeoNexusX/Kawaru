@@ -53,7 +53,7 @@ async def cleanup_stale_preflights_all_users(
         # 直接查询所有过期预检记录（path 为空且 uploaded_at < cutoff_time）
         # 通过 UserFileLink 关联获取用户
         records = (await session.exec(
-            select(FileInDB, UserInDB)
+            select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
@@ -140,19 +140,12 @@ async def clean_user_all_task(
 
         for file_id in file_ids[:batch_size]:
             try:
-                # 先删除已删除用户的链接（如果存在） # TODO 这里可以考虑复用 remove_file_link
-                links = (await session.exec(
-                    select(UserFileLink).where(
-                        UserFileLink.user_id == deleted_user_id,
-                        UserFileLink.file_id == file_id,))).all()
-                for link in links:
-                    await session.delete(link)
 
                 # 检查剩余所有者数量
                 owner_count = (await session.exec(
                     select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
 
-                if owner_count > 0:
+                if owner_count > 1:
                     # 还有其他用户持有，只解除关联
                     total_unlinked += 1
                 else:
