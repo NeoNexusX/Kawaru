@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from pathlib import Path
 
 import aiofiles
@@ -126,7 +125,7 @@ async def merge_files_and_get_hash(
     expected_hash: str | None = None,
     buffer_size: int = CHUNK_BUFFER_SIZE,
 ) -> str:
-    
+
     """
     合并多个文件并计算哈希
 

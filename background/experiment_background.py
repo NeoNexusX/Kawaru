@@ -107,7 +107,7 @@ async def process_imzml_experiment_background(
 
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
-            _source_file_id = source_file.file_id
+            _source_file_id = source_file.file_id # type: ignore
             await async_session.rollback()
 
             async with AsyncSession(get_async_engine()) as async_session:
@@ -151,7 +151,7 @@ async def extract_and_validate_local_imzml_zip(
     return Path(imzml_path_str), Path(ibd_path_str)
 
 
-@celery_app.task()
+@celery_app.task() # type: ignore
 def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护

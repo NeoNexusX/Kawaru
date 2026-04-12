@@ -665,7 +665,7 @@ async def merge_parts_to_file(
     try:
         # 分片上传预检时 path 为空，合并前构建最终存储路径
         if not file_record.path:
-            final_path = LocalStorage.prepare_storage_path(file_record.filename)
+            final_path = LocalStorage.prepare_storage_path(file_record.filename, file_record.file_type)
             file_record.path = str(final_path)
             async_session.add(file_record)
         else:

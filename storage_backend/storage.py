@@ -33,14 +33,15 @@ class LocalStorage:
             path.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def prepare_storage_path(filename: str) -> Path:
+    def prepare_storage_path(filename: str,file_type: str) -> Path:
         """
         为简单上传准备最终保存路径
 
         文件直接保存在 LOCAL_STORAGE_ROOT 下,不按用户ID分文件夹
         """
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-        return LOCAL_STORAGE_ROOT / filename
+        file_path=f"{filename}.{file_type}"
+        return LOCAL_STORAGE_ROOT / file_path
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> Path:
@@ -119,7 +120,7 @@ class OssStorage:
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.lstrip('/')}/{filename}"
+        return f"{OSS_ZIP_STORAGE_ROOT.lstrip('/')}/{filename}" # type: ignore
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> str:
@@ -130,7 +131,7 @@ class OssStorage:
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.lstrip('/')}/exp_{experiment_id}"
+        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.lstrip('/')}/exp_{experiment_id}" # type: ignore
 
         return processed_dir
 
