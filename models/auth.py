@@ -1,10 +1,11 @@
+import os
 from typing import Union
 import secrets
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
-SECRET_KEY = secrets.token_hex(32)  # 每次启动服务时随机生成 32 字节的对称密钥用于签名
+SECRET_KEY = os.getenv("SECRET_KEY") or secrets.token_hex(32)  # 优先使用环境变量，便于多实例共享
 PWD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")  # 获取登录令牌入口
 

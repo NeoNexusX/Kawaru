@@ -16,6 +16,11 @@ from routers.file import file_router
 from routers.experiment import experiment_router
 # pylint: enable=wrong-import-position
 
+
+def enable_embedded_celery() -> bool:
+    """控制是否由 API 进程托管 Celery 子进程。"""
+    return get_config().celery.enable_embedded_celery
+
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
     """
@@ -26,8 +31,10 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     await create_db_and_tables()
     # admin create
     await create_admin_user()
-    # create celery worker subprocess
-    celery_worker_proc, celery_beat_proc = await start_celery_worker()
+    celery_worker_proc, celery_beat_proc = (None, None)
+    if enable_embedded_celery():
+        # create celery worker subprocess
+        celery_worker_proc, celery_beat_proc = await start_celery_worker()
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_worker_proc = celery_worker_proc
     app.state.celery_beat_proc = celery_beat_proc
