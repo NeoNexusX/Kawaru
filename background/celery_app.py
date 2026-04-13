@@ -130,7 +130,7 @@ def _init_celery_in_subprocess() -> Celery | None:
     return _celery_app
 
 
-if os.getenv("CREATE_CELERY_SUB"):
+if os.getenv("CREATE_CELERY_SUB") or os.getenv("CELERY_RUNTIME_ENABLED"):
     celery_app  = _init_celery_in_subprocess()
 else:
     celery_app: "Celery | None" = None

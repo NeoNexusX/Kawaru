@@ -7,19 +7,13 @@ from boot.bootstrap import bootstrap
 bootstrap()
 # pylint: disable=wrong-import-position
 from boot.config import get_config
-from boot.celery_boot import start_celery_worker, stop_celery_worker
+from celery_runtime.launcher import start_embedded_celery, stop_embedded_celery,enable_embedded_celery
 from storage_backend.oss_client import oss_sumary, oss_client
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
 from routers.file import file_router
 from routers.experiment import experiment_router
-# pylint: enable=wrong-import-position
-
-
-def enable_embedded_celery() -> bool:
-    """控制是否由 API 进程托管 Celery 子进程。"""
-    return get_config().celery.enable_embedded_celery
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
@@ -31,10 +25,8 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     await create_db_and_tables()
     # admin create
     await create_admin_user()
-    celery_worker_proc, celery_beat_proc = (None, None)
-    if enable_embedded_celery():
-        # create celery worker subprocess
-        celery_worker_proc, celery_beat_proc = await start_celery_worker()
+    #celery worker/beat subprocess
+    celery_worker_proc, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else (None, None)
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_worker_proc = celery_worker_proc
     app.state.celery_beat_proc = celery_beat_proc
@@ -47,7 +39,7 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     celery_worker_proc = getattr(app.state, 'celery_worker_proc', None)
     celery_beat_proc = getattr(app.state, 'celery_beat_proc', None)
     if celery_worker_proc is not None or celery_beat_proc is not None:
-        await stop_celery_worker(celery_worker_proc, celery_beat_proc)
+        await stop_embedded_celery(celery_worker_proc, celery_beat_proc)
 
 
 app = FastAPI(lifespan=lifespan)
