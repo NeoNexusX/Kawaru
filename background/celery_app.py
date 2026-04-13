@@ -188,7 +188,7 @@ class TaskManager:
         return False
 
 
-async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 1000): #TODO 20其实更合理，100只是为了测试方便
+async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: float|None = 20):
     """异步轮询等待 Celery 结果
 
     :param result: Celery AsyncResult 对象
@@ -209,5 +209,5 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
     try:
         return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
     except asyncio.TimeoutError:
-        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}")
+        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}") # type: ignore
         return None

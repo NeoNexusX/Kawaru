@@ -15,7 +15,7 @@ logger = get_logger("background.api_background")
 
 
 @celery_app.task()  # type: ignore
-async def generic_http_request_task(# TODO 写成类 ，先全部写出来普通的task，然后再合并
+async def generic_http_request_task(# TODO 暂时没用上，写成类 ，先全部写出来普通的task，然后再合并
     url: str,
     method: str = "GET",
     headers: Optional[Dict[str, str]] = None,
@@ -75,13 +75,17 @@ async def validate_orcid_task(orcid: str) -> bool:
     url = f"https://pub.orcid.org/v3.0/{orcid}/person"
     headers = {'Accept': 'application/json'}
 
-    result = await generic_http_request_task(url, method='HEAD', headers=headers, timeout=30, max_retries=3)
-
-    if result.get('success'):
-        return True
-    else:
-        logger.error(f"ORCID validation failed for {orcid}: {result.get('error')}")
-        return False
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.head(url, headers=headers)
+            if response.status_code == 200:
+                return True
+            else:
+                logger.error(f"ORCID validation failed for {orcid}: HTTP {response.status_code}")
+                return False
+        except Exception as e: # pylint: disable=broad-exception-caught
+            logger.error(f"ORCID validation failed for {orcid}: {str(e)}")
+            return False
 
 
 @celery_app.task()  # type: ignore
@@ -92,7 +96,7 @@ async def send_mailgun_message_task(email_payload: dict) -> dict:
     """
 
     mailgun_api_key = email_payload.get("mailgun_api_key")
-    mailgun_api_url = email_payload.get("mailgun_api_url")
+    mailgun_api_url = email_payload.get("mailgun_api_url") #TODO 是否考虑直接从env获取？
 
     try:
         async with httpx.AsyncClient() as client:

@@ -1,19 +1,18 @@
 from datetime import timedelta
 
-from fastapi import HTTPException, status
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
-from api.experiment_api_business import (
-    delete_experiment_files,
-)
+from api.experiment_api_business import delete_experiment_files
+
+from api.user_api_helper import get_user_by_id
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
 from api.file_api_business import (
     safe_cleanup_preflight_record,
     delete_file_and_parts,
 )
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS, OSS_BUCKET_NAME
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
 from models.file_models import FileInDB
@@ -54,11 +53,10 @@ async def cleanup_stale_preflights_all_users(
         # 直接查询所有过期预检记录（path 为空且 uploaded_at < cutoff_time）
         # 通过 UserFileLink 关联获取用户
         records = (await session.exec(
-            select(FileInDB, UserInDB)
+            select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
-            .distinct()
             .limit(batch_size)
         )).all()
 
@@ -130,7 +128,7 @@ async def clean_user_all_task(
     - 如果文件被多个用户共享，仅解除关联
     - 如果文件仅属于该用户时，完全删除文件和分片
     """
-    async with AsyncSession(get_async_engine()) as session:
+    async with AsyncSession(get_async_engine(standalone=True)) as session:
         logger.info(
             "starting clean_user_all_task for deleted_user_id=%s file_count=%s",
             deleted_user_id,len(file_ids),)
@@ -141,19 +139,12 @@ async def clean_user_all_task(
 
         for file_id in file_ids[:batch_size]:
             try:
-                # 先删除已删除用户的链接（如果存在） # TODO 这里可以考虑复用 remove_file_link
-                links = (await session.exec(
-                    select(UserFileLink).where(
-                        UserFileLink.user_id == deleted_user_id,
-                        UserFileLink.file_id == file_id,))).all()
-                for link in links:
-                    await session.delete(link)
 
                 # 检查剩余所有者数量
                 owner_count = (await session.exec(
                     select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
 
-                if owner_count > 0:
+                if owner_count > 1:
                     # 还有其他用户持有，只解除关联
                     total_unlinked += 1
                 else:
