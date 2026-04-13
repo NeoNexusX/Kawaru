@@ -68,7 +68,6 @@ def celery_create(
         'enable_utc': True,
         'worker_disable_rate_limits': cfg.celery.worker_disable_rate_limits,
         'beat_schedule': {
-            # tips: 任务时间间隔尽量错开，避免为彼此的整数倍，导致多个任务并发执行可能会诱发asyncio异步错误
             "heartbeat": {
                 "task": "background.file_background.heartbeat",
                 "schedule": 67.0,
@@ -130,7 +129,7 @@ def _init_celery_in_subprocess() -> Celery | None:
     return _celery_app
 
 
-if os.getenv("CREATE_CELERY_SUB") or os.getenv("CELERY_RUNTIME_ENABLED"):
+if os.getenv("CREATED_CELERY_SUB"):
     celery_app  = _init_celery_in_subprocess()
 else:
     celery_app: "Celery | None" = None

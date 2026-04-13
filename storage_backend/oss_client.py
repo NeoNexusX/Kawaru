@@ -28,7 +28,7 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
     return _oss_client
 
 
-if os.getenv("CREATE_CELERY_SUB"):
+if os.getenv("CREATED_CELERY_SUB"):
     oss_client = create_oss_client()
 else:
     oss_client: "oss_aio.AsyncClient | None" = None

@@ -28,6 +28,7 @@ async def start_embedded_celery():
     env = os.environ.copy()
     env["SECRET_KEY"] = SECRET_KEY
     env[RUNTIME_ENV_VAR] = "true"
+    env["CREATED_CELERY_SUB"] = "true"
 
     worker_args = [
         "-A", APP_PATH, "worker",
@@ -85,6 +86,7 @@ async def stop_embedded_celery(celery_worker_proc, celery_beat_proc):
         logger.exception("Error while terminating embedded celery subprocess: %s", exc)
     finally:
         await clean_up_stale_task()
+
 
 def enable_embedded_celery() -> bool:
     """控制是否由 API 进程托管 Celery 子进程。"""
