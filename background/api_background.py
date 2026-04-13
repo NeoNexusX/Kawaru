@@ -96,7 +96,7 @@ async def send_mailgun_message_task(email_payload: dict) -> dict:
     """
 
     mailgun_api_key = email_payload.get("mailgun_api_key")
-    mailgun_api_url = email_payload.get("mailgun_api_url")
+    mailgun_api_url = email_payload.get("mailgun_api_url") #TODO 是否考虑直接从env获取？
 
     try:
         async with httpx.AsyncClient() as client:

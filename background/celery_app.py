@@ -209,5 +209,5 @@ async def wait_for_result(result: AsyncResult, poll_interval: float, timeout: fl
     try:
         return await asyncio.wait_for(_poll_until_ready(), timeout=timeout)
     except asyncio.TimeoutError:
-        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}")
+        logger.error(f"Celery task timeout, task_id={result.id}, task_name={result.name}, timeout={timeout}") # type: ignore
         return None

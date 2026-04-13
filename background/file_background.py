@@ -57,7 +57,6 @@ async def cleanup_stale_preflights_all_users(
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
-            .distinct()
             .limit(batch_size)
         )).all()
 
