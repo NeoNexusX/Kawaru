@@ -74,6 +74,8 @@ oss:
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
   oss_experiment_storage_root: experiments/
+  fc_logstore_name: default-logs
+  fc_log_project_name: serverless-cn-shenzhen-9afc325b-4ea0-5018-9990-ebeba007d53e
 
 admin_info:
   username: kawaru

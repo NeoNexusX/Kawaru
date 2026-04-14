@@ -645,7 +645,12 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
-async def oss_upload_complete(file_id: int, current_user_id: int, async_session: AsyncSessionDep):
+async def oss_upload_complete(
+    file_id: int,
+    current_user_id: int,
+    request_id: str,
+    async_session: AsyncSessionDep
+):
     """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
     # TODO: 需确认是通过前端调用还是oss上传完成的callback调用？
     # 如为前端调用，应有token依赖注入验证用户身份；如由callback调用，则直接传user_id即可），但需要限制该接口只能由aliyun oss调用
@@ -682,7 +687,7 @@ async def oss_upload_complete(file_id: int, current_user_id: int, async_session:
         raise internal_server_error_exception from e
 
     # TODO: 触发实验文件提取任务的oss版本
-    # trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
+    await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
     return pre_record
 
 

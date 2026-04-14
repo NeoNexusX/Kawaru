@@ -5,6 +5,7 @@ from alibabacloud_oss_v2 import GetBucketLocationRequest
 
 from boot.config import get_config
 from exceptions.file_exceptions import oss_client_create_failed_exception
+from models.config_models import OSSSettings
 
 from tools.logger import get_logger
 
@@ -16,6 +17,10 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
     try:
         oss_config = get_config().oss
         # Read credentials from environment variables to authenticate
+        access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
+        access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
+        if not access_key_id or not access_key_secret:
+            raise ValueError("oss access_key_id or access_key_secret is empty")
         credentials_provider = oss.credentials.EnvironmentVariableCredentialsProvider()
         cfg = oss.config.load_default()
         cfg.credentials_provider = credentials_provider
@@ -40,10 +45,11 @@ async def oss_sumary(client: oss_aio.AsyncClient | None):
     if client is None:
         return
     try:
+        # 检查 oss 配置是否完整
         oss_config = get_config().oss
-        if oss_config.bucket_name is None:
-            raise ValueError("oss bucket_name is empty")
-        req = GetBucketLocationRequest(oss_config.bucket_name)
+        check_oss_config(oss_config)
+        # 构造请求对象，检查 bucket 是否正常
+        req = GetBucketLocationRequest(oss_config.bucket_name) # type: ignore
         res = await client.get_bucket_location(req) # type: ignore
         if res.status_code == 200:
             logger.info("init oss client success, bucket_name: %s, bucket_location: %s", oss_config.bucket_name, res.location)
@@ -52,3 +58,22 @@ async def oss_sumary(client: oss_aio.AsyncClient | None):
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error("oss initialize failed: %s", exc)
         raise oss_client_create_failed_exception from exc
+
+def check_oss_config(config: OSSSettings):
+    """检查 oss 配置"""
+    if config.bucket_name is None:
+        raise ValueError("oss bucket_name is empty")
+    if config.fc_logstore_name is None:
+        raise ValueError("oss fc_logstore_name is empty")
+    if config.region_id is None:
+        raise ValueError("oss region_id is empty")
+    if config.oss_zip_storage_root is None:
+        raise ValueError("oss oss_zip_storage_root is empty")
+    if config.oss_experiment_storage_root is None:
+        raise ValueError("oss oss_experiment_storage_root is empty")
+    if config.oss_upload_sts_token_expire_minutes is None:
+        raise ValueError("oss oss_upload_sts_token_expire_minutes is empty")
+    if config.oss_download_sts_token_expire_minutes is None:
+        raise ValueError("oss oss_download_sts_token_expire_minutes is empty")
+    if config.fc_log_project_name is None:
+        raise ValueError("oss fc_log_project_name is empty")

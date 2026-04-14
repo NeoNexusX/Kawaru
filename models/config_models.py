@@ -91,6 +91,8 @@ class OSSSettings(BaseModel):
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
     oss_zip_storage_root: str | None = None
     oss_experiment_storage_root: str | None = None
+    fc_logstore_name: str | None = None
+    fc_log_project_name: str | None = None
 
 
 class UserSettings(BaseModel):

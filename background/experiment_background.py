@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from storage_backend.storage import LocalStorage, OssStorage
 from database.db import get_async_engine
-from background.celery_app import celery_app, wait_for_result
+from background.celery_app import celery_app
 from api.experiment_api_business import (
     create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 )
@@ -19,6 +19,7 @@ from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception
+from exceptions.file_exceptions import storage_type_not_allowed_exception
 
 from tools.logger import get_logger
 logger = get_logger("background.experiment_background")
@@ -46,7 +47,7 @@ async def trigger_experiment_extraction(
 async def process_imzml_experiment_background(
     user_id: int,
     source_file_id: int,
-    experiment_name: str
+    experiment_name: str,
 ) -> None:
     """
     后台处理 ImzML 实验的任务
@@ -86,16 +87,19 @@ async def process_imzml_experiment_background_task(
             assert experiment_record.id is not None
 
             #阶段2: 处理实验文件
-            # 创建正式目录（helper 层）
-            experiment_dir = None
             # TODO: 封装存储分支逻辑
             if storage_type == 'local':
+                # 创建正式目录（helper 层）
                 experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
-            elif storage_type == 'oss':
-                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id)
 
-            # 解压和验证
-            final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir) # type:ignore
+                # 解压和验证
+                final_imzml_path, final_ibd_path = extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
+
+            elif storage_type == 'oss':
+                # 直接轮询回调结果（已是在celery任务中，无需再用celery任务）
+                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id)
+            else:
+                raise storage_type_not_allowed_exception
 
             # 更新实验记录
             await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
@@ -151,8 +155,6 @@ def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) 
         - FileNotFoundError: 缺少 .imzML 或 .ibd 文件
         - ValueError: ZIP 文件包含不安全的路径
     """
-    # 任务队列传过来是str，这里转换回来方便操作
-
     try:
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
             # 验证 ZIP 条目以防止路径遍历（Zip Slip）
