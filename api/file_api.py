@@ -302,7 +302,7 @@ async def upload_simple_file(
         assert pre_record.file_verify_code is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
             # 如果是本地存储，保存文件并更新最终文件记录
-            final_path = LocalStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) 
+            final_path = LocalStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
             # 校验文件哈希和大小

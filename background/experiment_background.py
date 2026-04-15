@@ -74,9 +74,9 @@ async def process_imzml_experiment_background(
             experiment_dir = None
             # TODO: 封装存储分支逻辑
             if storage_type == 'local':
-                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
+                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id) # type: ignore
             elif storage_type == 'oss':
-                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id)
+                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id) # type: ignore
 
             # 解压和验证
             final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir) # type:ignore
@@ -107,7 +107,7 @@ async def process_imzml_experiment_background(
 
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
-            _source_file_id = source_file.file_id # type: ignore
+            source_file_id = source_file.file_id # type: ignore
             await async_session.rollback()
 
             async with AsyncSession(get_async_engine()) as async_session:

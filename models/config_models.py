@@ -111,6 +111,7 @@ class SampleInfoSettings(BaseModel):
     """样品信息配置模型"""
     max_experiment_name_length: int
     max_experiment_type_length: int
+    max_instrument_types_length: int
     max_organism_length: int
     max_organism_part_length: int
     max_condition_length: int

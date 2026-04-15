@@ -48,8 +48,8 @@ celery:
   worker_pool: "prefork"
 
 storage:
-  root: ../
-  local_root: data/
+  root: storage
+  local_root: local
   max_file_size_gb: 2000000000
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
@@ -110,6 +110,7 @@ user:
 sample_info:
   max_experiment_name_length: 128
   max_experiment_type_length: 128
+  max_instrument_types_length: 128
   max_organism_length: 128
   max_organism_part_length: 128
   max_condition_length: 128

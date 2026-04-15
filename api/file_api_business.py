@@ -310,7 +310,7 @@ async def prepare_download_file(
                 ]
 
                 task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
+                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大 TODO 考虑从.env配置文件读取timeout值
                 if zip_size is None:
                     raise file_content_missing_exception
 
@@ -815,6 +815,9 @@ async def validate_and_merge_parts(
     # 5. 执行分片合并
     await merge_parts_to_file(session, file_record, parts, current_user)
 
+    await session.commit()
+    await session.refresh(file_record)
+    await session.refresh(current_user)
     logger.info(f"parts merged successfully file_id={file_record.file_id} user={current_user.id}")
     return True
 
