@@ -74,7 +74,7 @@ async def oss_upload_complete(file_record: OssUploadCompleteDep):
 async def test_api():
     """测试API"""
     from background.file_background_helper import get_oss_upload_sts_token_task
-    from background.celery_app import wait_for_result
+    from celery_runtime.result import wait_for_result
     res = get_oss_upload_sts_token_task.delay("testfile.txt") # type: ignore
     result = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
     return result

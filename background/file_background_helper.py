@@ -19,8 +19,7 @@ from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest
 
-from background.celery_app import celery_app
-assert celery_app is not None, "celery_app is None"
+from celery_runtime.state import get_celery_app
 
 from storage_backend.oss_client import create_oss_client
 
@@ -29,6 +28,7 @@ from constants.file_constants import CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKE
 from tools.logger import get_logger
 
 logger = get_logger("background.file_background")
+celery_app = get_celery_app()
 
 
 @celery_app.task()  # type: ignore

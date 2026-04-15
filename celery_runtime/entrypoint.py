@@ -1,8 +1,5 @@
-from celery import Celery
+from celery_runtime.runtime import build_celery_runtime
+from celery_runtime.state import set_celery_app
 
-from celery_runtime.runtime import build_celery_runtime, is_celery_runtime_enabled
 
-if is_celery_runtime_enabled():
-    celery_app = build_celery_runtime()
-else:
-    celery_app: Celery | None = None
+celery_app = set_celery_app(build_celery_runtime())

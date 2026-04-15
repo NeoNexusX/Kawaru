@@ -7,9 +7,7 @@ from tools.logger import get_logger
 from boot.config import get_config
 from celery_runtime.runtime import clean_up_stale_task
 
-RUNTIME_ENV_VAR = "CELERY_RUNTIME_ENABLED"
 APP_PATH = "celery_runtime.entrypoint:celery_app"
-
 
 async def start_embedded_celery():
     """由 API 进程托管 worker/beat 子进程。"""
@@ -27,8 +25,6 @@ async def start_embedded_celery():
 
     env = os.environ.copy()
     env["SECRET_KEY"] = SECRET_KEY
-    env[RUNTIME_ENV_VAR] = "true"
-    env["CREATED_CELERY_SUB"] = "true"
 
     worker_args = [
         "-A", APP_PATH, "worker",

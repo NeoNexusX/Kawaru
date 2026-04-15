@@ -33,7 +33,8 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from background.celery_app import TaskManager, wait_for_result
+from celery_runtime.management import TaskManager
+from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY

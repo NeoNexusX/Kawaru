@@ -8,7 +8,6 @@ bootstrap()
 # pylint: disable=wrong-import-position
 from boot.config import get_config
 from celery_runtime.launcher import start_embedded_celery, stop_embedded_celery,enable_embedded_celery
-from storage_backend.oss_client import oss_sumary, oss_client
 from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
@@ -30,8 +29,6 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     # save process object so other parts of app can inspect/terminate if needed
     app.state.celery_worker_proc = celery_worker_proc
     app.state.celery_beat_proc = celery_beat_proc
-    # oss client summary
-    await oss_sumary(oss_client)
 
     yield
 

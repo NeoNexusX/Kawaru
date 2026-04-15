@@ -19,12 +19,12 @@ from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 
-from background.celery_app import celery_app
+from celery_runtime.state import get_celery_app
 
 from tools import get_logger,utc_time
 logger = get_logger("background.file_background")
 
-assert celery_app is not None, "celery_app is None"
+celery_app = get_celery_app()
 
 
 @celery_app.task() # type: ignore
