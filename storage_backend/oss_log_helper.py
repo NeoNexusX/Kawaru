@@ -5,6 +5,7 @@ from aliyun.log import LogClient, GetLogsResponse
 from aliyun.log.queriedlog import QueriedLog
 from aliyun.log.auth import AUTH_VERSION_4
 
+from background.celery_app import celery_app
 from constants.file_constants import OSS_REGION_ID, FC_LOG_PROJECT_NAME, FC_LOGSTORE_NAME
 
 from tools.logger import get_logger
@@ -33,7 +34,8 @@ def get_oss_log_client():
     return client
 
 
-async def get_fc_logs_instance_id_by_request_id(request_id: str) -> str | None:
+@celery_app.task()
+async def get_fc_invoke_instance_id_by_request_id_task(request_id: str) -> str | None:
     """
     根据request_id获取函数计算日志的instanceID
     """
@@ -57,7 +59,8 @@ async def get_fc_logs_instance_id_by_request_id(request_id: str) -> str | None:
     return None
 
 
-async def get_fc_invoke_logs_by_instance_id(instance_id: str) -> list[str] | None:
+@celery_app.task()
+async def get_fc_invoke_logs_by_instance_id_task(instance_id: str) -> list[str] | None:
     """
     根据instanceID获取函数计算日志
     """
@@ -75,7 +78,34 @@ async def get_fc_invoke_logs_by_instance_id(instance_id: str) -> list[str] | Non
         content: dict = log.contents
         message_list.append(content["message"])
 
+    message_list.reverse()
+
     return message_list
+
+
+@celery_app.task()
+async def get_fc_invoke_status_task(request_id: str) -> bool | None:
+    """
+    根据request_id获取函数计算成功状态
+    返回True表示成功，False表示失败
+    """
+    # 构建查询语句，查询指定request_id且包含message字段的日志
+    query = f"* and requestId : {request_id} and hasFunctionError:*"
+
+    # 执行查询
+    logs = await fetch_fc_logs_async(query)
+    if logs is None:
+        return None
+
+    # 解析查询结果
+    for log in logs:
+        content: dict = log.contents
+        if content["hasFunctionError"] == "true":
+            return False
+        if content["hasFunctionError"] == "false":
+            return True
+
+    return None
 
 
 async def fetch_fc_logs_async(query: str) -> list[QueriedLog] | None:

@@ -123,6 +123,7 @@ async def mark_experiment(
     注意:final_imzml_path 和 final_ibd_path 必须存在且有效，才能标记为完成状态
 
     """
+    # TODO：对oss逻辑进行实现
     experiment_record = await find_experiment_by_id(async_session, experiment) if isinstance(experiment, int) else experiment
 
     if experiment_record:

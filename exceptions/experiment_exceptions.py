@@ -52,6 +52,13 @@ imzml_validation_failed_exception = HTTPException(
     detail=format_exception_detail("imzML file validation failed")
 )
 
+# oss上传后自动触发的函数调用ID为空异常
+oss_fc_request_id_empty_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail=format_exception_detail("oss fc_request_id is required")
+)
+
+
 __all__ = [
     "experiment_not_found_exception",
     "experiment_permission_denied_exception",

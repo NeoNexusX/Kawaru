@@ -648,7 +648,7 @@ async def get_file_list(
 async def oss_upload_complete(
     file_id: int,
     current_user_id: int,
-    request_id: str,
+    fc_request_id: str,
     async_session: AsyncSessionDep
 ):
     """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
@@ -687,7 +687,7 @@ async def oss_upload_complete(
         raise internal_server_error_exception from e
 
     # TODO: 触发实验文件提取任务的oss版本
-    await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
+    await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
     return pre_record
 
 
