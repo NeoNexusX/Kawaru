@@ -30,4 +30,4 @@ RUN mkdir -p kwawaru_logs data && chown -R appuser:appuser /app
 
 USER appuser
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "main.py"]

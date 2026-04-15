@@ -59,12 +59,13 @@ app.include_router(experiment_router)
 if __name__ == "__main__":
     # get config
     config = get_config()
+    reload_enabled = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
     uvicorn.run(
         "main:app",  # 模块名:FastAPI 实例名
         host=config.server.host,  # 监听所有网络接口
         port=config.server.port,  # 端口号
         log_level=os.getenv("LOG_LEVEL", "info"),  # 日志级别
-        reload=True,  # 开发时自动重载
+        reload=reload_enabled,  # 容器默认关闭，开发环境可通过环境变量开启
         reload_excludes=[
             "tests/**" # 排除测试文件夹导致的自动重载
         ]

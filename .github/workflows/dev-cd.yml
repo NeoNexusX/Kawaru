@@ -1,0 +1,73 @@
+name: Dev CD
+
+on:
+  push:
+    branches:
+      - k8s
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/kawaru
+  GITOPS_BRANCH: k8s
+  GITOPS_PATH: overlays/dev/kustomization.yaml
+
+jobs:
+  publish-dev:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev-latest
+            type=sha,prefix=sha-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GITOPS_REPOSITORY }}
+          ref: ${{ env.GITOPS_BRANCH }}
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+
+      - name: Update dev image tag
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          sed -i "s/newTag:.*/newTag: ${IMAGE_TAG}/" "gitops/${GITOPS_PATH}"
+
+      - name: Commit GitOps change
+        working-directory: gitops
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${GITOPS_PATH}"
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: deploy dev image ${IMAGE_TAG}"
+          git push origin "${GITOPS_BRANCH}"
