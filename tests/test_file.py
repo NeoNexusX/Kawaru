@@ -19,12 +19,19 @@
 import os
 import io
 import json
+import asyncio
+from pathlib import Path
 import math
 import hashlib
 import zipfile
 from typing import Tuple, List
 import pytest
 from httpx import AsyncClient
+
+import alibabacloud_oss_v2 as oss
+from alibabacloud_oss_v2 import PutObjectRequest
+
+from tools.cal_hash import compute_file_md5
 from .conftest import logger
 
 # ------------------------------------------------------------------ #
@@ -33,6 +40,8 @@ from .conftest import logger
 TEST_FILENAME = "kawaru_functest.zip"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
+TEST_IMZML_SIZE = 10240 * 1024  # 10 MB，调整此值控制 imzML 大小
+TEST_IBD_SIZE = 10240 * 1024  # 10 MB，调整此值控制 ibd 大小
 
 
 def _make_test_zip(fill_size: int = TEST_FILL_SIZE) -> bytes:
@@ -44,6 +53,38 @@ def _make_test_zip(fill_size: int = TEST_FILL_SIZE) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
         zf.writestr("data.bin", os.urandom(fill_size))
     return buf.getvalue()
+
+
+def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = TEST_IBD_SIZE) -> Path:
+    """创建合法包含imzML和ibd文件的zip包到本地临时目录，并返回zip文件的路径"""
+    temp_dir = Path("../../test_temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = temp_dir / TEST_FILENAME
+
+    # 分块创建imzML文件
+    _CHUNK_BUFFER_SIZE = 1024 # 1 KB # pylint:disable = invalid-name
+    with open(temp_dir / "test_imzML.imzML", "wb") as zf:
+        for i in range(0, imzml_size, _CHUNK_BUFFER_SIZE):
+            zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
+
+    # 分块创建ibd文件
+    with open(temp_dir / "test_ibd.ibd", "wb") as zf:
+        for i in range(0, ibd_size, _CHUNK_BUFFER_SIZE):
+            zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
+
+    # 压缩zip包
+    zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED,) as zf:
+        zf.write(temp_dir / "test_imzML.imzML", "test_imzML.imzML")
+        zf.write(temp_dir / "test_ibd.ibd", "test_ibd.ibd")
+
+
+
+    # 删除源文件
+    (temp_dir / "test_imzML.imzML").unlink()
+    (temp_dir / "test_ibd.ibd").unlink()
+
+    return zip_path
 
 
 def _split_into_chunks(data: bytes, chunk_count: int) -> List[bytes]:
@@ -73,7 +114,7 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         content = _make_test_zip()
-        md5 = hashlib.md5(content).hexdigest()
+        file_verify_code = hashlib.md5(content).hexdigest()
 
         rs = await client.post(
             "/files/preflight",
@@ -83,7 +124,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_md5": md5,
+                "file_verify_code": file_verify_code,
                 "experiment_type": "imzML",
                 "organism": "", 
                 "organism_part": "",
@@ -120,7 +161,7 @@ class TestFile:
                 "filename": "kawaru_test.exe",   # 不在 allowed_file_types 中
                 "file_type": "exe",
                 "size": 1024,
-                "hash_md5": "a" * 32,
+                "file_verify_code": "a" * 32,
                 "experiment_type": "",
             },
         )
@@ -141,7 +182,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_md5": hashlib.md5(content).hexdigest(),
+                "file_verify_code": hashlib.md5(content).hexdigest(),
                 "experiment_type": "",
             },
         )
@@ -163,7 +204,7 @@ class TestFile:
 
         content_a = _make_test_zip()
         content_b = _make_test_zip()  # 不同的随机内容，hash 必然不同
-        md5_a = hashlib.md5(content_a).hexdigest()
+        file_verify_code_a = hashlib.md5(content_a).hexdigest()
         mismatch_filename = "kawaru_mismatch_test.zip"
 
         # preflight 用 content_a 的 hash
@@ -175,16 +216,16 @@ class TestFile:
                 "filename": mismatch_filename,
                 "file_type": "zip",
                 "size": len(content_a),
-                "hash_md5": md5_a,
+                "file_verify_code": file_verify_code_a,
                 "experiment_type": "imzML",
                 "organism": "",
-                 "organism_part": "", 
+                 "organism_part": "",
                  "condition": "",
-                "sample_growth_conditions": "", 
+                "sample_growth_conditions": "",
                 "sample_stabilization": "",
-                "tissue_modification": "", 
+                "tissue_modification": "",
                 "maldi_matrix": "",
-                "maldi_matrix_application": "", 
+                "maldi_matrix_application": "",
                 "solvent": "",
                 "total_parts": 1
             },
@@ -212,7 +253,7 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         content = _make_test_zip()
-        md5 = hashlib.md5(content).hexdigest()
+        file_verify_code = hashlib.md5(content).hexdigest()
 
         # 1. preflight
         rs = await client.post(
@@ -223,7 +264,7 @@ class TestFile:
                 "filename": TEST_FILENAME,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_md5": md5,
+                "file_verify_code": file_verify_code,
                 "experiment_type": "imzML",
                 "organism": "", 
                 "organism_part": "",
@@ -359,7 +400,7 @@ class TestFile:
         """
         完整分片上传流程：preflight → 逐片 chunked/upload → 合并完成
         - 文件由内存 zip 构造，按 TEST_CHUNK_COUNT 均匀切分
-        - 每片计算独立 md5，preflight 携带 total_parts
+        - 每片计算独立 file_verify_code，preflight 携带 total_parts
         - 上传完最后一片后服务端自动合并，file_id 存入 class 变量供清理
         """
         client, token, token_type = admin_login
@@ -386,7 +427,7 @@ class TestFile:
                 "filename": chunked_filename,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_md5": total_hash,
+                "file_verify_code": total_hash,
                 "experiment_type": "imzML",
                 "organism": "",
                 "organism_part": "",
@@ -464,7 +505,7 @@ class TestFile:
                 "filename": bad_filename,
                 "file_type": "zip",
                 "size": len(content),
-                "hash_md5": total_hash,
+                "file_verify_code": total_hash,
                 "experiment_type": "imzML",
                 "organism": "",
                 "organism_part": "",
@@ -503,11 +544,99 @@ class TestFile:
         # 清理预检记录
         await client.delete(f"/files/{pre_file_id}", headers=auth)
 
+
+    # ------------------------------------------------------------------ #
+    # OSS上传测试
+    # ------------------------------------------------------------------ #
+    @pytest.mark.oss
+    async def test_upload_to_oss(self, admin_login: Tuple[AsyncClient, str, str]):
+        """测试上传到OSS的完整流程，验证文件成功上传并可访问"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        zip_path = _make_test_zip_to_local()
+        file_verify_code, size = await compute_file_md5(zip_path)
+
+        # 1. preflight
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json={
+                "storage_type": "oss",
+                "filename": TEST_FILENAME,
+                "file_type": "zip",
+                "size": size,
+                "file_verify_code": file_verify_code,
+                "experiment_type": "imzML",
+                "organism": "",
+                "organism_part": "",
+                 "condition": "",
+                "sample_growth_conditions": "",
+                "sample_stabilization": "",
+                "tissue_modification": "",
+                "maldi_matrix": "",
+                "maldi_matrix_application": "",
+                "solvent": "",
+                "total_parts": 1
+            },
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+        logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
+
+        # 2. get upload oss_sts_token and oss_path
+        with open(zip_path, "rb") as f:
+            rs = await client.post(
+                "/files/upload",
+                headers=auth,
+                data={"pre_file_id": str(pre_file_id)},
+                files={"file": (TEST_FILENAME, f, "application/zip")},
+            )
+        assert rs.status_code == 200, rs.text
+        file_id = rs.json()["file_id"]
+        oss_sts_token = rs.json()["oss_sts_token"]
+        oss_path = rs.json()["oss_path"]
+        oss_bucket = rs.json()["oss_bucket"]
+
+        # 3. upload file to oss
+        # 3.1 get oss config
+        credentials_provider = oss.credentials.StaticCredentialsProvider(
+            access_key_id=oss_sts_token["AccessKeyId"],
+            access_key_secret=oss_sts_token["AccessKeySecret"],
+            security_token=oss_sts_token["SecurityToken"],
+        )
+
+        cfg = oss.config.load_default()
+        cfg.credentials_provider = credentials_provider
+        cfg.region = os.getenv("OSS_REGION_ID") or ""
+
+        # 3.2 create oss client and upload file
+        oss_client = oss.Client(cfg)
+
+        def _put_obect_from_path() -> oss.UploadResult:
+            uploader = oss_client.uploader(enable_checkpoint=True, checkpoint_dir=str(zip_path.parent / "checkpoint"))
+            result = uploader.upload_file(PutObjectRequest(
+                bucket=oss_bucket,
+                key=oss_path,
+            ), filepath=str(zip_path))
+            return result
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _put_obect_from_path)
+        assert result.status_code == 200, result.status
+
+        TestFile._uploaded_file_id = file_id
+        logger.info((f"test_upload_to_oss passed: file_id={file_id} size={size} oss_path={oss_path}\n"
+                     f"etag={result.etag} content-md5={result.headers.get('Content-MD5')} real-md5={file_verify_code}"))
+
+
     # ------------------------------------------------------------------ #
     # 清理
     # ------------------------------------------------------------------ #
 
     @pytest.mark.file
+    @pytest.mark.oss
+    @pytest.mark.order("last")
     async def test_cleanup_uploaded_file(self, admin_login: Tuple[AsyncClient, str, str]):
         """清理测试产生的文件，确保不污染数据库"""
         client, token, token_type = admin_login

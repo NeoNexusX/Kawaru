@@ -12,7 +12,7 @@ import aiofiles
 
 CHUNK_SIZE = 1024 * 1024  # 1MB分片大小
 
-async def compute_file_md5(file_path: str) -> tuple[str, int]:
+async def compute_file_md5(file_path: str | Path) -> tuple[str, int]:
     """
     异步计算文件的MD5哈希值和大小
     
@@ -24,6 +24,9 @@ async def compute_file_md5(file_path: str) -> tuple[str, int]:
     """
     md5 = hashlib.md5()
     size = 0
+
+    if isinstance(file_path, Path):
+        file_path = str(file_path.resolve())
 
     # 使用aiofiles异步打开文件
     async with aiofiles.open(file_path, 'rb') as file:

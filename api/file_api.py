@@ -691,6 +691,7 @@ async def oss_upload_complete(
         raise internal_server_error_exception from e
 
     # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
+    # TODO: OSS自动解压端需计算md5值并写入对象元数据，与前端上传的md5值对比，确认文件完整性
     await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
     return pre_record
 

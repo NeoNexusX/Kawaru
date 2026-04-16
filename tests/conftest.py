@@ -33,11 +33,11 @@ def _init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None
     _logger.LOGGER_MANAGER = _logger.LoggerManager()
 
     _logger.LOGGER_MANAGER.init_app(
-        log_level="debug",
-        log_dir="tests",
+        log_level=log_level or "debug",
+        log_dir=log_dir or "tests",
     )
 
-_init_logging()
+_init_logging(log_level="debug", log_dir="tests")
 logger = get_logger("test")
 
 # 基础存储配置来自 config
@@ -69,6 +69,7 @@ async def _admin_login(async_client):
     if not (username and password):
         pytest.skip("TEST_USER/TEST_PWD hasn't provided yet.")
 
+    # 登录
     rs = await client.post(
         "/login",
         data={
@@ -94,3 +95,10 @@ async def _admin_login(async_client):
         )
 
     yield client, token, token_type
+
+    # 测试结束后，退出登录
+    rs = await client.post(
+        "/logout",
+        headers={"Authorization": f"{token_type.title()} {token}"},
+    )
+    assert rs.status_code == 200, rs.text
