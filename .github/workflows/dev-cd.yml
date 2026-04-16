@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -46,8 +46,16 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Validate GitOps settings
+        env:
+          GITOPS_REPOSITORY: ${{ vars.GITOPS_REPOSITORY }}
+          GITOPS_REPO_TOKEN: ${{ secrets.GITOPS_REPO_TOKEN }}
+        run: |
+          test -n "$GITOPS_REPOSITORY" || { echo "Missing Actions variable: GITOPS_REPOSITORY"; exit 1; }
+          test -n "$GITOPS_REPO_TOKEN" || { echo "Missing Actions secret: GITOPS_REPO_TOKEN"; exit 1; }
+
       - name: Checkout GitOps repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ vars.GITOPS_REPOSITORY }}
           ref: ${{ env.GITOPS_BRANCH }}
