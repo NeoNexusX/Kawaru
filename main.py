@@ -46,14 +46,14 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
 app = FastAPI(lifespan=lifespan)
 
 # CORSMiddleware跨域请求
-origins = ["*", ] # 接受所有来源请求
+config = get_config() # 获取全局配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition", "Content-Length"],
+    allow_origins=config.cors.allow_origins,
+    allow_credentials=config.cors.allow_credentials,
+    allow_methods=config.cors.allow_methods,
+    allow_headers=config.cors.allow_headers,
+    expose_headers=config.cors.expose_headers,
 )
 
 app.include_router(user_router)
@@ -62,8 +62,6 @@ app.include_router(experiment_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":
-    # get config
-    config = get_config()
     uvicorn.run(
         "main:app",  # 模块名:FastAPI 实例名
         host=config.server.host,  # 监听所有网络接口

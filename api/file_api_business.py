@@ -56,12 +56,16 @@ from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus
 
+from boot.config import get_config
+
 if TYPE_CHECKING:
     from fastapi import UploadFile
     from models.file_models import PartCreate
 
 logger = get_logger("api.file_api_business")
 
+celery_worker_config = get_config().celery
+large_file_poll_time = celery_worker_config.large_file_poll_time
 #########################
 # File  - 增
 #########################
@@ -310,7 +314,7 @@ async def prepare_download_file(
                 ]
 
                 task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大 TODO 考虑从.env配置文件读取timeout值
+                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
                 if zip_size is None:
                     raise file_content_missing_exception
 

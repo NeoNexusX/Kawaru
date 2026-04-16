@@ -47,6 +47,7 @@ class CelerySettings(BaseModel):
     worker_log_file: str
     worker_disable_rate_limits: bool
     worker_pool: str
+    large_file_poll_time: int
 
 
 class EmailSettings(BaseModel):
@@ -136,6 +137,15 @@ class AdminInfo(BaseModel):
     email: str
 
 
+class CORSSettings(BaseModel):
+    """CORS 配置模型"""
+    allow_origins: list[str]
+    allow_credentials: bool
+    allow_methods: list[str]
+    allow_headers: list[str]
+    expose_headers: list[str]
+
+
 class Config(BaseModel):
     """全局配置模型"""
     server: ServerSettings
@@ -149,3 +159,4 @@ class Config(BaseModel):
     token: TokenSettings
     admin_info: AdminInfo
     sample_info: SampleInfoSettings
+    cors: CORSSettings

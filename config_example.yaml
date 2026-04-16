@@ -3,6 +3,23 @@ server:
   port: 8000
   host: 0.0.0.0
 
+cors:
+  allow_origins: ["https://your-frontend.com"]
+  allow_credentials: false
+  allow_methods:
+   - "GET"
+   - "POST"
+   - "DELETE"
+   - "OPTIONS"
+  allow_headers:
+   - "Authorization"
+   - "Content-Type"
+   - "Accept"
+   - "Origin"
+  expose_headers:
+    - "Content-Disposition"
+    - "Content-Length"
+
 token:
   token_expire_minutes: 1440
   login_expire_minutes: 120

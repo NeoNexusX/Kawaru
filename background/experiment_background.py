@@ -20,8 +20,12 @@ from models.experiment_models import ExperimentStatus
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 
+from boot.config import get_config
 from tools.logger import get_logger
 logger = get_logger("background.experiment_background")
+
+celery_worker_config = get_config().celery
+large_file_poll_time = celery_worker_config.large_file_poll_time
 
 async def trigger_experiment_extraction(
     file_record: FileInDB,
@@ -140,7 +144,7 @@ async def extract_and_validate_local_imzml_zip(
     """
     try:
         res = extract_and_validate_local_imzml_zip_task.delay(str(zip_file_path), str(target_dir)) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
+        result = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore 
         if result is None:
             logger.error(f"failed to extract and validate imzml zip due to server timeout: {zip_file_path}")
             raise TimeoutError("extract and validate imzml zip timeout")

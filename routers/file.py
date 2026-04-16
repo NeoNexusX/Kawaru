@@ -9,6 +9,8 @@ from api.file_api import (
     OssUploadCompleteDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
+from background.file_background_helper import get_oss_upload_sts_token_task
+from background.celery_app import wait_for_result
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -73,8 +75,7 @@ async def oss_upload_complete(file_record: OssUploadCompleteDep):
 @file_router.post("/test_api")
 async def test_api():
     """测试API"""
-    from background.file_background_helper import get_oss_upload_sts_token_task
-    from background.celery_app import wait_for_result
+
     res = get_oss_upload_sts_token_task.delay("testfile.txt") # type: ignore
     result = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
     return result
