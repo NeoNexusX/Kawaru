@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 import json
-import asyncio
+import datetime
 import zipfile
 import hashlib
 from pathlib import Path
@@ -238,7 +238,7 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     # 创建请求
     request = AssumeRoleRequest(
         role_arn=role_arn,
-        role_session_name=f"upload-session-{file_path}",
+        role_session_name=f"upload-{str(Path(file_path).stem)}-{datetime.datetime.now().timestamp()}",
         policy=json.dumps(policy),
         duration_seconds=3600
     )

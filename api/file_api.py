@@ -323,8 +323,8 @@ async def upload_simple_file(
                         f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
         elif storage_type == "oss":
-            # 如果是oss存储，向前端返回带oss_upload_path的URL，前端需要根据URL上传文件到oss
-            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务(或通过oss回调进行通知)
+            # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
+            # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
             oss_path = OssStorage.prepare_storage_path(file.filename) # oss 存储路径(如)
             oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
             if not oss_sts_token or not oss_path:
@@ -673,12 +673,13 @@ async def oss_upload_complete(
         is_file_exist = await OssStorage.validate_file(oss_path, pre_record.size)
         if not is_file_exist:
             oss_path = None
-            raise FileNotFoundError(f"file_id={file_id}, oss_file_name={pre_record.filename} not found")
+            raise FileNotFoundError(f"file_id={file_id}, oss_file_path={oss_path} not found")
 
         # 更新文件路径
         pre_record.path = oss_path
         await async_session.commit()
         await async_session.refresh(pre_record)
+        await async_session.refresh(current_user)
 
     except Exception as e:
         logger.error(f"oss_upload_complete failed: {e}")
@@ -691,6 +692,23 @@ async def oss_upload_complete(
     return pre_record
 
 
+async def oss_upload_file(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+    pre_file_id: int = Form(...),
+    file: UploadFile = File(...),
+) -> FilePublic:
+    """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
+    storage_type = "oss"
+    return await upload_simple_file(
+        current_user,
+        async_session,
+        storage_type,
+        pre_file_id,
+        file,
+    )
+
+
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
@@ -701,3 +719,4 @@ PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
 PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadCompleteDep = Annotated[FilePublic, Depends(oss_upload_complete)]
+OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]

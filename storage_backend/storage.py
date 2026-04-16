@@ -119,7 +119,7 @@ class OssStorage:
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.lstrip('/')}/{filename}"
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}"
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> str:

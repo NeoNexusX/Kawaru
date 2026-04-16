@@ -6,7 +6,7 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,
-    OssUploadCompleteDep
+    OssUploadCompleteDep, OssUploadDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -68,3 +68,24 @@ async def list_files(list_file_response: ListPublicFilesDep):
 async def oss_upload_complete(file_record: OssUploadCompleteDep):
     """OSS上传完成时，前端调用该接口通知后端"""
     return file_record
+
+
+@file_router.post("/upload", response_model=FilePublic)
+async def upload_file(file_record: OssUploadDep):
+    """上传文件至OSS存储"""
+    return file_record
+
+
+# @file_router.post("/test_api")
+# async def test_api(request_id: str):
+#     """测试接口"""
+#     from background.experiment_background import get_fc_invoke_instance_id_by_request_id # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import get_fc_invoke_logs_by_request_id # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import get_fc_invoke_status  # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import parse_fc_invoke_logs # pylint: disable=import-outside-toplevel
+
+#     instance_id = await get_fc_invoke_instance_id_by_request_id(request_id)
+#     invoke_logs = await get_fc_invoke_logs_by_request_id(request_id)
+#     invoke_status = await get_fc_invoke_status(request_id)
+#     final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
+#     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, "final_ibd_path": final_ibd_path}
