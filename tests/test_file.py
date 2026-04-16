@@ -57,7 +57,7 @@ def _make_test_zip(fill_size: int = TEST_FILL_SIZE) -> bytes:
 
 def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = TEST_IBD_SIZE) -> Path:
     """创建合法包含imzML和ibd文件的zip包到本地临时目录，并返回zip文件的路径"""
-    temp_dir = Path("../../test_temp")
+    temp_dir = Path("../test_temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
     zip_path = temp_dir / TEST_FILENAME
 
