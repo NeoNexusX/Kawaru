@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi import HTTPException
 
-from storage_backend.storage import LocalStorage, OssStorage
+from storage_backend.storage import LocalStorage
 from storage_backend.oss_log_helper import(
     get_fc_invoke_status_task,
     get_fc_invoke_instance_id_by_request_id_task,
@@ -150,7 +150,7 @@ async def process_imzml_experiment_background_task(
                 raise storage_type_not_allowed_exception
 
             # 更新实验记录
-            await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
+            await mark_experiment(async_session,experiment_record,storage_type,final_imzml_path,final_ibd_path)
 
             # 保留原始 ZIP 文件与数据库 path 字段，由定时任务统一清理
             await async_session.commit()
@@ -163,9 +163,10 @@ async def process_imzml_experiment_background_task(
             raise e
 
         except (zipfile.BadZipFile, FileNotFoundError) as e:
-            #此处理论上experiment_record一定存在，直接使用即可
+            #此处理论上experiment_record和storage_type一定存在，直接使用即可
             await mark_experiment(async_session = async_session,
-                                    experiment=experiment_record.id, #type:ignore
+                                    experiment=experiment_record.id, # type:ignore
+                                    storage_type=storage_type, # type:ignore
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
