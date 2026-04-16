@@ -87,6 +87,7 @@ class FilePublic(FileBase):
     last_downloaded_at: datetime
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
     oss_sts_token: OssStsToken | None = Field(default=None)
+    oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
 
 

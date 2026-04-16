@@ -35,7 +35,7 @@ from api.file_api_helper import (
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items, get_user_by_id
-from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES
+from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     file_persist_failed_exception,
@@ -284,6 +284,7 @@ async def upload_simple_file(
     pre_record = None
     final_path = None
     oss_path = None
+    oss_bucket = None
     oss_sts_token = None
 
     try:
@@ -326,6 +327,7 @@ async def upload_simple_file(
             # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
             # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
             oss_path = OssStorage.prepare_storage_path(file.filename) # oss 存储路径(如)
+            oss_bucket = OSS_BUCKET_NAME
             oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
             if not oss_sts_token or not oss_path:
                 raise internal_server_error_exception
@@ -344,6 +346,7 @@ async def upload_simple_file(
         pre_record = FilePublic.model_validate(pre_record)
         pre_record.oss_path = oss_path
         pre_record.oss_sts_token = oss_sts_token
+        pre_record.oss_bucket = oss_bucket
 
     return pre_record # type: ignore
 
