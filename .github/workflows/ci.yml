@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   pull_request:
   push:
@@ -189,4 +192,4 @@ jobs:
         run: uv run python -m compileall main.py api background boot celery_runtime constants database models routers storage_backend tests
 
       - name: Build Docker image
-        run: docker build -t kawaru:ci .
+        run: docker build -t kawaru:ci -f docker/Dockerfile .

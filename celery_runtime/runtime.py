@@ -28,7 +28,7 @@ def build_celery_runtime() -> Celery | None:
 
 def celery_summary(app: Celery, config):
     """生成 Celery 配置摘要字符串。"""
-    
+
     if config.celery.enable_embedded_celery:
         broker = app.conf.get('broker_url', 'N/A')
         backend = app.conf.get('result_backend', 'N/A')
