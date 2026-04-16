@@ -686,7 +686,7 @@ async def oss_upload_complete(
             await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
         raise internal_server_error_exception from e
 
-    # TODO: 触发实验文件提取任务的oss版本
+    # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
     await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
     return pre_record
 

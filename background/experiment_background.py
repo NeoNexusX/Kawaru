@@ -39,10 +39,13 @@ async def trigger_experiment_extraction(
 ) -> None:
     """
     根据实验类型触发后台实验文件提取任务（仅触发celery任务，不会阻塞）
+    - 对于本地存储，执行本地解压任务
+    - 对于OSS存储，读取并解析oss端自动提取任务的结果
 
     :param file_record: 文件记录
     :param current_user: 当前用户
     :param experiment_type: 实验类型
+    :type fc_request_id: str | None = None
     :param fc_request_id: oss上传后自动触发的函数调用ID（可在oss上传完成后返回的响应head获取到）
     """
     if experiment_type != "imzML":
