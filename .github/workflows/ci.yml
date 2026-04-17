@@ -4,10 +4,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 on:
-  pull_request:
   push:
-    branches:
-      - k8s
+    branches: [test]
+  pull_request:
+    branches: [test]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -59,6 +63,8 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.7.22"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Create CI config
         run: |
@@ -191,5 +197,16 @@ jobs:
       - name: Sanity check imports
         run: uv run python -m compileall main.py api background boot celery_runtime constants database models routers storage_backend tests
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build Docker image
-        run: docker build -t kawaru:ci -f docker/Dockerfile .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: kawaru:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

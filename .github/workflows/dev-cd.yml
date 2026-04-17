@@ -3,15 +3,12 @@ name: Dev CD
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/kawaru
-  GITOPS_BRANCH: k8s
+  GITOPS_BRANCH: dev
   GITOPS_PATH: overlays/dev/kustomization.yaml
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [k8s]
-  workflow_dispatch:
+  push:
+    branches: [dev]
 
 permissions:
   contents: read
@@ -20,12 +17,11 @@ permissions:
 jobs:
   publish-dev:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -42,8 +38,6 @@ jobs:
           tags: |
             type=raw,value=dev-latest
             type=sha,prefix=sha-
-        env:
-          GITHUB_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -72,14 +66,14 @@ jobs:
 
       - name: Update dev image tag
         env:
-          IMAGE_TAG: sha-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
         run: |
           sed -i "s/newTag:.*/newTag: ${IMAGE_TAG}/" "gitops/${GITOPS_PATH}"
 
       - name: Commit GitOps change
         working-directory: gitops
         env:
-          IMAGE_TAG: sha-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
