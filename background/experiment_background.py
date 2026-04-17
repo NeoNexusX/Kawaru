@@ -7,7 +7,8 @@ from fastapi import HTTPException
 
 from storage_backend.storage import LocalStorage, OssStorage
 from database.db import get_async_engine
-from background.celery_app import celery_app, wait_for_result
+from celery_runtime.state import get_celery_app
+from celery_runtime.result import wait_for_result
 from api.experiment_api_business import (
     create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 )
@@ -23,6 +24,7 @@ from exceptions.experiment_exceptions import invalid_zip_file_exception
 from boot.config import get_config
 from tools.logger import get_logger
 logger = get_logger("background.experiment_background")
+celery_app = get_celery_app()
 
 celery_worker_config = get_config().celery
 large_file_poll_time = celery_worker_config.large_file_poll_time

@@ -4,10 +4,11 @@ from email.message import EmailMessage
 
 import httpx
 
-from background.celery_app import celery_app
+from celery_runtime.state import get_celery_app
 from tools.logger import get_logger
 
 logger = get_logger("background.api_background")
+celery_app = get_celery_app()
 
 
 @celery_app.task() # type: ignore

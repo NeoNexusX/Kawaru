@@ -58,6 +58,7 @@ redis:
   celery_redbeat_db_index: 3
 
 celery:
+  enable_embedded_celery: true
   worker_concurrency: 10
   worker_log_level: "INFO"
   worker_log_file: "kawaru_logs/celery.log"

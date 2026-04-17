@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from background.file_background_helper import (
     get_oss_upload_sts_token_task,
     compute_upload_local_file_hash_task,
