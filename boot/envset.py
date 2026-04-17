@@ -22,13 +22,11 @@ class EnvSet:
         """输出环境变量的摘要信息，帮助调试和验证环境变量是否正确加载"""
         logger = get_logger("bootstrap.envset")
 
-        if self.env:
-            for env_name in stander_envs:
-                env_temp = os.getenv(env_name)
-                if env_temp is not None:
-                    logger.info(f"{env_name}: {env_temp}")
-                else:
-                    logger.error(f"{env_name} is not set")
-                    raise ValueError(f"{env_name} environment variable is required")
-        else:
-            logger.error("loading environment variables failed")
+        logger.info("dotenv file loaded: %s", self.env)
+        for env_name in stander_envs:
+            env_temp = os.getenv(env_name)
+            if env_temp is not None:
+                logger.info(f"{env_name}: {env_temp}")
+            else:
+                logger.error(f"{env_name} is not set")
+                raise ValueError(f"{env_name} environment variable is required")

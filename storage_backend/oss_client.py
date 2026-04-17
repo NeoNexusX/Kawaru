@@ -1,8 +1,7 @@
-import os
+import asyncio
 import alibabacloud_oss_v2 as oss
 import alibabacloud_oss_v2.aio as oss_aio
 from alibabacloud_oss_v2 import GetBucketLocationRequest
-
 from boot.config import get_config
 from exceptions.file_exceptions import oss_client_create_failed_exception
 
@@ -28,16 +27,11 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
     return _oss_client
 
 
-if os.getenv("CREATE_CELERY_SUB"):
-    oss_client = create_oss_client()
-else:
-    oss_client: "oss_aio.AsyncClient | None" = None
-
-
-async def oss_sumary(client: oss_aio.AsyncClient | None):
+async def oss_summary(client: oss_aio.AsyncClient | None = None):
     """oss_client 摘要"""
     logger = get_logger("bootstrap.oss_sumary")
     if client is None:
+        logger.warning("OSS client is not initialized, skipping OSS summary.")
         return
     try:
         oss_config = get_config().oss
@@ -52,3 +46,10 @@ async def oss_sumary(client: oss_aio.AsyncClient | None):
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error("oss initialize failed: %s", exc)
         raise oss_client_create_failed_exception from exc
+    finally:
+        if client is not None:
+            await client.close()  # 确保客户端连接被关闭，释放资源
+
+def init_oss_summary(client: oss_aio.AsyncClient | None):
+    """同步包装异步验证"""
+    asyncio.run(oss_summary(client))

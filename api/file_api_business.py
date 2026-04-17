@@ -29,7 +29,7 @@ from api.file_api_helper import (
 )
 from storage_backend.storage import OssStorage, LocalStorage
 
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,

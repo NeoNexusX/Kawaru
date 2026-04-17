@@ -42,6 +42,7 @@ class RedisSettings(BaseModel):
 
 class CelerySettings(BaseModel):
     """Celery配置模型"""
+    enable_embedded_celery: bool = True
     worker_concurrency: int
     worker_log_level: str
     worker_log_file: str

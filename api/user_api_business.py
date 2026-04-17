@@ -18,7 +18,7 @@ from exceptions.user_exceptions import (
 
 
 from background.api_background import validate_orcid_task
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from tools.logger import get_logger
 logger = get_logger("api.user_api_business")
 

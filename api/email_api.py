@@ -13,7 +13,7 @@ TOTP, EmailPurpose, MailgunEmailPayload)
 from database.db import AsyncSessionDep
 from api.user_api import get_user_by_email
 from background.api_background import send_mailgun_message_task, send_smtp_email_task
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from exceptions.user_exceptions import email_already_exists_exception
 from exceptions.utils_exception import format_exception_detail
 
