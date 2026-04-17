@@ -64,18 +64,10 @@ class UserPublic(BaseModel):
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
 
 
-class UserDetailPublic(BaseModel):
+class UserDetailPublic(UserBase):
     """用于返回响应信息的用户模型"""
-    username: str = Field(max_length=user_config.max_username_length)
-    active: bool = Field(default=True)
-    identity: str = Field(default="user", max_length=user_config.max_identity_length)
-    institution: str = Field(default="", max_length=user_config.max_institution_length)
-    position: str = Field(default="", max_length=user_config.max_position_length)
-    research_field: str | None = Field(max_length=user_config.max_research_field_length)
-    region: str | None = Field(max_length=user_config.max_region_length)
-    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
-    homepage: str | None = Field(max_length=user_config.max_homepage_length)
-    email: str = Field(max_length=user_config.max_useremail_length, description="用户邮箱")
+    total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
+    file_count: int = Field(default=0, description="用户文件数量")
 
 class UserUpdate(BaseModel):
     """

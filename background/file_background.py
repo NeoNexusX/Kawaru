@@ -114,7 +114,7 @@ async def cleanup_old_download_zips(
     return cleaned
 
 
-@celery_app.task()  # type: ignore
+@celery_app.task()  # type: ignore TODO 这个函数目前还存在问题
 async def clean_user_all_task(
     file_ids: list[int],
     deleted_user_id: int | None = None,

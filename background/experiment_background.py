@@ -144,7 +144,7 @@ async def extract_and_validate_local_imzml_zip(
     """
     try:
         res = extract_and_validate_local_imzml_zip_task.delay(str(zip_file_path), str(target_dir)) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore 
+        result = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
         if result is None:
             logger.error(f"failed to extract and validate imzml zip due to server timeout: {zip_file_path}")
             raise TimeoutError("extract and validate imzml zip timeout")

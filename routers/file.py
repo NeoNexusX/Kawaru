@@ -4,8 +4,8 @@ from models.file_models import FilePublic, PartUploadStatus
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, PreflightDep,PartPublic,
-    PartUploadDep, PartStatusDep, ListPublicFilesDep,
+    DownloadFileDep, PreflightDep, PartPublic,
+    PartUploadDep, PartStatusDep, ValidateAndMergeDep, ListPublicFilesDep,
     OssUploadCompleteDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
@@ -52,6 +52,12 @@ async def delete_file(result: DeleteFileDep):
 async def upload_chunk(chunk_result: PartUploadDep):
     """分片上传"""
     return chunk_result
+
+
+@file_router.post("/chunked/{file_id}/validate_and_merge")
+async def validate_and_merge_parts(result: ValidateAndMergeDep):
+    """显式触发分片合并"""
+    return result
 
 
 @file_router.get("/chunked/{file_id}/status", response_model=PartUploadStatus)

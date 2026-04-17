@@ -757,7 +757,7 @@ async def validate_part_duplicate(
     return (await async_session.exec(stmt)).one()
 
 
-async def validate_and_merge_parts(
+async def validate_and_merge_parts_business(
     session: AsyncSession, file_record: FileInDB, current_user: UserInDB
 ) -> bool:
     """
