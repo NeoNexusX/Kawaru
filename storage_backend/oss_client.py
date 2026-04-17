@@ -41,14 +41,14 @@ async def oss_summary(client: oss_aio.AsyncClient | None = None):
         res = await client.get_bucket_location(req) # type: ignore
         if res.status_code == 200:
             logger.info("init oss client success, bucket_name: %s, bucket_location: %s", oss_config.bucket_name, res.location)
-            await client.close()  # 关闭客户端连接，释放资源
         else:
-            await client.close()  # 关闭客户端连接，释放资源
             raise ConnectionAbortedError(f"get oss bucket status failed, status_code: {res.status_code}")
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error("oss initialize failed: %s", exc)
         raise oss_client_create_failed_exception from exc
-
+    finally:
+        if client is not None:
+            await client.close()  # 确保客户端连接被关闭，释放资源
 
 def init_oss_summary(client: oss_aio.AsyncClient | None):
     """同步包装异步验证"""
