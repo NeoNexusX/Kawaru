@@ -10,7 +10,8 @@ from background.file_background_helper import (
     delete_oss_file_task,
 )
 from models.auth import OssStsToken
-from constants.file_constants import LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT, OSS_ZIP_STORAGE_ROOT
+from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
+                                      OSS_ZIP_STORAGE_ROOT, FC_TIMEOUT_SECONDS)
 from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT, OSS_EXPERIMENT_STORAGE_ROOT
 
 from tools.logger import get_logger
@@ -151,7 +152,7 @@ class OssStorage:
         return oss_sts_token
 
     @staticmethod
-    async def validate_file(file_path: str, size: int) -> bool:
+    async def validate_file(file_path: str, size: int, file_verify_code: str) -> bool:
         """
         检查OSS文件是否存在且大小匹配
 
@@ -160,8 +161,8 @@ class OssStorage:
 
         :return: 是否存在且大小匹配，否则返回False
         """
-        res = validate_oss_file_task.delay(file_path, size) # type:ignore
-        is_file_exist = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        res = validate_oss_file_task.delay(file_path, size, file_verify_code) # type:ignore
+        is_file_exist = await wait_for_result(res, poll_interval=0.1, timeout=FC_TIMEOUT_SECONDS) # type: ignore # 此处需等待OSS端fc函数自动计算完hash
         if is_file_exist is None:
             logger.error(f"failed to validate oss file due to server timeout: {file_path}")
             return False

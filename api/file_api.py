@@ -3,7 +3,7 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import Depends, File, Form, UploadFile
+from fastapi import Depends, File, Form, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -34,7 +34,7 @@ from api.file_api_helper import (
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
-from api.user_api_helper import count_items, get_user_by_id
+from api.user_api_helper import count_items, get_user
 from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
@@ -43,6 +43,7 @@ from exceptions.file_exceptions import (
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    file_not_found_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.user_exceptions import user_not_found_exception
@@ -650,39 +651,55 @@ async def get_file_list(
 
 async def oss_upload_complete(
     file_id: int,
-    current_user_id: int,
+    current_username: str,
     fc_request_id: str,
     async_session: AsyncSessionDep
-):
-    """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
-    # TODO: 需确认是通过前端调用还是oss上传完成的callback调用？
-    # 如为前端调用，应有token依赖注入验证用户身份；如由callback调用，则直接传user_id即可），但需要限制该接口只能由aliyun oss调用
+) -> FilePublic:
+    """
+    需要限制该接口只能由aliyun oss调用
+    在OSS上传时，前端设置好回调参数，OSS上传完成时，aliyun自动调用该接口通知后端，更新文件状态为已完成上传
+
+    :param file_id: 预检文件id
+    :param current_user_id: 当前用户id
+    :param fc_request_id: 函数计算用的request id
+    :param async_session: 异步数据库回话
+
+    :return: 更新后的文件记录
+    """
     pre_record = None
     current_user = None
     oss_path = None
+
     try:
         # 查询预检记录
         pre_record = await get_file_record_by_id(file_id, async_session)
-        current_user = await get_user_by_id(current_user_id, async_session)
+        current_user = await get_user(current_username, async_session)
         if pre_record is None:
-            raise FileNotFoundError(f"preflight_file_id={file_id} not found")
+            raise file_not_found_exception
         if current_user is None:
             raise user_not_found_exception
+        if pre_record.file_verify_code is None:
+            raise ValueError("file_verify_code not found in preflight record")
 
         # 构建OSS文件路径
         oss_path = OssStorage.prepare_storage_path(pre_record.filename)
 
-        # celery任务验证oss文件是否存在
-        is_file_exist = await OssStorage.validate_file(oss_path, pre_record.size)
-        if not is_file_exist:
-            oss_path = None
-            raise FileNotFoundError(f"file_id={file_id}, oss_file_path={oss_path} not found")
+        # celery任务验证oss文件
+        is_file_valid = await OssStorage.validate_file(oss_path, pre_record.size, pre_record.file_verify_code)
+        if not is_file_valid:
+            raise file_persist_failed_exception
 
         # 更新文件路径
         pre_record.path = oss_path
         await async_session.commit()
         await async_session.refresh(pre_record)
         await async_session.refresh(current_user)
+
+    except HTTPException as e:
+        logger.error(f"oss_upload_complete failed: {e}")
+        if current_user is not None:
+            await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
+        raise e
 
     except Exception as e:
         logger.error(f"oss_upload_complete failed: {e}")
@@ -691,9 +708,8 @@ async def oss_upload_complete(
         raise internal_server_error_exception from e
 
     # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
-    # TODO: OSS自动解压端需计算md5值并写入对象元数据，与前端上传的md5值对比，确认文件完整性
     await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
-    return pre_record
+    return pre_record # type: ignore
 
 
 async def oss_upload_file(

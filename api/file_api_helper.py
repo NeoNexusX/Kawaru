@@ -111,7 +111,7 @@ async def delete_file_by_storage(path: str | Path, storage_type: str) -> None:
     elif storage_type == "oss":
         res = await OssStorage.delete_file(str(path))
         if not res:
-            raise OSError(f"Failed to delete oss file: {path}")
+            raise OSError(f"Failed to delete oss file: {str(path)}")
 
     else:
         raise NotImplementedError(f"Unsupported storage type: {storage_type}")

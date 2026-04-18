@@ -9,6 +9,8 @@ import json
 import datetime
 import zipfile
 import hashlib
+import asyncio
+from datetime import datetime
 from pathlib import Path
 from fastapi import HTTPException, status
 import aiofiles
@@ -25,7 +27,7 @@ assert celery_app is not None, "celery_app is None"
 
 from storage_backend.oss_client import create_oss_client
 
-from constants.file_constants import CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME
+from constants.file_constants import CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, FC_TIMEOUT_SECONDS
 
 from tools.logger import get_logger
 
@@ -86,7 +88,7 @@ async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]
 
 
 @celery_app.task()
-async def validate_oss_file_task(file_path: str, size: int) -> bool:
+async def validate_oss_file_task(file_path: str, size: int, file_verify_code: str) -> bool:
     """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
     try:
         # 创建OSS客户端
@@ -114,7 +116,27 @@ async def validate_oss_file_task(file_path: str, size: int) -> bool:
             logger.warning(f"oss file {file_path} size not match, expect {size}, but actual {actual_size}")
             return False
 
-        # TODO:oss简单上传下md5和etag一致，但是分片上传则不一致，考虑验证计算方式？
+        # 轮询获取oss端计算的file-verify-code
+        meta_dict = meta.headers
+        logger.info(f"oss file {file_path} meta={meta_dict}")
+        timeout_seconds = FC_TIMEOUT_SECONDS
+        start_time = datetime.now()
+        while True:
+            await asyncio.sleep(1)
+            meta = await oss_client.head_object(req)
+            meta_dict = meta.headers
+            if "x-oss-meta-file-verify-code" in meta_dict:
+                break
+            now_time = datetime.now()
+            if (now_time - start_time).total_seconds() > timeout_seconds:
+                logger.warning(f"verification for oss {file_path} file verify code timeout after {timeout_seconds} seconds")
+                return False
+
+        # 检查file-verify-code是否匹配
+        actual_verify_code = meta_dict["x-oss-meta-file-verify-code"]
+        if actual_verify_code != file_verify_code:
+            logger.warning(f"oss file {file_path} verify code not match, expect {file_verify_code}, but actual {actual_verify_code}")
+            return False
 
         return True
 
@@ -238,7 +260,7 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     # 创建请求
     request = AssumeRoleRequest(
         role_arn=role_arn,
-        role_session_name=f"upload-{str(Path(file_path).stem)}-{datetime.datetime.now().timestamp()}",
+        role_session_name=f"upload-{str(Path(file_path).stem)}-{datetime.now().timestamp()}",
         policy=json.dumps(policy),
         duration_seconds=3600
     )

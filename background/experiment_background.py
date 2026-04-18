@@ -24,6 +24,8 @@ from models.file_models import FileInDB
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
+from constants.file_constants import FC_TIMEOUT_SECONDS
+
 from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
 from exceptions.file_exceptions import storage_type_not_allowed_exception
 from exceptions.common_exceptions import internal_server_error_exception
@@ -92,12 +94,12 @@ async def process_imzml_experiment_background_task(
     - OSS存储目录:oss://{bucket}/experiments/filename/
     """
     source_file = None
-    async with AsyncSession(get_async_engine()) as async_session:
+    async with AsyncSession(get_async_engine(standalone=True)) as async_session:
         try:
             logger.info(f"starting imzml experiment processing user={user_id} file={source_file_id}")
 
             # 阶段1: 查询文件记录并创建实验记录
-            # 查询源文件S
+            # 查询源文件
             source_file = await get_file_record_by_id(source_file_id, async_session)
             storage_type = source_file.storage_type
 
@@ -124,7 +126,7 @@ async def process_imzml_experiment_background_task(
                     raise internal_server_error_exception
 
                 # 等待函数计算完成
-                is_success = await get_fc_invoke_status(fc_request_id, timeout=20) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
+                is_success = await get_fc_invoke_status(fc_request_id, timeout=FC_TIMEOUT_SECONDS) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
                 if is_success is None:
                     raise internal_server_error_exception
 

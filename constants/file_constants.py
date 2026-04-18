@@ -58,6 +58,7 @@ OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
 FC_LOGSTORE_NAME = config.oss.fc_logstore_name
 FC_LOG_PROJECT_NAME = config.oss.fc_log_project_name
+FC_TIMEOUT_SECONDS = config.oss.fc_timeout_seconds
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",

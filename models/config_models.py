@@ -93,6 +93,7 @@ class OSSSettings(BaseModel):
     oss_experiment_storage_root: str | None = None
     fc_logstore_name: str | None = None
     fc_log_project_name: str | None = None
+    fc_timeout_seconds: int = Field(default=20, description="函数调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):
