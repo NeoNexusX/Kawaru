@@ -64,12 +64,12 @@ def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = T
     # 分块创建imzML文件
     _CHUNK_BUFFER_SIZE = 1024 # 1 KB # pylint:disable = invalid-name
     with open(temp_dir / "test_imzML.imzML", "wb") as zf:
-        for i in range(0, imzml_size, _CHUNK_BUFFER_SIZE):
+        for _ in range(0, imzml_size, _CHUNK_BUFFER_SIZE):
             zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
 
     # 分块创建ibd文件
     with open(temp_dir / "test_ibd.ibd", "wb") as zf:
-        for i in range(0, ibd_size, _CHUNK_BUFFER_SIZE):
+        for _ in range(0, ibd_size, _CHUNK_BUFFER_SIZE):
             zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
 
     # 压缩zip包
@@ -624,10 +624,35 @@ class TestFile:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, _put_obect_from_path)
         assert result.status_code == 200, result.status
+        fc_request_id = result.headers.get("x-oss-request-id")
+
+        # 4. trigger oss upload complete
+        # 测试端直接调用该接口仅供测试，实际上传时由aliyun自动调用
+
+        # 4.1 获取当前登录用户名
+        rs = await client.get(
+            "/user",
+            headers=auth,
+        )
+        assert rs.status_code == 200, rs.text
+        username = rs.json()["username"]
+
+        rs = await client.post(
+            "/files/oss_upload_complete",
+            headers=auth,
+            params={
+                "file_id": str(file_id),
+                "current_username": username,
+                "fc_request_id": fc_request_id,
+            },
+        )
+        assert rs.status_code == 200, rs.text
+
+        await asyncio.sleep(10) # 延迟两秒，等待实验处理完成
 
         TestFile._uploaded_file_id = file_id
-        logger.info((f"test_upload_to_oss passed: file_id={file_id} size={size} oss_path={oss_path}\n"
-                     f"etag={result.etag} content-md5={result.headers.get('Content-MD5')} real-md5={file_verify_code}"))
+        logger.info((f"test_upload_to_oss passed: username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
+                     f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
 
 
     # ------------------------------------------------------------------ #
