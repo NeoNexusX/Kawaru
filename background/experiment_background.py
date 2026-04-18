@@ -1,6 +1,8 @@
 import shutil
 import zipfile
+import asyncio
 import re
+from datetime import datetime
 from pathlib import Path
 
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -138,7 +140,7 @@ async def process_imzml_experiment_background_task(
 
                 # 输出函数计算日志至后端日志系统
                 for log in invoke_logs:
-                    logger.info(f"fc invoke log: {log}")
+                    logger.info(f"fc invoke log:\n{log}")
 
                 # 如果函数计算失败，说明解压过程报错，抛出异常
                 if not is_success:
@@ -266,16 +268,25 @@ async def  get_fc_invoke_status(request_id: str, timeout: int = 20) -> bool | No
     return is_success
 
 
-async def get_fc_invoke_instance_id_by_request_id(request_id: str) -> str | None:
+async def get_fc_invoke_instance_id_by_request_id(request_id: str, timeout: int = 5) -> str | None:
     """
     根据request_id获取函数计算的instance_id
     这里超时可以不用设太高，因为函数计算只要一触发就会有instance_id
     """
-    res = get_fc_invoke_instance_id_by_request_id_task.delay(request_id) # type: ignore
-    instance_id: str | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+    start_time = datetime.now()
+    while True:
+        await asyncio.sleep(0.5) # 提供一些延迟确保函数计算有时间触发
+        res = get_fc_invoke_instance_id_by_request_id_task.delay(request_id) # type: ignore
+        instance_id: str | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        if instance_id is not None:
+            break
+        if (datetime.now() - start_time).seconds > timeout:
+            break
+
     if instance_id is None:
         logger.error(f"get fc invoke instance id failed due to server timeout, request_id={request_id}")
         return None
+
     return instance_id
 
 

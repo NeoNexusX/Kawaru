@@ -556,6 +556,7 @@ class TestFile:
 
         zip_path = _make_test_zip_to_local()
         file_verify_code, size = await compute_file_md5(zip_path)
+        logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
 
         # 1. preflight
         rs = await client.post(
@@ -648,7 +649,7 @@ class TestFile:
         )
         assert rs.status_code == 200, rs.text
 
-        await asyncio.sleep(10) # 延迟两秒，等待实验处理完成
+        await asyncio.sleep(10) # 延迟10秒，等待实验处理完成
 
         TestFile._uploaded_file_id = file_id
         logger.info((f"test_upload_to_oss passed: username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
