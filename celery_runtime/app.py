@@ -68,6 +68,12 @@ def create_celery_app(
                 "args": (),
                 "kwargs": {},
             },
+            "cleanup_failed_experiments": {
+                "task": "background.file_background.cleanup_failed_experiments",
+                "schedule": const_kwargs["cleanup_failed_experiments_interval_seconds"],
+                "args": (),
+                "kwargs": {},
+            },
         },
     }
 

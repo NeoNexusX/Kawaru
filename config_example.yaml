@@ -79,11 +79,12 @@ storage:
   max_file_type_length: 64
   max_files_per_user: 20
   max_downloads_per_user: 50
-  preflight_ttl_minutes: 30
   cleanup_preflights_interval_minutes: 60
-  cleanup_download_zip_interval_minutes: 1440
-  download_zip_retention_days: 7
-  chunk_ttl_minutes: 30
+  cleanup_download_zip_interval_minutes: 60
+  cleanup_failed_experiments_interval_minutes: 60
+  preflight_ttl_minutes: 30
+  download_zip_ttl_minutes: 30
+  failed_experiment_ttl_minutes: 30
 
 oss:
   region_id: cn-shenzhen

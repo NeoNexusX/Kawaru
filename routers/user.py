@@ -75,12 +75,12 @@ async def update_user(user: UserUpdateDep):
     return user
 
 
-@user_router.delete("/user_delete")
+@user_router.delete("/user_delete/{user_id}")
 async def del_user(user: UserDeleDep):
     """
-    Delete current user:
+    Delete user by ID (admin only):
     Method:Delete
-    Params:N/A
+    Params:path user_id
     """
     return user
 

@@ -39,12 +39,17 @@ def init_config():
 
 def load_constants():
     """集中加载应用所需的常量"""
-    from constants.file_constants import CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS, CLEANUP_PREFLIGHTS_INTERVAL_SECONDS  # pylint: disable=import-outside-toplevel
-    # 后续可在此添加更多常量导入，例如：
+    from constants.file_constants import (  # pylint: disable=import-outside-toplevel
+        CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES,
+        CLEANUP_PREFLIGHTS_INTERVAL_MINUTES,
+    )
+    from constants.experiment_constants import CLEANUP_FAILED_EXPERIMENTS_INTERVAL_MINUTES # pylint: disable=import-outside-toplevel
+    # 后续可在此添加更多常量导入
 
     return {
-        'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS,
-        'cleanup_stale_preflights_interval_seconds': CLEANUP_PREFLIGHTS_INTERVAL_SECONDS,
+        'cleanup_download_zip_interval_seconds': CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES * 60,
+        'cleanup_stale_preflights_interval_seconds': CLEANUP_PREFLIGHTS_INTERVAL_MINUTES * 60,
+        'cleanup_failed_experiments_interval_seconds': CLEANUP_FAILED_EXPERIMENTS_INTERVAL_MINUTES * 60,
         # 添加更多常量键值对
     }
 

@@ -78,11 +78,12 @@ class StorageSettings(BaseModel):
     max_file_type_length: int
     max_downloads_per_user: int
     max_files_per_user: int
-    preflight_ttl_minutes: int
     cleanup_preflights_interval_minutes: int
     cleanup_download_zip_interval_minutes: int
-    download_zip_retention_days: int
-    chunk_ttl_minutes: int
+    cleanup_failed_experiments_interval_minutes: int
+    preflight_ttl_minutes: int
+    download_zip_ttl_minutes: int
+    failed_experiment_ttl_minutes: int
 
 
 class OSSSettings(BaseModel):
