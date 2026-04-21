@@ -489,7 +489,7 @@ async def delete_user_file(
     # 没有其他用户持有该文件,执行完全删除
     # 删除实验相关文件(如果有)
     if file_record.experiment_type == "imzML":
-        await delete_experiment_files(session, file_id)
+        await delete_experiment_files(session, file_id, file_record.storage_type)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)

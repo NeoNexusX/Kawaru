@@ -472,17 +472,18 @@ async def delete_file_and_parts(
         ValueError: 文件不存在
         PermissionError: 用户无权限删除该文件
         OSError: 物理文件删除失败时
-        
+
         2026.3.3 Neo checked
     """
     # 1. 查询文件记录,同时预加载对应的分片记录
     file_record = await get_file_record_by_id(file_id, async_session, load_parts=True)
     storage_type =  file_record.storage_type
 
-    # 2. 删除分片物理文件(数据库记录会在删除文件记录时自动级联删除)
-    for part in file_record.parts:
-        await delete_file_by_storage(part.temp_path, storage_type)
-        logger.debug(f"deleted part file part_id={part.part_id} temp_path={part.temp_path}")
+    # 2. 删除分片物理文件（oss不需要删除）(数据库记录会在删除文件记录时自动级联删除)
+    if storage_type == "local":
+        for part in file_record.parts:
+            await delete_file_by_storage(part.temp_path, storage_type)
+            logger.debug(f"deleted part file part_id={part.part_id} temp_path={part.temp_path}")
 
     # 3. 删除文件的物理文件
     await delete_file_by_storage(file_record.path, storage_type)

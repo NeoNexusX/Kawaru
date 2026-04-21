@@ -10,7 +10,7 @@ from constants.file_constants import OSS_REGION_ID, FC_LOG_PROJECT_NAME, FC_LOGS
 
 from tools.logger import get_logger
 
-logger = get_logger("storage.oss_helper")
+logger = get_logger("storage.oss_log_helper")
 
 
 # 目前关于日志的api阿里云只提供了同步的接口

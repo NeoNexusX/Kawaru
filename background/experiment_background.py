@@ -122,7 +122,7 @@ async def process_imzml_experiment_background_task(
                     raise oss_fc_request_id_empty_exception
 
                 # 先获取函数计算的instance_id(说明函数计算开始调用)
-                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id)
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=10)
                 if instance_id is None:
                     raise internal_server_error_exception
 

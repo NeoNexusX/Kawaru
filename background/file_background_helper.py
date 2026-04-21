@@ -369,7 +369,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
             res = await oss_client.delete_object(req)
 
-            if res.status_code != status.HTTP_200_OK:
+            if res.status_code != status.HTTP_204_NO_CONTENT:
                 logger.error(f"oss file {file_path} deleted failed")
                 return False
 

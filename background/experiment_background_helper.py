@@ -19,7 +19,6 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str) -> tu
     """
     打包 OSS 中的实验文件夹
     """
-    # TODO: 实现 OSS 打包逻辑
     logger.info(f"start to packup_oss_file, experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
 
     async with AsyncClient(verify=False) as client: # TODO: 生产环境需要https认证访问，开发环境这里先关闭证书验证

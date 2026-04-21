@@ -8,7 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from storage_backend.storage import OssStorage
 from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 from models.file_models import FileInDB
-from api.file_api_helper import get_file_record_by_id,delete_files_async
+from api.file_api_helper import get_file_record_by_id, delete_multiple_files_by_storage
 from tools.logger import get_logger
 
 logger = get_logger("api.experiment_api_business")
@@ -42,6 +42,7 @@ async def create_experiment_record(async_session: AsyncSession,
 async def delete_experiment_files(
     session: AsyncSession,
     file_id: int,
+    storage_type: str,
 ) -> None:
     """
     删除与文件关联的实验文件(imzML、ibd 等)及数据库记录
@@ -57,7 +58,6 @@ async def delete_experiment_files(
     Raises:
         OSError: 物理文件删除失败时
     """
-    # TODO: 处理 oss 存储的实验文件
     # 查询 imzML 实验记录
     experiment = await get_imzml_experiment_by_file_id(session, file_id)
 
@@ -74,11 +74,11 @@ async def delete_experiment_files(
 
     # 批量删除实验文件
     if files_to_delete:
-        deleted_count = await delete_files_async(files_to_delete)
+        deleted_count = await delete_multiple_files_by_storage(files_to_delete, storage_type)
         logger.info("deleted %s experiment files for file_id=%s", deleted_count, file_id)
 
-    # 删除实验目录(如果为空)
-    if experiment.imzml_path:
+    # 删除实验目录(如果为空)(仅在本地存储时需要手动删除目录)
+    if experiment.imzml_path and storage_type == "local":
         experiment_dir = Path(experiment.imzml_path).parent
         if experiment_dir.exists() and not any(experiment_dir.iterdir()):
             experiment_dir.rmdir()
