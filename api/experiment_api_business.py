@@ -57,6 +57,7 @@ async def delete_experiment_files(
     Raises:
         OSError: 物理文件删除失败时
     """
+    # TODO: 处理 oss 存储的实验文件
     # 查询 imzML 实验记录
     experiment = await get_imzml_experiment_by_file_id(session, file_id)
 

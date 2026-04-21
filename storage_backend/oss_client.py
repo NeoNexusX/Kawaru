@@ -1,4 +1,7 @@
+from contextlib import contextmanager
+from typing import Generator
 import os
+import asyncio
 import alibabacloud_oss_v2 as oss
 import alibabacloud_oss_v2.aio as oss_aio
 from alibabacloud_oss_v2 import GetBucketLocationRequest
@@ -10,8 +13,12 @@ from models.config_models import OSSSettings
 from tools.logger import get_logger
 
 
-def create_oss_client() -> oss_aio.AsyncClient | None:
-    """Create and return an OSS client"""
+def create_oss_client_direct() -> oss_aio.AsyncClient | oss.client.Client | None:
+    """
+    创建OSS客户端，不通过上下文管理器
+
+    :param sync_client: 是否创建同步客户端
+    """
     _oss_client = None
     logger = get_logger("oss_storage")
     try:
@@ -31,6 +38,20 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error("create oss client failed: %s", exc)
     return _oss_client
+
+
+@contextmanager
+def create_oss_client() -> Generator[oss_aio.AsyncClient | None, None, None]:
+    """Create and return an OSS client"""
+    _oss_client = None
+    _oss_client: oss_aio.AsyncClient | None = create_oss_client_direct()
+
+    yield _oss_client
+
+    if _oss_client is not None:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _oss_client.close)
+        _oss_client = None
 
 
 if os.getenv("CREATE_CELERY_SUB"):

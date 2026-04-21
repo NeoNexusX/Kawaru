@@ -16,7 +16,7 @@ from celery.result import AsyncResult
 from database.db import get_async_engine
 from api.user_api_helper import get_user_by_id
 from api.experiment_api_business import get_imzml_experiment_by_file_id
-from api.experiment_api_helper import validate_experiment_type
+from api.experiment_api_helper import validate_experiment_type, packup_oss_file
 from api.file_api_helper import (
     check_user_quota,
     get_file_record_by_id,
@@ -29,12 +29,15 @@ from api.file_api_helper import (
     delete_file_by_storage,
 )
 from storage_backend.storage import OssStorage, LocalStorage
+from storage_backend.oss_log_helper import get_fc_invoke_logs_by_request_id_in_background
 
 from background.celery_app import wait_for_result
 from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
+    OSS_ZIP_STORAGE_ROOT,
+    FC_PACKUP_TIMEOUT_SECONDS,
 )
 from exceptions import (
     duplicate_file_exception,
@@ -236,7 +239,7 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
 async def prepare_download_file(
     session: AsyncSession,
     file_record: FileInDB,
-) -> Path | str:
+) -> tuple[Path | str, str | None]:
     """
     准备下载文件,处理实验文件的ZIP打包
 
@@ -253,12 +256,10 @@ async def prepare_download_file(
             path = Path(file_record.path) if file_record.path else None
             # 文件存在,直接返回
             if path and path.exists():
-                return path
+                return (path, None)
         elif storage_type == "oss":
-            path = file_record.path if file_record.path else None
-            # 文件存在,直接返回
-            if path and await OssStorage.check_file_exist(path):
-                return path
+            # 文件存在逻辑由oss端fc处理
+            pass
         else:
             raise download_not_implemented_exception
 
@@ -292,11 +293,18 @@ async def prepare_download_file(
                 ):
                     logger.warning("experiment files missing file_id=%s", file_record.file_id)
                     raise file_content_missing_exception
+
+                # 校验oss中的实验文件夹是否存在
+                experiment_path = f"{Path(imzml_path).parent}/"
+                if not await OssStorage.check_file_exist(experiment_path):
+                    logger.warning("experiment folder not found file_id=%s, experiment_path=%s", file_record.file_id, experiment_path)
+                    raise file_content_missing_exception
             else:
                 raise download_not_implemented_exception
 
 
             # 根据不同存储类型打包文件
+            zip_path, zip_download_url = None, None
             if storage_type == "local":
                 # 创建 ZIP 包(存放在本地存储根目录下)
                 zip_filename = f"{file_record.filename}.{file_record.file_type }"
@@ -315,20 +323,35 @@ async def prepare_download_file(
                 if zip_size is None:
                     raise file_content_missing_exception
 
-                # 更新文件记录
-                file_record.path = str(zip_path)
-                file_record.size = zip_size
-
-                logger.info(
-                    "created download zip file_id=%s path=%s size=%s",
-                    file_record.file_id,
-                    zip_path,
-                    file_record.size,
-                )
-                return zip_path
             elif storage_type == "oss":
-                # TODO: 实现 OSS 下载逻辑
-                pass
+                zip_path, zip_download_url, fc_request_id = await packup_oss_file(
+                    packup_folder = experiment_path, # type: ignore # 理论上experiment_path存在，直接用即可
+                    zip_file_path = f"{OSS_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip",
+                    timeout_seconds = FC_PACKUP_TIMEOUT_SECONDS,
+                )
+                if zip_path is None or zip_download_url is None:
+                    raise file_content_missing_exception
+                zip_size = await OssStorage.get_file_size(zip_path)
+                if zip_size is None:
+                    raise file_content_missing_exception
+                # 后台获取fc打包日志
+                if fc_request_id is not None:
+                    get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
+            else:
+                raise download_not_implemented_exception
+
+            # 更新文件记录
+            file_record.path = str(zip_path)
+            file_record.size = zip_size # type: ignore
+
+            logger.info(
+                "created download zip file_id=%s path=%s size=%s",
+                file_record.file_id,
+                zip_path,
+                file_record.size,
+            )
+
+            return (zip_path, zip_download_url)
 
         raise file_content_missing_exception
 

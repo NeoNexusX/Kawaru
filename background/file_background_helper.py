@@ -20,14 +20,17 @@ from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest
+from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request
 
 from background.celery_app import celery_app
 assert celery_app is not None, "celery_app is None"
 
 from storage_backend.oss_client import create_oss_client
 
-from constants.file_constants import CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, FC_TIMEOUT_SECONDS
+from constants.file_constants import (
+    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME,
+    OSS_DEFAULT_TIMEOUT_SECONDS
+)
 
 from tools.logger import get_logger
 
@@ -90,88 +93,103 @@ async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]
 @celery_app.task()
 async def validate_oss_file_task(file_path: str, size: int, file_verify_code: str) -> bool:
     """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
-    try:
-        # 创建OSS客户端
-        oss_client = create_oss_client()
-        if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
+    with create_oss_client() as oss_client:
+        try:
+            # 创建OSS客户端
+            if oss_client is None:
+                raise HTTPException(status_code=500, detail="oss client create failed")
 
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
+            # 获取bucket名称
+            bucket_name = OSS_BUCKET_NAME
+            if not bucket_name:
+                raise HTTPException(status_code=500, detail="oss bucket name not set")
 
-        # 发送请求
-        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-        meta = await oss_client.head_object(req)
-
-        # 检查文件是否存在
-        if meta.status_code != status.HTTP_200_OK:
-            logger.warning(f"oss file {file_path} not exist")
-            return False
-
-        # 检查文件大小是否一致
-        actual_size = meta.content_length
-        if actual_size != size:
-            logger.warning(f"oss file {file_path} size not match, expect {size}, but actual {actual_size}")
-            return False
-
-        # 轮询获取oss端计算的file-verify-code
-        meta_dict = meta.headers
-        logger.info(f"oss file {file_path} meta={meta_dict}")
-        timeout_seconds = FC_TIMEOUT_SECONDS
-        start_time = datetime.now()
-        while True:
-            await asyncio.sleep(1)
+            # 发送请求
+            req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
             meta = await oss_client.head_object(req)
-            meta_dict = meta.headers
-            if "x-oss-meta-file-verify-code" in meta_dict:
-                break
-            now_time = datetime.now()
-            if (now_time - start_time).total_seconds() > timeout_seconds:
-                logger.warning(f"verification for oss {file_path} file verify code timeout after {timeout_seconds} seconds")
+
+            # 检查文件是否存在
+            if meta.status_code != status.HTTP_200_OK:
+                logger.warning(f"oss file {file_path} not exist")
                 return False
 
-        # 检查file-verify-code是否匹配
-        actual_verify_code = meta_dict["x-oss-meta-file-verify-code"]
-        if actual_verify_code != file_verify_code:
-            logger.warning(f"oss file {file_path} verify code not match, expect {file_verify_code}, but actual {actual_verify_code}")
+            # 检查文件大小是否一致
+            actual_size = meta.content_length
+            if actual_size != size:
+                logger.warning(f"oss file {file_path} size not match, expect {size}, but actual {actual_size}")
+                return False
+
+            # 轮询获取oss端计算的file-verify-code
+            meta_dict = meta.headers
+            logger.info(f"oss file {file_path} meta={meta_dict}")
+            timeout_seconds = OSS_DEFAULT_TIMEOUT_SECONDS
+            assert timeout_seconds is not None
+            start_time = datetime.now()
+            while True:
+                await asyncio.sleep(1)
+                meta = await oss_client.head_object(req)
+                meta_dict = meta.headers
+                if "x-oss-meta-file-verify-code" in meta_dict:
+                    break
+                now_time = datetime.now()
+                if (now_time - start_time).total_seconds() > float(timeout_seconds):
+                    logger.warning(f"verification for oss {file_path} file verify code timeout after {timeout_seconds} seconds")
+                    return False
+
+            # 检查file-verify-code是否匹配
+            actual_verify_code = meta_dict["x-oss-meta-file-verify-code"]
+            if actual_verify_code != file_verify_code:
+                logger.warning(f"oss file {file_path} verify code not match, expect {file_verify_code}, but actual {actual_verify_code}")
+                return False
+
+            return True
+
+        except Exception as e: # pylint:disable = broad-exception-caught
+            logger.error(f"failed to validate oss file: {e}")
             return False
 
-        return True
-
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to validate oss file: {e}")
-        return False
 
 @celery_app.task()
 async def check_oss_file_exist_task(file_path: str) -> bool:
-    """验证OSS文件，存在返回True，不存在则返回False"""
-    try:
-        # 创建OSS客户端
-        oss_client = create_oss_client()
-        if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
+    """验证OSS文件或目录是否存在，存在返回True，不存在则返回False"""
+    with create_oss_client() as oss_client:
+        try:
+            # 创建OSS客户端
+            if oss_client is None:
+                raise HTTPException(status_code=500, detail="oss client create failed")
 
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
+            # 获取bucket名称
+            bucket_name = OSS_BUCKET_NAME
+            if not bucket_name:
+                raise HTTPException(status_code=500, detail="oss bucket name not set")
 
-        # 发送请求
-        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-        meta = await oss_client.head_object(req)
+            if file_path.endswith("/"): # 目录
+                # 发送请求
+                req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
 
-        # 检查文件是否存在
-        if meta.status_code != status.HTTP_200_OK:
-            logger.warning(f"oss file {file_path} not exist")
+                # 检查目录是否存在
+                resp = await oss_client.list_objects_v2(req)
+                key_count = resp.key_count
+                is_dir_exist = key_count is not None and key_count > 0
+                if not is_dir_exist:
+                    logger.warning(f"oss directory {file_path} not exist")
+                    return False
+
+            else: # 文件
+                # 发送请求
+                req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+                meta = await oss_client.head_object(req)
+
+                # 检查文件是否存在
+                if meta.status_code != status.HTTP_200_OK:
+                    logger.warning(f"oss file {file_path} not exist")
+                    return False
+
+            return True
+
+        except Exception as e: # pylint:disable = broad-exception-caught
+            logger.error(f"failed to check oss file: {e}")
             return False
-
-        return True
-
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to check oss file: {e}")
-        return False
 
 
 @celery_app.task()
@@ -182,32 +200,32 @@ async def get_oss_file_size_task(file_path: str) -> int | None:
     :param file_path: OSS文件路径（如"folder/file.zip")
     :return: 文件大小
     """
-    try:
-        # 创建OSS客户端
-        oss_client = create_oss_client()
-        if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
+    with create_oss_client() as oss_client:
+        try:
+            # 创建OSS客户端
+            if oss_client is None:
+                raise HTTPException(status_code=500, detail="oss client create failed")
 
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
+            # 获取bucket名称
+            bucket_name = OSS_BUCKET_NAME
+            if not bucket_name:
+                raise HTTPException(status_code=500, detail="oss bucket name not set")
 
-        # 发送请求
-        req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-        meta = await oss_client.head_object(req)
+            # 发送请求
+            req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+            meta = await oss_client.head_object(req)
 
-        # 检查文件是否存在
-        if meta.status_code != status.HTTP_200_OK:
-            logger.warning(f"oss file {file_path} not found")
+            # 检查文件是否存在
+            if meta.status_code != status.HTTP_200_OK:
+                logger.warning(f"oss file {file_path} not found")
+                return None
+
+            # 返回文件大小
+            return meta.content_length
+
+        except Exception as e: # pylint:disable = broad-exception-caught
+            logger.error(f"failed to get oss file size: {e}")
             return None
-
-        # 返回文件大小
-        return meta.content_length
-
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to get oss file size: {e}")
-        return None
 
 
 @celery_app.task()
@@ -217,14 +235,7 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
 
     :param file_path: 文件路径（如"folder/file.zip")
     """
-    # 从环境变量获取OSS角色权限相关配置
-    access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
-    access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
-    role_arn = os.getenv("OSS_ROLE_ARN")
-    region_id = OSS_REGION_ID
-
-    if not access_key_id or not access_key_secret or not role_arn or not region_id:
-        raise ValueError("oss access_key_id or access_key_secret or role_arn or region_id not set")
+    file_path = file_path.rstrip('/').lstrip('/')
 
     # 构建STS策略
     policy = {
@@ -239,6 +250,68 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
             }
         ]
     }
+
+    # 构建role_session_name
+    role_session_name = f"upload-{str(Path(file_path).stem)}-{datetime.now().timestamp()}"
+
+    # 调用STS API获取上传STS Token
+    result = _get_oss_sts_token(policy, role_session_name)
+
+    return result
+
+
+@celery_app.task()
+def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dict:
+    """
+    获取OSS打包STS Token
+
+    :param experiment_folder: 要打包的oss文件夹路径（如"experiment/aaa/")
+    :param zip_file_path: 打包后的zip文件路径（如"data/aaa.zip")
+    """
+
+    # 构建STS策略
+    policy = {
+        "Version": "1",
+        "Statement": [
+            {
+                # 针对实验文件夹下的所有文件读取权限
+                "Effect": "Allow",
+                "Action": ["oss:GetObject"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{packup_folder.strip('/')}/*"]
+            },
+            {
+                # 针对Bucket的文件列举权限
+                "Effect": "Allow",
+                "Action": ["oss:ListObjects"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"]
+            },
+            {
+                # 针对zip文件写入权限
+                "Effect": "Allow",
+                "Action": ["oss:PutObject", "oss:GetObject"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{zip_file_path.rstrip('/')}"]
+            }
+        ]
+    }
+
+    # 构建role_session_name
+    role_session_name = f"packup-{str(Path(packup_folder).stem)}-{datetime.now().timestamp()}"
+
+    # 调用STS API获取打包STS Token
+    result = _get_oss_sts_token(policy, role_session_name)
+
+    return result
+
+
+def _get_oss_sts_token(policy: dict, role_session_name: str) -> dict:
+    # 从环境变量获取OSS角色权限相关配置
+    access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
+    role_arn = os.getenv("OSS_ROLE_ARN")
+    region_id = OSS_REGION_ID
+
+    if not access_key_id or not access_key_secret or not role_arn or not region_id:
+        raise ValueError("oss access_key_id or access_key_secret or role_arn or region_id not set")
 
     # 创建配置
     credential_config = CredentialConfig(
@@ -260,7 +333,7 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     # 创建请求
     request = AssumeRoleRequest(
         role_arn=role_arn,
-        role_session_name=f"upload-{str(Path(file_path).stem)}-{datetime.now().timestamp()}",
+        role_session_name=role_session_name,
         policy=json.dumps(policy),
         duration_seconds=3600
     )
@@ -281,27 +354,27 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
     :return: bool 是否删除成功
     """
-    try:
-        # 创建OSS客户端
-        oss_client = create_oss_client()
-        if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
+    with create_oss_client() as oss_client:
+        try:
+            # 创建OSS客户端
+            if oss_client is None:
+                raise HTTPException(status_code=500, detail="oss client create failed")
 
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
+            # 获取bucket名称
+            bucket_name = OSS_BUCKET_NAME
+            if not bucket_name:
+                raise HTTPException(status_code=500, detail="oss bucket name not set")
 
-        # 发送请求
-        req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-        res = await oss_client.delete_object(req)
+            # 发送请求
+            req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+            res = await oss_client.delete_object(req)
 
-        if res.status_code != status.HTTP_200_OK:
-            logger.error(f"oss file {file_path} deleted failed")
+            if res.status_code != status.HTTP_200_OK:
+                logger.error(f"oss file {file_path} deleted failed")
+                return False
+
+            logger.info(f"oss file {file_path} deleted")
+            return True
+        except Exception as e: # pylint:disable = broad-exception-caught
+            logger.error(f"failed to delete oss file: {e}")
             return False
-
-        logger.info(f"oss file {file_path} deleted")
-        return True
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to delete oss file: {e}")
-        return False

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from models.file_models import FileStreamingResponse
+from models.file_models import FileStreamingResponse, URLStreamingResponse
 from models.file_models import FilePublic, PartUploadStatus
 from models.filter_models import ListDataResponse
 from api.file_api import (
@@ -37,6 +37,8 @@ async def list_user_files(files: ListFilesDep):
 @file_router.get("/{file_id}/download")
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
+    if file_meta.storage_type == "oss":
+        return URLStreamingResponse(file_meta.oss_download_url, file_meta.filename, CHUNK_BUFFER_SIZE) # type: ignore
     return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
 
 

@@ -71,7 +71,7 @@ def init_oss():
     import storage_backend.oss_client as oss_client # pylint: disable=import-outside-toplevel
 
     if oss_client.oss_client is None:
-        oss_client.oss_client = oss_client.create_oss_client()
+        oss_client.oss_client = oss_client.create_oss_client_direct()
 
     return oss_client.oss_client
 

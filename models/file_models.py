@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 import aiofiles
+import httpx
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey,BigInteger
@@ -166,6 +167,54 @@ class FileStreamingResponse(StreamingResponse):  # 是响应类模型 不能使�
         )
 
 
+class URLStreamingResponse(StreamingResponse):
+    """从上游 URL 流式代理响应到前端，保持低内存占用"""
+
+    def __init__(
+        self,
+        url: str,
+        filename: str = "download",
+        chunk_size: int = 64 * 1024,  # 64KB
+        media_type: str = "application/octet-stream",
+        headers: dict | None = None,
+        **http_kwargs,  # 透传 httpx 参数（timeout, headers 等）
+    ):
+        self.url = url
+        self.chunk_size = chunk_size
+        self.http_kwargs = http_kwargs
+
+        # 合并自定义 headers
+        response_headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+        if headers:
+            response_headers.update(headers)
+
+        super().__init__(
+            self._stream_generator(),
+            media_type=media_type,
+            headers=response_headers,
+        )
+
+    def _stream_generator(self) -> AsyncGenerator[bytes, None]:
+        """返回异步生成器函数（非协程）"""
+
+        async def generator():
+            async with httpx.AsyncClient() as client:
+                async with client.stream("GET", self.url, **self.http_kwargs) as response:
+                    # 如果上游返回 Content-Length，可以透传
+                    if "Content-Length" in response.headers:
+                        self.raw_headers.append(
+                            (b"content-length", str(response.headers["Content-Length"]).encode())
+                        )
+
+                    # 逐块流式读取并立即 yield
+                    async for chunk in response.aiter_bytes(self.chunk_size):
+                        yield chunk
+
+        return generator()
+
+
 class PartInDB(PartBase, table=True):
     """分片记录数据库模型"""
 
@@ -209,6 +258,7 @@ class FileDownloadMeta(FileBase):
     """下载所需的文件元数据"""
 
     path: Path
+    oss_download_url: str | None = None
     file_id: int | None = None
     uploaded_at: datetime
     download_count: int

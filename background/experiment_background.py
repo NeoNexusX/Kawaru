@@ -1,21 +1,20 @@
 import shutil
 import zipfile
-import asyncio
 import re
-from datetime import datetime
 from pathlib import Path
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi import HTTPException
 
-from storage_backend.storage import LocalStorage
-from storage_backend.oss_log_helper import(
-    get_fc_invoke_status_task,
-    get_fc_invoke_instance_id_by_request_id_task,
-    get_fc_invoke_logs_by_instance_id_task
-)
 from database.db import get_async_engine
-from background.celery_app import celery_app, wait_for_result
+from background.celery_app import celery_app
+from storage_backend.storage import LocalStorage
+from storage_backend.oss_log_helper import (
+    get_fc_invoke_instance_id_by_request_id,
+    get_fc_invoke_logs_by_request_id,
+    get_fc_invoke_status,
+)
+
 from api.experiment_api_business import (
     create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 )
@@ -26,7 +25,7 @@ from models.file_models import FileInDB
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
-from constants.file_constants import FC_TIMEOUT_SECONDS
+from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
 from exceptions.file_exceptions import storage_type_not_allowed_exception
@@ -128,7 +127,8 @@ async def process_imzml_experiment_background_task(
                     raise internal_server_error_exception
 
                 # 等待函数计算完成
-                is_success = await get_fc_invoke_status(fc_request_id, timeout=FC_TIMEOUT_SECONDS) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
+                assert FC_UNZIP_TIMEOUT_SECONDS is not None
+                is_success = await get_fc_invoke_status(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
                 if is_success is None:
                     raise internal_server_error_exception
 
@@ -249,63 +249,6 @@ def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) 
         raise
 
     return imzml_path, ibd_path
-
-
-async def  get_fc_invoke_status(request_id: str, timeout: int = 20) -> bool | None:
-    """
-    根据request_id获取函数计算成功状态
-
-    :param request_id: 函数调用ID
-    :param timeout: 超时时间，默认20秒，大压缩文件可能需要更长的时间
-
-    :return: 返回True表示成功，False表示失败
-    """
-    res = get_fc_invoke_status_task.delay(request_id) # type: ignore
-    is_success: bool | None = await wait_for_result(res, poll_interval=0.1, timeout=timeout) # type: ignore
-    if is_success is None:
-        logger.error(f"get fc invoke status failed due to server timeout, request_id={request_id}")
-        return None
-    return is_success
-
-
-async def get_fc_invoke_instance_id_by_request_id(request_id: str, timeout: int = 5) -> str | None:
-    """
-    根据request_id获取函数计算的instance_id
-    这里超时可以不用设太高，因为函数计算只要一触发就会有instance_id
-    """
-    start_time = datetime.now()
-    while True:
-        await asyncio.sleep(0.5) # 提供一些延迟确保函数计算有时间触发
-        res = get_fc_invoke_instance_id_by_request_id_task.delay(request_id) # type: ignore
-        instance_id: str | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
-        if instance_id is not None:
-            break
-        if (datetime.now() - start_time).seconds > timeout:
-            break
-
-    if instance_id is None:
-        logger.error(f"get fc invoke instance id failed due to server timeout, request_id={request_id}")
-        return None
-
-    return instance_id
-
-
-async def get_fc_invoke_logs_by_request_id(request_id: str) -> list[str] | None:
-    """
-    根据request_id获取函数计算日志
-    这里超时可以不用设太高，等待调用get_fc_invoke_status之后再获取日志，确保函数计算完整日志写入日志服务
-    """
-    instance_id = await get_fc_invoke_instance_id_by_request_id(request_id)
-    res = get_fc_invoke_logs_by_instance_id_task.delay(instance_id) # type: ignore
-    logs: list[str] | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
-    if logs is None:
-        logger.error(f"get fc invoke logs failed due to server timeout, instance_id={instance_id}")
-        return None
-
-    # 过滤出包含request_id的日志
-    logs = [log for log in logs if request_id in log]
-
-    return logs
 
 
 def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:

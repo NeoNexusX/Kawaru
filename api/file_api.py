@@ -546,7 +546,7 @@ async def get_download_file_metadata(
             raise user_download_limit_exception
 
     # 准备下载文件(业务层处理)
-    await prepare_download_file(session, file_record)
+    _, oss_download_url = await prepare_download_file(session, file_record)
 
     # 更新下载统计(业务层处理)
     await update_download_stats(session, file_record, current_user)
@@ -556,7 +556,10 @@ async def get_download_file_metadata(
 
     logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
 
-    return FileDownloadMeta.from_record(file_record)
+    file_download_meta = FileDownloadMeta.from_record(file_record)
+    file_download_meta.oss_download_url = oss_download_url
+
+    return file_download_meta
 
 
 async def get_file_list(
