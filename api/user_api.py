@@ -33,7 +33,8 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from background.celery_app import TaskManager, wait_for_result
+from celery_runtime.management import TaskManager
+from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
@@ -210,10 +211,6 @@ async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: A
             raise login_expired_exception
 
         await redis_client.delete(login_key)
-
-        # 3. Remove corresponding tasks
-        await TaskManager.remove_task(f"cleanup_stale_preflights_{token[0:8]}") # type:ignore
-        logger.warning(f"User {username} has logged out. Task has been removed from schedule.")
 
     except ExpiredSignatureError as exc:
         raise token_expired_exception from exc

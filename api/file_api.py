@@ -304,7 +304,7 @@ async def upload_simple_file(
         assert pre_record.file_verify_code is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
             # 如果是本地存储，保存文件并更新最终文件记录
-            final_path = LocalStorage.prepare_storage_path(file.filename)
+            final_path = LocalStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
 
             # 校验文件哈希和大小
@@ -327,7 +327,7 @@ async def upload_simple_file(
         elif storage_type == "oss":
             # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
             # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
-            oss_path = OssStorage.prepare_storage_path(file.filename) # oss 存储路径(如)
+            oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
             oss_bucket = OSS_BUCKET_NAME
             oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
             if not oss_sts_token or not oss_path:
@@ -685,7 +685,7 @@ async def oss_upload_complete(
             raise ValueError("file_verify_code not found in preflight record")
 
         # 构建OSS文件路径
-        oss_path = OssStorage.prepare_storage_path(pre_record.filename)
+        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
 
         # celery任务验证oss文件
         is_file_valid = await OssStorage.validate_file(oss_path, pre_record.size, pre_record.file_verify_code)

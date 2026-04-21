@@ -9,7 +9,7 @@ import zipfile
 import shutil
 from pathlib import Path
 
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from background.experiment_background_helper import packup_oss_file_task
 from constants.file_constants import ALLOWED_EXPERIMENT_TYPES
 from tools.logger import get_logger

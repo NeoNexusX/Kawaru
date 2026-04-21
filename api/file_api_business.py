@@ -31,7 +31,7 @@ from api.file_api_helper import (
 from storage_backend.storage import OssStorage, LocalStorage
 from storage_backend.oss_log_helper import get_fc_invoke_logs_by_request_id_in_background
 
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
@@ -319,7 +319,7 @@ async def prepare_download_file(
                 ]
 
                 task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-                zip_size = await wait_for_result(task_result, poll_interval=0.1)
+                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
                 if zip_size is None:
                     raise file_content_missing_exception
 
@@ -694,7 +694,7 @@ async def merge_parts_to_file(
     try:
         # 分片上传预检时 path 为空，合并前构建最终存储路径
         if not file_record.path:
-            final_path = LocalStorage.prepare_storage_path(file_record.filename)
+            final_path = LocalStorage.prepare_storage_path(file_record.filename, file_record.file_type)
             file_record.path = str(final_path)
             async_session.add(file_record)
         else:

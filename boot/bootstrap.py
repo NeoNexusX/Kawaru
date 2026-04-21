@@ -1,7 +1,6 @@
 import os
 from typing import Optional
 
-
 def init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
     """显式初始化日志系统（必须先于任何 get_logger 调用）"""
     import tools.logger as logger  # pylint: disable=import-outside-toplevel
@@ -54,27 +53,29 @@ def init_celery(const_kwargs: dict):
     """
     显式创建 celery app
     """
-    import background.celery_app # pylint: disable=import-outside-toplevel
+    from boot.config import get_config  # pylint: disable=import-outside-toplevel
+    from celery_runtime.app import create_celery_app  # pylint: disable=import-outside-toplevel
+    from celery_runtime.state import get_celery_app, set_celery_app  # pylint: disable=import-outside-toplevel
 
-    if background.celery_app.celery_app is None:
-        from boot.config import get_config # pylint: disable=import-outside-toplevel
-        background.celery_app.celery_app = background.celery_app.celery_create(
-            get_config(),
-            const_kwargs,
+    try:
+        return get_celery_app()
+    except RuntimeError:
+        set_celery_app(
+            create_celery_app(
+                get_config(),
+                const_kwargs,
+            )
         )
-
-    return background.celery_app.celery_app
+        return get_celery_app()
 
 
 def init_oss():
     """显式初始化 oss 客户端"""
     import storage_backend.oss_client as oss_client # pylint: disable=import-outside-toplevel
 
-    if oss_client.oss_client is None:
-        oss_client.oss_client = oss_client.create_oss_client_direct()
+    client = oss_client.create_oss_client()
 
-    return oss_client.oss_client
-
+    return client
 
 
 BOOTSTRAP_SUMMARIZED = False  # 标记是否已输出启动概要，防止重复输出启动概要
@@ -91,17 +92,13 @@ def bootstrap():
     if CONFIG.config is None:
         raise RuntimeError("CONFIG.config is not initialized")
 
-    if "oss" in CONFIG.config.storage.allowed_storage_types:
-        OSS_CLIENT = init_oss() # pylint: disable=unused-variable, invalid-name
-    else:
-        OSS_CLIENT = None # pylint: disable=unused-variable, invalid-name
-
+    OSS_CLIENT =  init_oss() if "oss" in CONFIG.config.storage.allowed_storage_types else None# pylint: disable=C0103
     CELERY_APP = init_celery(CONSTANTS) # pylint: disable=C0103
-
 
     #log part
     from tools.logger import get_logger, LOG_LEVELS   # pylint: disable=import-outside-toplevel
-    from boot.celery_boot import celery_summary # pylint: disable=import-outside-toplevel
+    from celery_runtime.runtime import celery_summary # pylint: disable=import-outside-toplevel
+    from storage_backend.oss_client import init_oss_summary  # pylint: disable=import-outside-toplevel
 
     logger = get_logger("watchfiles")
     logger.setLevel(LOG_LEVELS['warning'])  # watchfiles 监控文件变化时会输出大量日志，提升到 warning 级别以上以减少干扰
@@ -115,5 +112,6 @@ def bootstrap():
         logger.info("Bootstrap summary:"+"="*60)
         ENV.summary()
         CONFIG.summary()
-        celery_summary(CELERY_APP, logger)
+        init_oss_summary(OSS_CLIENT)  # 输出 oss 客户端摘要
+        celery_summary(CELERY_APP, CONFIG.config)
         BOOTSTRAP_SUMMARIZED = True

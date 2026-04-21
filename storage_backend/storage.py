@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from background.celery_app import wait_for_result
+from celery_runtime.result import wait_for_result
 from background.file_background_helper import (
     get_oss_upload_sts_token_task,
     compute_upload_local_file_hash_task,
@@ -22,7 +22,6 @@ from tools.logger import get_logger
 logger = get_logger("storage")
 
 
-
 class LocalStorage:
     """
     本地存储相关操作
@@ -37,14 +36,15 @@ class LocalStorage:
             path.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def prepare_storage_path(filename: str) -> Path:
+    def prepare_storage_path(filename: str,file_type: str) -> Path:
         """
         为简单上传准备最终保存路径
 
         文件直接保存在 LOCAL_STORAGE_ROOT 下,不按用户ID分文件夹
         """
         LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-        return LOCAL_STORAGE_ROOT / filename
+        file_path=f"{filename}.{file_type}"
+        return LOCAL_STORAGE_ROOT / file_path
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> Path:
@@ -105,7 +105,7 @@ class LocalStorage:
         分片读取指定本地路径的文件内容,避免一次性加载到内存
         """
         res = compute_upload_local_file_hash_task.delay(file_path) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=20) # type: ignore # 针对大文件此处timeout需要调大
+        result = await wait_for_result(res, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
         if result is None:
             logger.error(f"failed to compute upload file hash due to server timeout: {file_path}")
             return ("", 0)
@@ -117,13 +117,13 @@ class OssStorage:
     OSS存储相关操作
     """
     @staticmethod
-    def prepare_storage_path(filename: str) -> str:
+    def prepare_storage_path(filename: str, file_type: str) -> str:
         """
         为OSS存储准备最终保存路径
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}"
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> str:

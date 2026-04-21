@@ -217,5 +217,5 @@ storage/
 .env.pytest
 
 # logs
-logs/
 kawaru_logs/
+*logs

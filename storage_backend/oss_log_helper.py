@@ -5,12 +5,14 @@ from aliyun.log import LogClient, GetLogsResponse
 from aliyun.log.queriedlog import QueriedLog
 from aliyun.log.auth import AUTH_VERSION_4
 
-from background.celery_app import celery_app, wait_for_result
+from celery_runtime.state import get_celery_app
+from celery_runtime.result import wait_for_result
 from constants.file_constants import OSS_REGION_ID, FC_LOG_PROJECT_NAME, FC_LOGSTORE_NAME
 
 from tools.logger import get_logger
 
 logger = get_logger("storage.oss_log_helper")
+celery_app = get_celery_app()
 
 
 # 目前关于日志的api阿里云只提供了同步的接口

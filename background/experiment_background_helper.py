@@ -4,14 +4,14 @@ from httpx import AsyncClient
 
 from fastapi import status
 
-from background.celery_app import celery_app
+from celery_runtime.state import get_celery_app
 from storage_backend.storage import OssStorage
-from storage_backend.oss_log_helper import get_fc_invoke_logs_by_request_id
 from constants.file_constants import OSS_BUCKET_NAME, FC_PACKUP_ENDPOINT
 from tools.logger import get_logger
 
 
 logger = get_logger("background.experiment_background_helper")
+celery_app = get_celery_app()
 
 
 @celery_app.task()

@@ -22,10 +22,9 @@ from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request
 
-from background.celery_app import celery_app
-assert celery_app is not None, "celery_app is None"
+from celery_runtime.state import get_celery_app
 
-from storage_backend.oss_client import create_oss_client
+from storage_backend.oss_client import create_oss_client_context
 
 from constants.file_constants import (
     CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME,
@@ -35,6 +34,7 @@ from constants.file_constants import (
 from tools.logger import get_logger
 
 logger = get_logger("background.file_background")
+celery_app = get_celery_app()
 
 
 @celery_app.task()  # type: ignore
@@ -93,7 +93,7 @@ async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]
 @celery_app.task()
 async def validate_oss_file_task(file_path: str, size: int, file_verify_code: str) -> bool:
     """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
-    with create_oss_client() as oss_client:
+    with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -152,7 +152,7 @@ async def validate_oss_file_task(file_path: str, size: int, file_verify_code: st
 @celery_app.task()
 async def check_oss_file_exist_task(file_path: str) -> bool:
     """验证OSS文件或目录是否存在，存在返回True，不存在则返回False"""
-    with create_oss_client() as oss_client:
+    with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -200,7 +200,7 @@ async def get_oss_file_size_task(file_path: str) -> int | None:
     :param file_path: OSS文件路径（如"folder/file.zip")
     :return: 文件大小
     """
-    with create_oss_client() as oss_client:
+    with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -354,7 +354,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
     :return: bool 是否删除成功
     """
-    with create_oss_client() as oss_client:
+    with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:

@@ -80,7 +80,7 @@ async def upload_file(file_record: OssUploadDep):
 
 # @file_router.post("/test_api")
 # async def test_api(request_id: str):
-#     """测试接口"""
+#     """测试接口仅供开发过程中快速测试功能使用"""
 #     from background.experiment_background import get_fc_invoke_instance_id_by_request_id # pylint: disable=import-outside-toplevel
 #     from background.experiment_background import get_fc_invoke_logs_by_request_id # pylint: disable=import-outside-toplevel
 #     from background.experiment_background import get_fc_invoke_status  # pylint: disable=import-outside-toplevel

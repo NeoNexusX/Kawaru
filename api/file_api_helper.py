@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from pathlib import Path
 
 import aiofiles
@@ -132,7 +131,7 @@ async def merge_files_and_get_hash(
     expected_hash: str | None = None,
     buffer_size: int = CHUNK_BUFFER_SIZE,
 ) -> str:
-    # TODO: 计算哈希部分考虑调用任务队列？
+
     """
     合并多个文件并计算哈希
 
@@ -151,7 +150,6 @@ async def merge_files_and_get_hash(
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    total_hash = hashlib.md5()
     async with aiofiles.open(destination, "wb") as dest_file:
         for source_file in source_files:
             if not source_file.exists():
@@ -163,9 +161,8 @@ async def merge_files_and_get_hash(
                     if not data:
                         break
                     await dest_file.write(data)
-                    total_hash.update(data)
 
-    final_hash = total_hash.hexdigest()
+    final_hash, _ = await LocalStorage.compute_upload_file_hash(str(destination))
 
     if expected_hash and final_hash != expected_hash:
         destination.unlink(missing_ok=True)
