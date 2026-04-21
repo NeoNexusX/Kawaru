@@ -139,3 +139,6 @@ sample_info:
   max_maldi_matrix_length: 128
   max_maldi_matrix_application_length: 128
   max_solvent_length: 128
+  max_polarity_length: 128
+  max_ionisation_source_length: 128
+  max_analyzer_length: 128

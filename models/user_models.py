@@ -66,6 +66,7 @@ class UserPublic(BaseModel):
 
 class UserDetailPublic(UserBase):
     """用于返回响应信息的用户模型"""
+    id: int # id字段公开，方便前端使用
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     file_count: int = Field(default=0, description="用户文件数量")
 

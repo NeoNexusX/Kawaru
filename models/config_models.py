@@ -124,6 +124,9 @@ class SampleInfoSettings(BaseModel):
     max_maldi_matrix_length: int
     max_maldi_matrix_application_length: int
     max_solvent_length: int
+    max_polarity_length: int
+    max_ionisation_source_length: int
+    max_analyzer_length: int
 
 
 # Initial admin user's information 初始管理员信息
