@@ -31,7 +31,6 @@ class FileBase(SQLModel):
     experiment_type: str = Field(default="",
                                  description="实验类型(imzml/raw等),用于定位实验表",
                                  max_length=sample_config.max_experiment_type_length,)
-    instrument_types: str = Field(default="", description="仪器类型(选填)", max_length=sample_config.max_instrument_types_length,)
     size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0))
     storage_type: str = Field(default="local", max_length=64)
     file_verify_code: str | None = Field(default=None, max_length=32)
