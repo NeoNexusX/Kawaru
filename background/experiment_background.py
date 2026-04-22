@@ -122,7 +122,7 @@ async def process_imzml_experiment_background_task(
                     raise oss_fc_request_id_empty_exception
 
                 # 先获取函数计算的instance_id(说明函数计算开始调用)
-                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=10)
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=10) # TODO： 最少延迟多少秒？
                 if instance_id is None:
                     raise internal_server_error_exception
 
@@ -165,9 +165,10 @@ async def process_imzml_experiment_background_task(
 
             logger.info(f"completed imzml experiment processing exp_id={experiment_record.id} source_file_id={source_file_id}")
 
-        except HTTPException as e:
-            logger.error(e)
-            raise e
+        # TODO：是否需要HTTP Exception, internal server error会走到这里
+        # except HTTPException as e:
+        #     logger.error(e)
+        #     raise e
 
         except (zipfile.BadZipFile, FileNotFoundError) as e:
             #此处理论上experiment_record和storage_type一定存在，直接使用即可

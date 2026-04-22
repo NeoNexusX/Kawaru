@@ -712,7 +712,7 @@ async def oss_upload_complete(
 
     # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
     await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
-    return pre_record # type: ignore
+    return pre_record # type: ignore # TODO: 返回值200
 
 
 async def oss_upload_file(

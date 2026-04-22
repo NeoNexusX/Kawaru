@@ -263,7 +263,7 @@ async def prepare_download_file(
         else:
             raise download_not_implemented_exception
 
-        # 处理实验文件(imzML)
+        # 处理实验文件(imzML) # TODO： 封装函数
         if file_record.experiment_type == "imzML":
             assert file_record.file_id is not None
             experiment = await get_imzml_experiment_by_file_id(session, file_record.file_id)
@@ -276,7 +276,7 @@ async def prepare_download_file(
 
             # 根据存储类型获取实验文件路径
             imzml_path, ibd_path = None, None
-
+            # TODO： 封装函数
             if storage_type == "local":
                 imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
                 ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
