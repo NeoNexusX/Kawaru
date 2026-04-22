@@ -37,7 +37,7 @@ from .conftest import logger
 # ------------------------------------------------------------------ #
 # 测试文件参数，按需修改
 # ------------------------------------------------------------------ #
-TEST_FILENAME = "kawaru_functest.zip"
+TEST_FILENAME = "kawaru_functest"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
 TEST_IMZML_SIZE = 10240 * 1024  # 10 MB，调整此值控制 imzML 大小
