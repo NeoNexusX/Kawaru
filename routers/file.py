@@ -38,7 +38,7 @@ async def list_user_files(files: ListFilesDep):
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
     if file_meta.storage_type == "oss":
-        return URLStreamingResponse(file_meta.oss_download_url, file_meta.filename, CHUNK_BUFFER_SIZE) # type: ignore
+        return URLStreamingResponse(file_meta.oss_download_url, file_meta, CHUNK_BUFFER_SIZE) # type: ignore
     return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
 
 

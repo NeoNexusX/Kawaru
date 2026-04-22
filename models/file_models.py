@@ -161,7 +161,7 @@ class FileStreamingResponse(StreamingResponse):  # 是响应类模型 不能使�
             file_generator(),
             media_type=media_type,
             headers={
-                "Content-Disposition": f'attachment; filename="{file_base.filename}"',
+                "Content-Disposition": f'attachment; filename="{file_base.filename}.{file_base.file_type}"',
                 "Content-Length": str(file_base.size),
             },
         )
@@ -173,7 +173,7 @@ class URLStreamingResponse(StreamingResponse):
     def __init__(
         self,
         url: str,
-        filename: str = "download",
+        file_base: FileBase,
         chunk_size: int = 64 * 1024,  # 64KB
         media_type: str = "application/octet-stream",
         headers: dict | None = None,
@@ -185,7 +185,7 @@ class URLStreamingResponse(StreamingResponse):
 
         # 合并自定义 headers
         response_headers = {
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'attachment; filename="{file_base.filename}.{file_base.file_type}"',
         }
         if headers:
             response_headers.update(headers)
