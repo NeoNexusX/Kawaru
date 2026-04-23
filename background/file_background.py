@@ -14,7 +14,7 @@ from api.file_api_business import (
 )
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
-from database.db import get_async_engine
+from database.db import get_standalone_async_session
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -43,7 +43,7 @@ async def cleanup_stale_preflights_all_users( #TODO 数据库上锁 写一个测
     Returns:
         清理的记录数量
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+    async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup stale preflights for all users with TTL {ttl_minutes} minutes...")
 
         # 代表 uploaded_at 超过 TTL 的时间点
@@ -89,7 +89,7 @@ async def cleanup_old_download_zips(
       - last_downloaded_at 早于 当前时间 - retention_days
     物理文件删除后只置空 path，保留数据库记录
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+    async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup old download zips for all users with TTL {retention_minutes} minutes...")
 
         now = utc_time()
@@ -130,7 +130,7 @@ async def clean_user_all_task(
     - 如果文件被多个用户共享，仅解除关联
     - 如果文件仅属于该用户时，完全删除文件和分片
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+    async with get_standalone_async_session() as session:
         logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
 
         total_unlinked = 0
@@ -190,7 +190,7 @@ async def cleanup_failed_experiments(
     - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
     - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+    async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
         now = utc_time()
         threshold = now - timedelta(minutes=ttl_minutes)
