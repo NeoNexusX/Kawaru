@@ -254,7 +254,6 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     raise user_verification_bad_exception
 
 
-# 创建管理员用户的API函数，需要当前用户是管理员才能调用
 async def create_admin_user_api(user: UserCreate,
                                 current_admin: Annotated[UserInDB, Depends(token_authen)],
                                 async_session: AsyncSessionDep,) -> UserPublic:
@@ -318,6 +317,7 @@ async def update_user(
 
     return user # type:ignore
 
+
 async def del_user(
     user_id: int,
     current_admin: Annotated[UserInDB, Depends(token_authen)],
@@ -327,6 +327,9 @@ async def del_user(
 
     if current_admin.identity != "admin":
         raise non_admin_operation_not_allowed_exception
+
+    if user_id == current_admin.id:
+        raise admin_cannot_delete_self_exception
 
     user = await get_user_by_id(user_id, async_session)
     if user is None:

@@ -27,17 +27,22 @@ import zipfile
 from typing import Tuple, List
 import pytest
 from httpx import AsyncClient
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 import alibabacloud_oss_v2 as oss
 from alibabacloud_oss_v2 import PutObjectRequest
 
+from api.file_api_helper import get_file_record_by_id
+from background.file_background import cleanup_old_download_zips
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
+from database.db import get_async_engine
 from tools.cal_hash import compute_file_md5
 from .conftest import logger
 
 # ------------------------------------------------------------------ #
 # 测试文件参数，按需修改
 # ------------------------------------------------------------------ #
-TEST_FILENAME = "kawaru_functest.zip"
+TEST_FILENAME = "kawaru_functest"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
 TEST_IMZML_SIZE = 10240 * 1024  # 10 MB，调整此值控制 imzML 大小
@@ -125,6 +130,12 @@ class TestFile:
 
     _chunked_uploaded_file_id: int | None = None
     _chunked_uploaded_content: bytes | None = None
+
+    @staticmethod
+    async def _fetch_file_record(file_id: int):
+        """读取数据库中的文件记录，便于断言 path/size 变化"""
+        async with AsyncSession(get_async_engine()) as session:
+            return await get_file_record_by_id(file_id, session)
 
     # ------------------------------------------------------------------ #
     # 文件主链路 1：预检 -> 简单上传 -> 下载
@@ -280,6 +291,61 @@ class TestFile:
         )
 
     # ------------------------------------------------------------------ #
+    # cleanup -> 重新下载重建 zip -> Content-Length 一致性
+    # ------------------------------------------------------------------ #
+    @pytest.mark.download_file
+    async def test_download_after_cleanup_rebuild_zip_content_length_matches(
+        self,
+        admin_login: Tuple[AsyncClient, str, str],
+    ):
+        """预检->上传->cleanup->下载，验证重建zip时Content-Length与真实大小一致"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        zip_path = _make_test_zip_to_local()
+        file_verify_code, size = await compute_file_md5(zip_path)  # type: ignore
+
+        # 1) preflight + simple upload
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json=_build_preflight_payload(size=size, file_verify_code=file_verify_code, total_parts=1),
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+
+        with open(zip_path, "rb") as f:
+            rs = await client.post(
+                "/files/upload_simple",
+                headers=auth,
+                data={"storage_type": "local", "pre_file_id": str(pre_file_id)},
+                files={"file": (TEST_FILENAME, f, "application/zip")},
+            )
+        assert rs.status_code == 200, rs.text
+        file_id = rs.json()["file_id"]
+        TestFile._simple_uploaded_file_id = file_id
+
+        # 2) 强制触发 cleanup，模拟定时任务把下载zip删掉并清空path
+        cleaned = await cleanup_old_download_zips.run(retention_minutes=0, batch_size=1000)  # type: ignore
+        assert cleaned >= 1
+
+        record = await self._fetch_file_record(file_id)
+        assert record.path == SOURCE_FILE_PATH_CLEARED
+
+        # 3) 下载，触发后端重建zip；校验 Content-Length 与真实大小一致
+        rs = await client.get(f"/files/{file_id}/download", headers=auth)
+        assert rs.status_code == 200, rs.text
+        content_length = int(rs.headers.get("content-length", "0"))
+        assert content_length == len(rs.content)
+
+        # 4) 校验数据库 size/path 与磁盘真实文件一致
+        record = await self._fetch_file_record(file_id)
+        rebuilt_path = Path(record.path)
+        assert rebuilt_path.exists()
+        real_size = rebuilt_path.stat().st_size
+        assert record.size == real_size == len(rs.content)
+
+    # ------------------------------------------------------------------ #
     # OSS上传测试
     # ------------------------------------------------------------------ #
     @pytest.mark.oss
@@ -382,6 +448,7 @@ class TestFile:
     # 清理
     # ------------------------------------------------------------------ #
 
+    @pytest.mark.download_file
     @pytest.mark.file
     @pytest.mark.oss
     @pytest.mark.order("last")

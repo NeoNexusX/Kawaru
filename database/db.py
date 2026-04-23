@@ -51,7 +51,7 @@ def get_sync_engine():
     return _SYNC_ENGINE
 
 
-def get_async_engine(standalone: bool = False):
+def get_async_engine(standalone: bool = False): #TODO celery和主进程分开
     """
     加载异步引擎
 

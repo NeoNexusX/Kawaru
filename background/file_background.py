@@ -29,7 +29,7 @@ celery_app = get_celery_app()
 
 
 @celery_app.task() # type: ignore
-async def cleanup_stale_preflights_all_users(
+async def cleanup_stale_preflights_all_users( #TODO 数据库上锁 写一个测试函数测试文件zip删除后再打包的情况 有时候大小会不一致 报错
     ttl_minutes: int = PREFLIGHT_TTL_MINUTES,
     batch_size: int = 100,
 ) -> int:
@@ -139,7 +139,6 @@ async def clean_user_all_task(
 
         for file_id in file_ids[:batch_size]:
             try:
-
                 # 检查剩余所有者数量
                 owner_count = (await session.exec(
                     select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
@@ -155,20 +154,14 @@ async def clean_user_all_task(
 
                     # 创建一个临时的 user 对象用于删除
                     user_obj = UserInDB( # type: ignore
-                        id=deleted_user_id,
-                        username="deleted_user",
-                        email="",
-                        hashed_password="",
-                    )
+                        id=deleted_user_id,username="deleted_user",email="",hashed_password="",)
                     await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
                                                                             # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
                     total_deleted += 1
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 total_errors += 1
                 logger.error(
-                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",
-                    deleted_user_id,file_id,exc,
-                )
+                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)
 
             await session.commit()
         result = {"deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
