@@ -1,7 +1,6 @@
 from datetime import timedelta
 
 from sqlmodel import select, func
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 from api.experiment_api_business import delete_experiment_files
@@ -29,7 +28,7 @@ celery_app = get_celery_app()
 
 
 @celery_app.task() # type: ignore
-async def cleanup_stale_preflights_all_users( #TODO 数据库上锁 写一个测试函数测试文件zip删除后再打包的情况 有时候大小会不一致 报错
+async def cleanup_stale_preflights_all_users(
     ttl_minutes: int = PREFLIGHT_TTL_MINUTES,
     batch_size: int = 100,
 ) -> int:
@@ -59,6 +58,7 @@ async def cleanup_stale_preflights_all_users( #TODO 数据库上锁 写一个测
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
             .limit(batch_size)
+            .with_for_update(skip_locked=True)
         )).all()
 
         if not records:
@@ -96,7 +96,8 @@ async def cleanup_old_download_zips(
         cutoff_time = now - timedelta(minutes=retention_minutes)
         cleaned = 0
         records = (await session.exec(
-            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time).limit(batch_size))).all()
+            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time)
+            .limit(batch_size).with_for_update(skip_locked=True))).all()
         for rec in records:
             file_path = rec.path.strip() if rec.path else ""
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
@@ -157,13 +158,13 @@ async def clean_user_all_task(
                         id=deleted_user_id,username="deleted_user",email="",hashed_password="",)
                     await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
                                                                             # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
-                    total_deleted += 1
+                total_deleted += 1
+
+                await session.commit()
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 total_errors += 1
                 logger.error(
                     "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)
-
-            await session.commit()
         result = {"deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
                     "files_deleted": total_deleted,"errors": total_errors,}
         logger.info("clean_user_all_task completed %s", result)
@@ -199,7 +200,7 @@ async def cleanup_failed_experiments(
         try:
             failed_experiments = (await session.exec(select(ExperimentImzMLInDB).where(
                         ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
-                        ExperimentImzMLInDB.created_at < threshold,).limit(batch_size))).all()
+                        ExperimentImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
         # 第二步:处理每个失败的实验
             for exp in failed_experiments:
                 # 查询关联的文件记录
@@ -211,10 +212,10 @@ async def cleanup_failed_experiments(
                     select(UserFileLink.user_id).where(UserFileLink.file_id == exp.source_file_id))).all()
 
                 for user_id in user_ids:
-                    user_record = (await session.exec(select(UserInDB).where(UserInDB.id == user_id))).first()
+                    user_record = (await session.exec(select(UserInDB).where(UserInDB.id == user_id).with_for_update(skip_locked=True))).first()
 
                     if user_record:
-                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)
+                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)  #TODO 风险，后面加锁
                         user_record.total_file_size = max(
                             0, (user_record.total_file_size or 0) - (file_record.size or 0)) # type: ignore[attr-defined]
                         session.add(user_record)

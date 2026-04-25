@@ -100,7 +100,7 @@ async def append_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     return new_linker
 
 
-async def link_file_to_user(
+async def link_file_to_user( #TODO 风险，后面加锁
     async_session: AsyncSession,
     user: UserInDB,
     file: FileInDB,
@@ -493,7 +493,7 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     async_session.expire(file, ["owners"])
 
 
-async def unlink_user_from_file(
+async def unlink_user_from_file( #TODO 风险，后面加锁
     session: AsyncSession,
     user: UserInDB,
     file_record: FileInDB,
