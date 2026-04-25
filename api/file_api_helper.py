@@ -165,7 +165,7 @@ async def merge_files_and_get_hash(
     return final_hash
 
 
-def check_user_quota(user: UserInDB, file_size: int) -> bool:
+def check_user_quota(user: UserInDB, file_size: int) -> bool:  #TODO 风险，后面加锁
     """
     检查用户配额是否足够
 

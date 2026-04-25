@@ -21,9 +21,13 @@ from models.experiment_models import ExperimentStatus
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 
+from boot.config import get_config
 from tools.logger import get_logger
 logger = get_logger("background.experiment_background")
 celery_app = get_celery_app()
+
+celery_worker_config = get_config().celery
+large_file_poll_time = celery_worker_config.large_file_poll_time
 
 async def trigger_experiment_extraction(
     file_record: FileInDB,
@@ -76,9 +80,9 @@ async def process_imzml_experiment_background(
             experiment_dir = None
             # TODO: 封装存储分支逻辑
             if storage_type == 'local':
-                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
+                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id) # type: ignore
             elif storage_type == 'oss':
-                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id)
+                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id) # type: ignore
 
             # 解压和验证
             final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir) # type:ignore
@@ -109,7 +113,7 @@ async def process_imzml_experiment_background(
 
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
-            _source_file_id = source_file.file_id # type: ignore
+            source_file_id = source_file.file_id # type: ignore
             await async_session.rollback()
 
             async with AsyncSession(get_async_engine()) as async_session:
@@ -142,7 +146,7 @@ async def extract_and_validate_local_imzml_zip(
     """
     try:
         res = extract_and_validate_local_imzml_zip_task.delay(str(zip_file_path), str(target_dir)) # type: ignore
-        result = await wait_for_result(res, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
+        result = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
         if result is None:
             logger.error(f"failed to extract and validate imzml zip due to server timeout: {zip_file_path}")
             raise TimeoutError("extract and validate imzml zip timeout")

@@ -24,6 +24,7 @@ from api.user_api_business import authenticate_user, validate_orcid, validate_up
 from api.user_api_helper import (
     validate_url,
     get_user,
+    get_user_by_id,
     get_user_by_email,
     count_items
 )
@@ -253,7 +254,6 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     raise user_verification_bad_exception
 
 
-# 创建管理员用户的API函数，需要当前用户是管理员才能调用
 async def create_admin_user_api(user: UserCreate,
                                 current_admin: Annotated[UserInDB, Depends(token_authen)],
                                 async_session: AsyncSessionDep,) -> UserPublic:
@@ -317,21 +317,34 @@ async def update_user(
 
     return user # type:ignore
 
-#TODO：此处逻辑已经修改，但是还差一个定时任务来清理用户文件，后续补上
+
 async def del_user(
-    user: Annotated[UserInDB, Depends(token_authen)], async_session: AsyncSessionDep
-):
-    """删除当前登录用户"""
-    file_ids = []
+    user_id: int,
+    current_admin: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> UserPublic:
+    """删除指定用户（仅管理员可操作）"""
+
+    if current_admin.identity != "admin":
+        raise non_admin_operation_not_allowed_exception
+
+    if user_id == current_admin.id:
+        raise admin_cannot_delete_self_exception
+
+    user = await get_user_by_id(user_id, async_session)
+    if user is None:
+        raise user_not_found_exception
+    user_id = user.id # type: ignore
+
     file_ids = await get_user_file_ids(async_session, user.id) # type: ignore
-
-    if file_ids:
-        task = clean_user_all_task.delay(file_ids, user.id)  # type: ignore
-        await wait_for_result(task, poll_interval=1.0)
-
     await async_session.delete(user)
     await async_session.commit()
-    return user
+
+    if file_ids:
+        task = clean_user_all_task.delay(file_ids, user_id)  # type: ignore
+        await wait_for_result(task, poll_interval=1.0)
+
+    return user # type:ignore
 
 
 async def create_admin_user():
@@ -443,6 +456,6 @@ UserLogoutDep = Annotated[UserPublic, Depends(logout)]  # 用户登出
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用户
 AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增（管理员用户）
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用户信息
-UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 删除当前登录用户
+UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 根据用户 ID 删除指定用户
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
 ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖

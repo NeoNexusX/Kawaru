@@ -4,11 +4,13 @@ from models.file_models import FilePublic, PartUploadStatus
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, PreflightDep,PartPublic,
-    PartUploadDep, PartStatusDep, ListPublicFilesDep,
+    DownloadFileDep, PreflightDep, PartPublic,
+    PartUploadDep, PartStatusDep, ValidateAndMergeDep, ListPublicFilesDep,
     OssUploadCompleteDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
+from background.file_background_helper import get_oss_upload_sts_token_task
+from celery_runtime.result import wait_for_result
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -52,6 +54,12 @@ async def upload_chunk(chunk_result: PartUploadDep):
     return chunk_result
 
 
+@file_router.post("/chunked/{file_id}/validate_and_merge")
+async def validate_and_merge_parts(result: ValidateAndMergeDep):
+    """显式触发分片合并"""
+    return result
+
+
 @file_router.get("/chunked/{file_id}/status", response_model=PartUploadStatus)
 async def get_upload_status(status: PartStatusDep):
     """查询分片上传状态"""
@@ -73,8 +81,6 @@ async def oss_upload_complete(file_record: OssUploadCompleteDep):
 @file_router.post("/test_api")
 async def test_api():
     """测试API"""
-    from background.file_background_helper import get_oss_upload_sts_token_task
-    from celery_runtime.result import wait_for_result
     res = get_oss_upload_sts_token_task.delay("testfile.txt") # type: ignore
     result = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
     return result

@@ -44,7 +44,7 @@ async def start_embedded_celery():
     worker_proc = None
     beat_proc = None
     try:
-        worker_proc = await asyncio.create_subprocess_exec(
+        worker_proc = await asyncio.create_subprocess_exec( #TODO 新建一个work 和已知work分开，该work重计算
             sys.executable, "-m", "celery", *worker_args, stdout=None, stderr=None, env=env
         )
         beat_proc = await asyncio.create_subprocess_exec(

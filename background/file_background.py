@@ -1,7 +1,6 @@
 from datetime import timedelta
 
 from sqlmodel import select, func
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 from api.experiment_api_business import delete_experiment_files
@@ -12,12 +11,13 @@ from api.file_api_business import (
     safe_cleanup_preflight_record,
     delete_file_and_parts,
 )
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_RETENTION_DAYS
-from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
-from database.db import get_async_engine
+from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
+from database.db import get_standalone_async_session
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
+from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
 
 from celery_runtime.state import get_celery_app
 
@@ -42,7 +42,7 @@ async def cleanup_stale_preflights_all_users(
     Returns:
         清理的记录数量
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+    async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup stale preflights for all users with TTL {ttl_minutes} minutes...")
 
         # 代表 uploaded_at 超过 TTL 的时间点
@@ -58,6 +58,7 @@ async def cleanup_stale_preflights_all_users(
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
             .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
             .limit(batch_size)
+            .with_for_update(skip_locked=True)
         )).all()
 
         if not records:
@@ -72,14 +73,14 @@ async def cleanup_stale_preflights_all_users(
 
         if total_cleaned:
             await session.commit()
-            logger.info(f"completed cleanup of stale preflights for all users, total cleaned {total_cleaned} records")
+        logger.info(f"completed cleanup of stale preflights for all users, total cleaned {total_cleaned} records")
 
-        return total_cleaned
+    return total_cleaned
 
 
 @celery_app.task() # type: ignore
 async def cleanup_old_download_zips(
-    retention_days: int = DOWNLOAD_ZIP_RETENTION_DAYS,
+    retention_minutes: int = DOWNLOAD_ZIP_TTL_MINUTES,
     batch_size: int = 100,
 ) -> int:
     """
@@ -88,13 +89,15 @@ async def cleanup_old_download_zips(
       - last_downloaded_at 早于 当前时间 - retention_days
     物理文件删除后只置空 path，保留数据库记录
     """
-    now = utc_time()
-    cutoff_time = now - timedelta(days=retention_days)
-    cleaned = 0
+    async with get_standalone_async_session() as session:
+        logger.info(f"starting cleanup old download zips for all users with TTL {retention_minutes} minutes...")
 
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
+        now = utc_time()
+        cutoff_time = now - timedelta(minutes=retention_minutes)
+        cleaned = 0
         records = (await session.exec(
-            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time).limit(batch_size))).all()
+            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time)
+            .limit(batch_size).with_for_update(skip_locked=True))).all()
         for rec in records:
             file_path = rec.path.strip() if rec.path else ""
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
@@ -110,7 +113,7 @@ async def cleanup_old_download_zips(
         if cleaned:
             await session.commit()
 
-    logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
+        logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
     return cleaned
 
 
@@ -128,10 +131,8 @@ async def clean_user_all_task(
     - 如果文件被多个用户共享，仅解除关联
     - 如果文件仅属于该用户时，完全删除文件和分片
     """
-    async with AsyncSession(get_async_engine(standalone=True)) as session:
-        logger.info(
-            "starting clean_user_all_task for deleted_user_id=%s file_count=%s",
-            deleted_user_id,len(file_ids),)
+    async with get_standalone_async_session() as session:
+        logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
 
         total_unlinked = 0
         total_deleted = 0
@@ -139,12 +140,11 @@ async def clean_user_all_task(
 
         for file_id in file_ids[:batch_size]:
             try:
-
                 # 检查剩余所有者数量
                 owner_count = (await session.exec(
                     select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
 
-                if owner_count > 1:
+                if owner_count > 0:
                     # 还有其他用户持有，只解除关联
                     total_unlinked += 1
                 else:
@@ -155,29 +155,92 @@ async def clean_user_all_task(
 
                     # 创建一个临时的 user 对象用于删除
                     user_obj = UserInDB( # type: ignore
-                        id=deleted_user_id,
-                        username="deleted_user",
-                        email="",
-                        hashed_password="",
-                    )
+                        id=deleted_user_id,username="deleted_user",email="",hashed_password="",)
                     await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
                                                                             # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
                     total_deleted += 1
+
+                await session.commit()
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 total_errors += 1
                 logger.error(
-                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",
-                    deleted_user_id,file_id,exc,
-                )
-
-            await session.commit()
-
-        result = {
-            "deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
-            "files_deleted": total_deleted,"errors": total_errors,
-        }
+                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)
+        result = {"deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
+                    "files_deleted": total_deleted,"errors": total_errors,}
         logger.info("clean_user_all_task completed %s", result)
-        return result
+    return result
+
+
+@celery_app.task()  # type: ignore
+async def cleanup_failed_experiments(
+    ttl_minutes: int = FAILED_EXPERIMENT_TTL_MINUTES,
+    batch_size: int = 100
+) -> int:
+    """
+    清理过期的失败实验记录
+    
+    完整的清理流程:
+    1. 查询过期的失败实验记录
+    2. 手动更新所有相关用户的 file_count 和 total_file_size
+    3. 删除实验文件(imzML、ibd)物理文件
+    4. 删除文件表记录
+    5. 数据库自动级联删除关联的 UserFileLink 和 ExperimentImzMLInDB 记录
+    
+    注意:
+    - 源 ZIP 文件会删除
+    - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
+    - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
+    """
+    async with get_standalone_async_session() as session:
+        logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
+        now = utc_time()
+        threshold = now - timedelta(minutes=ttl_minutes)
+        cleaned = 0
+        # 第一步:查询过期的失败实验
+        try:
+            failed_experiments = (await session.exec(select(ExperimentImzMLInDB).where(
+                        ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
+                        ExperimentImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
+        # 第二步:处理每个失败的实验
+            for exp in failed_experiments:
+                # 查询关联的文件记录
+                file_record = (await session.exec(
+                    select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
+
+                # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
+                user_ids = (await session.exec(
+                    select(UserFileLink.user_id).where(UserFileLink.file_id == exp.source_file_id))).all()
+
+                for user_id in user_ids:
+                    user_record = (await session.exec(select(UserInDB).where(UserInDB.id == user_id).with_for_update(skip_locked=True))).first()
+
+                    if user_record:
+                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)  #TODO 风险，后面加锁
+                        user_record.total_file_size = max(
+                            0, (user_record.total_file_size or 0) - (file_record.size or 0)) # type: ignore[attr-defined]
+                        session.add(user_record)
+                        logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
+                            user_record.total_file_size,)
+
+                # 2. 删除实验文件(imzML、ibd)物理文件， delete_experiment_files 只处理物理文件删除，不操作数据库
+                await delete_experiment_files(session, exp.source_file_id)
+
+                # 3. 删除真实文件和文件表记录
+                # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 ExperimentImzMLInDB 记录
+                file_path = file_record.path.strip() # type: ignore[attr-defined]
+                if file_path and file_path != SOURCE_FILE_PATH_CLEARED :
+                    await delete_file_by_storage(file_path, file_record.storage_type) # type: ignore[attr-defined]
+                await session.delete(file_record)
+                cleaned += 1
+                logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
+
+        # 第三步:提交事务
+            await session.commit()
+            logger.info("cleanup_failed_experiments completed %s", cleaned)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("failed to  cleanup changes error=%s", e)
+
+    return cleaned
 
 
 @celery_app.task()
