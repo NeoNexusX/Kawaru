@@ -75,7 +75,7 @@ async def update_user(user: UserUpdateDep):
     return user
 
 
-@user_router.delete("/user_delete/{user_id}")
+@user_router.delete("/user_delete/{user_id}",response_model=UserPublic)
 async def del_user(user: UserDeleDep):
     """
     Delete user by ID (admin only):

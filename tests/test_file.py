@@ -131,6 +131,8 @@ class TestFile:
     _chunked_uploaded_file_id: int | None = None
     _chunked_uploaded_content: bytes | None = None
 
+    _uploaded_file_id: int | None = None #oss的id
+
     @staticmethod
     async def _fetch_file_record(file_id: int):
         """读取数据库中的文件记录，便于断言 path/size 变化"""
@@ -423,6 +425,7 @@ class TestFile:
             file_id for file_id in (
                 TestFile._simple_uploaded_file_id,
                 TestFile._chunked_uploaded_file_id,
+                TestFile._uploaded_file_id,
             )
             if file_id is not None
         ]
@@ -436,7 +439,13 @@ class TestFile:
             assert rs.json()["status"] in ("deleted", "unlinked")
             logger.info("test_cleanup_uploaded_file passed: file_id=%s", file_id)
 
+        temp_dir = Path("../test_temp")
+        zip_path = temp_dir / TEST_FILENAME
+
+        zip_path.unlink(missing_ok=True)
+
         TestFile._simple_uploaded_file_id = None
         TestFile._simple_uploaded_content = None
         TestFile._chunked_uploaded_file_id = None
         TestFile._chunked_uploaded_content = None
+        TestFile._uploaded_file_id = None

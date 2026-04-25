@@ -158,7 +158,7 @@ async def clean_user_all_task(
                         id=deleted_user_id,username="deleted_user",email="",hashed_password="",)
                     await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
                                                                             # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
-                total_deleted += 1
+                    total_deleted += 1
 
                 await session.commit()
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -187,7 +187,7 @@ async def cleanup_failed_experiments(
     5. 数据库自动级联删除关联的 UserFileLink 和 ExperimentImzMLInDB 记录
     
     注意:
-    - 源 ZIP 文件不删除
+    - 源 ZIP 文件会删除
     - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
     - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
     """

@@ -821,7 +821,7 @@ async def validate_and_merge_parts_business(
 
     await session.commit()
     await session.refresh(file_record)
-    await session.refresh(current_user)
+    await session.refresh(current_user) #TODO 此处确实会破坏事物原子性
     logger.info(f"parts merged successfully file_id={file_record.file_id} user={current_user.id}")
     return True
 
