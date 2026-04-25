@@ -30,9 +30,13 @@ from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_
 from exceptions.file_exceptions import storage_type_not_allowed_exception
 from exceptions.common_exceptions import internal_server_error_exception
 
+from boot.config import get_config
 from tools.logger import get_logger
 logger = get_logger("background.experiment_background")
 celery_app = get_celery_app()
+
+celery_worker_config = get_config().celery
+large_file_poll_time = celery_worker_config.large_file_poll_time
 
 async def trigger_experiment_extraction(
     file_record: FileInDB,
@@ -195,7 +199,40 @@ async def process_imzml_experiment_background_task(
             raise
 
 
-def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
+async def extract_and_validate_local_imzml_zip(
+    zip_file_path: Path,
+    target_dir: Path,
+) -> tuple[Path, Path]:
+    """
+    解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
+
+    Args:
+        zip_file_path: ZIP 文件路径
+        target_dir: 解压目标目录
+
+    Returns:
+        成功时返回 (imzml_path, ibd_path) 元组
+
+    Raise:
+        - zipfile.BadZipFile: ZIP 文件无效
+        - FileNotFoundError: 缺少 .imzML 或 .ibd 文件
+        - ValueError: ZIP 文件包含不安全的路径
+    """
+    try:
+        res = extract_and_validate_local_imzml_zip_task.delay(str(zip_file_path), str(target_dir)) # type: ignore
+        result = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
+        if result is None:
+            logger.error(f"failed to extract and validate imzml zip due to server timeout: {zip_file_path}")
+            raise TimeoutError("extract and validate imzml zip timeout")
+    except Exception as e:
+        logger.error(f"extract and validate imzml zip failed error={e}")
+        raise e
+    imzml_path_str, ibd_path_str = result
+    return Path(imzml_path_str), Path(ibd_path_str)
+
+
+@celery_app.task() # type: ignore
+def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 

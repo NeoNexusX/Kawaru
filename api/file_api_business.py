@@ -60,12 +60,16 @@ from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus
 
+from boot.config import get_config
+
 if TYPE_CHECKING:
     from fastapi import UploadFile
     from models.file_models import PartCreate
 
 logger = get_logger("api.file_api_business")
 
+celery_worker_config = get_config().celery
+large_file_poll_time = celery_worker_config.large_file_poll_time
 #########################
 # File  - 增
 #########################
@@ -100,7 +104,7 @@ async def append_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     return new_linker
 
 
-async def link_file_to_user(
+async def link_file_to_user( #TODO 风险，后面加锁
     async_session: AsyncSession,
     user: UserInDB,
     file: FileInDB,
@@ -319,7 +323,7 @@ async def prepare_download_file(
                 ]
 
                 task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=1000) # type: ignore # 针对大文件此处timeout需要调大
+                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
                 if zip_size is None:
                     raise file_content_missing_exception
 
@@ -518,7 +522,7 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     async_session.expire(file, ["owners"])
 
 
-async def unlink_user_from_file(
+async def unlink_user_from_file( #TODO 风险，后面加锁
     session: AsyncSession,
     user: UserInDB,
     file_record: FileInDB,
@@ -782,7 +786,7 @@ async def validate_part_duplicate(
     return (await async_session.exec(stmt)).one()
 
 
-async def validate_and_merge_parts(
+async def validate_and_merge_parts_business(
     session: AsyncSession, file_record: FileInDB, current_user: UserInDB
 ) -> bool:
     """
@@ -844,6 +848,9 @@ async def validate_and_merge_parts(
     # 5. 执行分片合并
     await merge_parts_to_file(session, file_record, parts, current_user)
 
+    await session.commit()
+    await session.refresh(file_record)
+    await session.refresh(current_user) #TODO 此处确实会破坏事物原子性
     logger.info(f"parts merged successfully file_id={file_record.file_id} user={current_user.id}")
     return True
 

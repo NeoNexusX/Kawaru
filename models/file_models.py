@@ -5,7 +5,7 @@ import aiofiles
 import httpx
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Column, Integer, ForeignKey,BigInteger
+from sqlalchemy import Column, Integer, ForeignKey,BigInteger,Float
 from tools import utc_time,get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
@@ -54,6 +54,16 @@ class FileBase(SQLModel):
     solvent: str = Field(default="",description="使用溶剂(选填)",max_length=sample_config.max_solvent_length,)
     is_public: bool = Field(default=False, description="是否公开文件")
 
+    #质谱相关系数
+    polarity: str = Field(default="",description="极性 (Polarity), 如 positive, negative",max_length=sample_config.max_polarity_length,)
+    ionisation_source: str = Field(default="",description="电离源, 如 MALDI, ESI, DESI",max_length=sample_config.max_ionisation_source_length,)
+    analyzer: str = Field(default="",description="质量分析器 (Analyzer), 如 TOF, Orbitrap, FTICR",max_length=sample_config.max_analyzer_length,)
+    pixel_size_horizontal: float = Field(default=0.0,description="像素尺寸 - 水平方向 (Pixel Size, Horizontal)，单位通常为微米 (µm)",
+                                         sa_column=Column(Float, nullable=False, default=0.0),)
+    pixel_size_vertical: float = Field(default=0.0,description="像素尺寸 - 垂直方向 (Pixel Size, Vertical)，单位通常为微米 (µm)",
+                                       sa_column=Column(Float, nullable=False, default=0.0),)
+    resolving_power: float = Field(default=0.0,description="分辨率 (Resolving Power)，如 100000（无单位，或指 FWHM）",
+                                   sa_column=Column(Float, nullable=False, default=0.0),)
 
 class FileCreate(FileBase):
     """创建文件时的请求模型(普通上传和分片上传)"""

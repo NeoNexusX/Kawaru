@@ -48,6 +48,7 @@ class CelerySettings(BaseModel):
     worker_log_file: str
     worker_disable_rate_limits: bool
     worker_pool: str
+    large_file_poll_time: int
 
 
 class EmailSettings(BaseModel):
@@ -77,11 +78,12 @@ class StorageSettings(BaseModel):
     max_file_type_length: int
     max_downloads_per_user: int
     max_files_per_user: int
-    preflight_ttl_minutes: int
     cleanup_preflights_interval_minutes: int
     cleanup_download_zip_interval_minutes: int
-    download_zip_retention_days: int
-    chunk_ttl_minutes: int
+    cleanup_failed_experiments_interval_minutes: int
+    preflight_ttl_minutes: int
+    download_zip_ttl_minutes: int
+    failed_experiment_ttl_minutes: int
 
 
 class OSSSettings(BaseModel):
@@ -118,6 +120,7 @@ class SampleInfoSettings(BaseModel):
     """样品信息配置模型"""
     max_experiment_name_length: int
     max_experiment_type_length: int
+    max_instrument_types_length: int
     max_organism_length: int
     max_organism_part_length: int
     max_condition_length: int
@@ -127,6 +130,9 @@ class SampleInfoSettings(BaseModel):
     max_maldi_matrix_length: int
     max_maldi_matrix_application_length: int
     max_solvent_length: int
+    max_polarity_length: int
+    max_ionisation_source_length: int
+    max_analyzer_length: int
 
 
 # Initial admin user's information 初始管理员信息
@@ -142,6 +148,15 @@ class AdminInfo(BaseModel):
     email: str
 
 
+class CORSSettings(BaseModel):
+    """CORS 配置模型"""
+    allow_origins: list[str]
+    allow_credentials: bool
+    allow_methods: list[str]
+    allow_headers: list[str]
+    expose_headers: list[str]
+
+
 class Config(BaseModel):
     """全局配置模型"""
     server: ServerSettings
@@ -155,3 +170,4 @@ class Config(BaseModel):
     token: TokenSettings
     admin_info: AdminInfo
     sample_info: SampleInfoSettings
+    cors: CORSSettings

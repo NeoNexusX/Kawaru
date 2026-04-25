@@ -1,12 +1,8 @@
-import asyncio
-from typing import Dict, Any, Optional
 import smtplib
 import ssl
 from email.message import EmailMessage
 
 import httpx
-from httpx import RequestError
-from starlette import status
 
 from celery_runtime.state import get_celery_app
 from tools.logger import get_logger

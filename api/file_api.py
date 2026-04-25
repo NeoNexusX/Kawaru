@@ -20,7 +20,7 @@ from api.file_api_business import (
     save_and_persist_part,
     unlink_user_from_file,
     update_download_stats,
-    validate_and_merge_parts,
+    validate_and_merge_parts_business,
     validate_part_upload,
     validate_simple_upload,
     rollback_part_upload,
@@ -178,8 +178,8 @@ async def upload_file_part(
         logger.info(f"part saved user={current_user.id} file_id={file_record.file_id} "
                     f"part={part_data.part_number} size={act_part_size}")
 
-        # 5. 尝试合并
-        is_merged = await validate_and_merge_parts(async_session, file_record, current_user)
+        #5. 尝试合并
+        is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
         if is_merged:
             await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
 
@@ -195,6 +195,29 @@ async def upload_file_part(
         raise invalid_part_data_exception from exc
 
     return part_record  # type: ignore
+
+
+async def validate_and_merge_parts(
+    file_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> dict[str, Any]:
+    """
+    【分片合并接口】
+
+    功能:前端在所有分片上传完成后显式触发分片完整性验证和合并。
+    """
+    file_record = await get_file_record_by_id(file_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+
+    is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
+    if is_merged:
+        await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
+
+    await async_session.commit()
+
+    return {"file_id": file_id, "merged": is_merged}
 
 
 async def get_part_upload_status(
@@ -740,6 +763,7 @@ DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
 PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
+ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadCompleteDep = Annotated[FilePublic, Depends(oss_upload_complete)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
