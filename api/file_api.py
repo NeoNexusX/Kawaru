@@ -3,7 +3,7 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import Depends, File, Form, UploadFile
+from fastapi import Depends, File, Form, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -34,8 +34,8 @@ from api.file_api_helper import (
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
-from api.user_api_helper import count_items, get_user_by_id
-from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES
+from api.user_api_helper import count_items, get_user
+from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     file_persist_failed_exception,
@@ -43,6 +43,7 @@ from exceptions.file_exceptions import (
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    file_not_found_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.user_exceptions import user_not_found_exception
@@ -307,6 +308,7 @@ async def upload_simple_file(
     pre_record = None
     final_path = None
     oss_path = None
+    oss_bucket = None
     oss_sts_token = None
 
     try:
@@ -346,9 +348,10 @@ async def upload_simple_file(
                         f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
         elif storage_type == "oss":
-            # 如果是oss存储，向前端返回带oss_upload_path的URL，前端需要根据URL上传文件到oss
-            # 前端上传完毕后，通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务(或通过oss回调进行通知)
-            oss_path = OssStorage.prepare_storage_path(file.filename) # oss 存储路径(如)
+            # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
+            # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
+            oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
+            oss_bucket = OSS_BUCKET_NAME
             oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
             if not oss_sts_token or not oss_path:
                 raise internal_server_error_exception
@@ -367,6 +370,7 @@ async def upload_simple_file(
         pre_record = FilePublic.model_validate(pre_record)
         pre_record.oss_path = oss_path
         pre_record.oss_sts_token = oss_sts_token
+        pre_record.oss_bucket = oss_bucket
 
     return pre_record # type: ignore
 
@@ -508,7 +512,7 @@ async def delete_user_file(
     # 没有其他用户持有该文件,执行完全删除
     # 删除实验相关文件(如果有)
     if file_record.experiment_type == "imzML":
-        await delete_experiment_files(session, file_id)
+        await delete_experiment_files(session, file_id, file_record.storage_type)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -565,7 +569,7 @@ async def get_download_file_metadata(
             raise user_download_limit_exception
 
     # 准备下载文件(业务层处理)
-    await prepare_download_file(session, file_record)
+    _, oss_download_url = await prepare_download_file(session, file_record)
 
     # 更新下载统计(业务层处理)
     await update_download_stats(session, file_record, current_user)
@@ -575,7 +579,10 @@ async def get_download_file_metadata(
 
     logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
 
-    return FileDownloadMeta.from_record(file_record)
+    file_download_meta = FileDownloadMeta.from_record(file_record)
+    file_download_meta.oss_download_url = oss_download_url
+
+    return file_download_meta
 
 
 async def get_file_list(
@@ -668,35 +675,57 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
-async def oss_upload_complete(file_id: int, current_user_id: int, async_session: AsyncSessionDep):
-    """OSS上传完成时，前端调用该接口通知后端，更新文件状态为已完成上传"""
-    # TODO: 需确认是通过前端调用还是oss上传完成的callback调用？
-    # 如为前端调用，应有token依赖注入验证用户身份；如由callback调用，则直接传user_id即可），但需要限制该接口只能由aliyun oss调用
+async def oss_upload_complete(
+    file_id: int,
+    current_username: str,
+    fc_request_id: str,
+    async_session: AsyncSessionDep
+) -> FilePublic:
+    """
+    需要限制该接口只能由aliyun oss调用
+    在OSS上传时，前端设置好回调参数，OSS上传完成时，aliyun自动调用该接口通知后端，更新文件状态为已完成上传
+
+    :param file_id: 预检文件id
+    :param current_user_id: 当前用户id
+    :param fc_request_id: 函数计算用的request id
+    :param async_session: 异步数据库回话
+
+    :return: 更新后的文件记录
+    """
     pre_record = None
     current_user = None
     oss_path = None
+
     try:
         # 查询预检记录
         pre_record = await get_file_record_by_id(file_id, async_session)
-        current_user = await get_user_by_id(current_user_id, async_session)
+        current_user = await get_user(current_username, async_session)
         if pre_record is None:
-            raise FileNotFoundError(f"preflight_file_id={file_id} not found")
+            raise file_not_found_exception
         if current_user is None:
             raise user_not_found_exception
+        if pre_record.file_verify_code is None:
+            raise ValueError("file_verify_code not found in preflight record")
 
         # 构建OSS文件路径
-        oss_path = OssStorage.prepare_storage_path(pre_record.filename)
+        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
 
-        # celery任务验证oss文件是否存在
-        is_file_exist = await OssStorage.validate_file(oss_path, pre_record.size)
-        if not is_file_exist:
-            oss_path = None
-            raise FileNotFoundError(f"file_id={file_id}, oss_file_name={pre_record.filename} not found")
+        # celery任务验证oss文件
+        is_file_valid = await OssStorage.validate_file(oss_path, pre_record.size, pre_record.file_verify_code)
+        if not is_file_valid:
+            raise file_persist_failed_exception
 
         # 更新文件路径
         pre_record.path = oss_path
         await async_session.commit()
         await async_session.refresh(pre_record)
+        await async_session.refresh(current_user)
+
+    except HTTPException as e:
+        logger.error(f"oss_upload_complete failed: {e}")
+        if current_user is not None:
+            await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
+        raise e
 
     except Exception as e:
         logger.error(f"oss_upload_complete failed: {e}")
@@ -704,9 +733,26 @@ async def oss_upload_complete(file_id: int, current_user_id: int, async_session:
             await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
         raise internal_server_error_exception from e
 
-    # TODO: 触发实验文件提取任务的oss版本
-    # trigger_experiment_extraction(background_tasks, pre_record, current_user, pre_record.experiment_type)
-    return pre_record
+    # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
+    await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
+    return pre_record # type: ignore # TODO: 返回值200
+
+
+async def oss_upload_file(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+    pre_file_id: int = Form(...),
+    file: UploadFile = File(...),
+) -> FilePublic:
+    """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
+    storage_type = "oss"
+    return await upload_simple_file(
+        current_user,
+        async_session,
+        storage_type,
+        pre_file_id,
+        file,
+    )
 
 
 # 依赖注入类型别名
@@ -720,3 +766,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadCompleteDep = Annotated[FilePublic, Depends(oss_upload_complete)]
+OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]

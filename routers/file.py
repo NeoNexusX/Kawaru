@@ -4,9 +4,9 @@ from models.file_models import FilePublic, PartUploadStatus
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, PreflightDep, PartPublic,
-    PartUploadDep, PartStatusDep, ValidateAndMergeDep, ListPublicFilesDep,
-    OssUploadCompleteDep
+    DownloadFileDep, PreflightDep,PartPublic,
+    PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
+    OssUploadCompleteDep, OssUploadDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 from background.file_background_helper import get_oss_upload_sts_token_task
@@ -39,6 +39,8 @@ async def list_user_files(files: ListFilesDep):
 @file_router.get("/{file_id}/download")
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
+    if file_meta.storage_type == "oss":
+        return file_meta
     return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
 
 
@@ -78,6 +80,25 @@ async def oss_upload_complete(file_record: OssUploadCompleteDep):
     return file_record
 
 
+@file_router.post("/upload", response_model=FilePublic)
+async def upload_file(file_record: OssUploadDep):
+    """上传文件至OSS存储"""
+    return file_record
+
+
+# @file_router.post("/test_api")
+# async def test_api(request_id: str):
+#     """测试接口仅供开发过程中快速测试功能使用"""
+#     from background.experiment_background import get_fc_invoke_instance_id_by_request_id # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import get_fc_invoke_logs_by_request_id # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import get_fc_invoke_status  # pylint: disable=import-outside-toplevel
+#     from background.experiment_background import parse_fc_invoke_logs # pylint: disable=import-outside-toplevel
+
+#     instance_id = await get_fc_invoke_instance_id_by_request_id(request_id)
+#     invoke_logs = await get_fc_invoke_logs_by_request_id(request_id)
+#     invoke_status = await get_fc_invoke_status(request_id)
+#     final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
+#     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, "final_ibd_path": final_ibd_path}
 @file_router.post("/test_api")
 async def test_api():
     """测试API"""

@@ -1,14 +1,19 @@
 import shutil
 import zipfile
+import re
 from pathlib import Path
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi import HTTPException
 
-from storage_backend.storage import LocalStorage, OssStorage
 from database.db import get_async_engine
 from celery_runtime.state import get_celery_app
-from celery_runtime.result import wait_for_result
+from storage_backend.storage import LocalStorage
+from storage_backend.oss_log_helper import (
+    get_fc_invoke_instance_id_by_request_id,
+    get_fc_invoke_logs_by_request_id,
+    get_fc_invoke_status,
+)
 from api.experiment_api_business import (
     create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 )
@@ -19,7 +24,11 @@ from models.file_models import FileInDB
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
-from exceptions.experiment_exceptions import invalid_zip_file_exception
+from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS
+
+from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
+from exceptions.file_exceptions import storage_type_not_allowed_exception
+from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
 from tools.logger import get_logger
@@ -33,9 +42,18 @@ async def trigger_experiment_extraction(
     file_record: FileInDB,
     current_user: UserInDB,
     experiment_type: str,
+    fc_request_id: str | None = None,
 ) -> None:
     """
-    根据实验类型触发后台实验文件提取任务
+    根据实验类型触发后台实验文件提取任务（仅触发celery任务，不会阻塞）
+    - 对于本地存储，执行本地解压任务
+    - 对于OSS存储，读取并解析oss端自动提取任务的结果
+
+    :param file_record: 文件记录
+    :param current_user: 当前用户
+    :param experiment_type: 实验类型
+    :type fc_request_id: str | None = None
+    :param fc_request_id: oss上传后自动触发的函数调用ID（可在oss上传完成后返回的响应head获取到）
     """
     if experiment_type != "imzML":
         return
@@ -45,15 +63,16 @@ async def trigger_experiment_extraction(
         return
 
     experiment_name = Path(file_record.filename).stem
-    await process_imzml_experiment_background(current_user.id, file_record.file_id, experiment_name) # type: ignore
+    await process_imzml_experiment_background(current_user.id, file_record.file_id, experiment_name, fc_request_id) # type: ignore
     logger.info(f"auto extraction triggered user={current_user.id} file_id={file_record.file_id}")
 
 
 async def process_imzml_experiment_background(
     user_id: int,
     source_file_id: int,
-    experiment_name: str
-):
+    experiment_name: str,
+    fc_request_id: str | None = None,
+) -> None:
     """
     后台处理 ImzML 实验的任务
 
@@ -61,8 +80,26 @@ async def process_imzml_experiment_background(
     - 临时目录:experiments/temp/exp_{id}/
     - 正式目录:experiments/processed/exp_{id}/
     """
+    process_imzml_experiment_background_task.delay(user_id, source_file_id, experiment_name, fc_request_id) # type: ignore
+
+
+@celery_app.task()
+async def process_imzml_experiment_background_task(
+    user_id: int,
+    source_file_id: int,
+    experiment_name: str,
+    fc_request_id: str | None = None,
+) -> None:
+    """
+    后台处理 ImzML 实验的任务
+
+    存储路径：
+    - 临时目录:experiments/temp/exp_{id}/
+    - 正式目录:experiments/exp_{id}/
+    - OSS存储目录:oss://{bucket}/experiments/filename/
+    """
     source_file = None
-    async with AsyncSession(get_async_engine()) as async_session:
+    async with AsyncSession(get_async_engine(standalone=True)) as async_session:
         try:
             logger.info(f"starting imzml experiment processing user={user_id} file={source_file_id}")
 
@@ -76,19 +113,55 @@ async def process_imzml_experiment_background(
             assert experiment_record.id is not None
 
             #阶段2: 处理实验文件
-            # 创建正式目录（helper 层）
-            experiment_dir = None
-            # TODO: 封装存储分支逻辑
             if storage_type == 'local':
-                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id) # type: ignore
-            elif storage_type == 'oss':
-                experiment_dir = OssStorage.create_experiment_directories(experiment_record.id) # type: ignore
+                # 创建正式目录（helper 层）
+                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
 
-            # 解压和验证
-            final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir) # type:ignore
+                # 解压和验证
+                final_imzml_path, final_ibd_path = extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
+
+            elif storage_type == 'oss':
+                # 直接轮询oss端解压结果
+                if fc_request_id is None:
+                    raise oss_fc_request_id_empty_exception
+
+                # 先获取函数计算的instance_id(说明函数计算开始调用)
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=10) # TODO： 最少延迟多少秒？
+                if instance_id is None:
+                    raise internal_server_error_exception
+
+                # 等待函数计算完成
+                assert FC_UNZIP_TIMEOUT_SECONDS is not None
+                is_success = await get_fc_invoke_status(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
+                if is_success is None:
+                    raise internal_server_error_exception
+
+                # 再获取并输出函数计算日志
+                invoke_logs = await get_fc_invoke_logs_by_request_id(fc_request_id)
+                if not invoke_logs:
+                    logger.error(f"get fc invoke logs failed, request_id {fc_request_id}")
+                    raise internal_server_error_exception
+
+                # 输出函数计算日志至后端日志系统
+                for log in invoke_logs:
+                    logger.info(f"fc invoke log:\n{log}")
+
+                # 如果函数计算失败，说明解压过程报错，抛出异常
+                if not is_success:
+                    raise zipfile.BadZipFile
+
+                # 解析函数计算日志，提取出实验文件最终存储路径
+                final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
+
+                # 检查是否成功提取路径，失败说明压缩包解压失败
+                if final_imzml_path is None or final_ibd_path is None:
+                    raise zipfile.BadZipFile
+
+            else:
+                raise storage_type_not_allowed_exception
 
             # 更新实验记录
-            await mark_experiment(async_session,experiment_record,final_imzml_path,final_ibd_path)
+            await mark_experiment(async_session,experiment_record,storage_type,final_imzml_path,final_ibd_path)
 
             # 保留原始 ZIP 文件与数据库 path 字段，由定时任务统一清理
             await async_session.commit()
@@ -96,14 +169,16 @@ async def process_imzml_experiment_background(
 
             logger.info(f"completed imzml experiment processing exp_id={experiment_record.id} source_file_id={source_file_id}")
 
-        except HTTPException as e:
-            logger.error(e)
-            raise e
+        # TODO：是否需要HTTP Exception, internal server error会走到这里
+        # except HTTPException as e:
+        #     logger.error(e)
+        #     raise e
 
         except (zipfile.BadZipFile, FileNotFoundError) as e:
-            #此处理论上experiment_record一定存在，直接使用即可
+            #此处理论上experiment_record和storage_type一定存在，直接使用即可
             await mark_experiment(async_session = async_session,
-                                    experiment=experiment_record.id, #type:ignore
+                                    experiment=experiment_record.id, # type:ignore
+                                    storage_type=storage_type, # type:ignore
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
@@ -113,7 +188,6 @@ async def process_imzml_experiment_background(
 
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
-            source_file_id = source_file.file_id # type: ignore
             await async_session.rollback()
 
             async with AsyncSession(get_async_engine()) as async_session:
@@ -174,10 +248,6 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         - FileNotFoundError: 缺少 .imzML 或 .ibd 文件
         - ValueError: ZIP 文件包含不安全的路径
     """
-    # 任务队列传过来是str，这里转换回来方便操作
-    target_dir = Path(target_dir_str)
-    zip_file_path = Path(zip_file_path_str)
-
     try:
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
             # 验证 ZIP 条目以防止路径遍历（Zip Slip）
@@ -216,4 +286,28 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
 
-    return str(imzml_path), str(ibd_path)
+    return imzml_path, ibd_path
+
+
+def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:
+    """
+    解析函数计算日志，提取出实验文件最终存储路径
+    """
+
+    # 解析日志，提取出实验文件最终存储路径
+    final_imzml_path = None
+    final_ibd_path = None
+
+    # 正则
+    imzml_pattern = r"\[imzML_path\](\S+)"
+    ibd_pattern = r"\[ibd_path\](\S+)"
+
+    # 匹配并提取路径
+    for log in logs:
+        if not final_imzml_path and "[imzML_path]" in log:
+            final_imzml_path = re.search(imzml_pattern, log).group(1).strip()
+
+        if not final_ibd_path and "[ibd_path]" in log:
+            final_ibd_path = re.search(ibd_pattern, log).group(1).strip()
+
+    return final_imzml_path, final_ibd_path

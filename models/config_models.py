@@ -94,6 +94,12 @@ class OSSSettings(BaseModel):
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
     oss_zip_storage_root: str | None = None
     oss_experiment_storage_root: str | None = None
+    oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
+    fc_logstore_name: str | None = Field(default=None, description="函数计算SLS日志存储名称")
+    fc_log_project_name: str | None = Field(default=None, description="函数计算SLS日志项目名称")
+    fc_unzip_timeout_seconds: int | None = Field(default=20, description="函数调用超时时间，单位秒")
+    fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包公网地址")
+    fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
 
 
 class UserSettings(BaseModel):

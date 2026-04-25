@@ -80,6 +80,38 @@ def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = T
 
     return zip_path
 
+def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = TEST_IBD_SIZE) -> Path:
+    """创建合法包含imzML和ibd文件的zip包到本地临时目录，并返回zip文件的路径"""
+    temp_dir = Path("../test_temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = temp_dir / TEST_FILENAME
+
+    # 分块创建imzML文件
+    _CHUNK_BUFFER_SIZE = 1024 # 1 KB # pylint:disable = invalid-name
+    with open(temp_dir / "test_imzML.imzML", "wb") as zf:
+        for _ in range(0, imzml_size, _CHUNK_BUFFER_SIZE):
+            zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
+
+    # 分块创建ibd文件
+    with open(temp_dir / "test_ibd.ibd", "wb") as zf:
+        for _ in range(0, ibd_size, _CHUNK_BUFFER_SIZE):
+            zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
+
+    # 压缩zip包
+    zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED,) as zf:
+        zf.write(temp_dir / "test_imzML.imzML", "test_imzML.imzML")
+        zf.write(temp_dir / "test_ibd.ibd", "test_ibd.ibd")
+
+
+
+    # 删除源文件
+    (temp_dir / "test_imzML.imzML").unlink()
+    (temp_dir / "test_ibd.ibd").unlink()
+
+    return zip_path
+
+
 def _split_into_chunks(data: bytes, chunk_count: int) -> List[bytes]:
     """
     将 data 均匀切分为 chunk_count 片，最后一片包含余量。
@@ -133,6 +165,87 @@ class TestFile:
 
     _uploaded_file_id: int | None = None #oss的id
 
+    @pytest.mark.file
+    async def test_preflight_ok(self, admin_login: Tuple[AsyncClient, str, str]):
+        """正常预检，验证返回合法的 file_id"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        content = _make_test_zip()
+        file_verify_code = hashlib.md5(content).hexdigest()
+
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json={
+                "storage_type": "local",
+                "filename": TEST_FILENAME,
+                "file_type": "zip",
+                "size": len(content),
+                "file_verify_code": file_verify_code,
+                "experiment_type": "imzML",
+                "organism": "", 
+                "organism_part": "",
+                 "condition": "",
+                "sample_growth_conditions": "", 
+                "sample_stabilization": "",
+                "tissue_modification": "", 
+                "maldi_matrix": "",
+                "maldi_matrix_application": "", 
+                "solvent": "",
+                "total_parts": 1
+            },
+        )
+        assert rs.status_code == 200, rs.text
+        data = rs.json()
+        assert "file_id" in data
+        assert data["filename"] == TEST_FILENAME
+        logger.info(f"test_preflight_ok passed: file_id={data['file_id']}")
+
+        # 清理预检记录（避免影响后续测试的重复文件名检查）
+        file_id = data["file_id"]
+        await client.delete(f"/files/{file_id}", headers=auth)
+
+    @pytest.mark.file
+    async def test_preflight_invalid_file_type_rejected(self, admin_login: Tuple[AsyncClient, str, str]):
+        """预检：非允许的文件类型（非 zip）应返回 400"""
+        client, token, token_type = admin_login
+
+        rs = await client.post(
+            "/files/preflight",
+            headers={"Authorization": f"{token_type.title()} {token}"},
+            json={
+                "storage_type": "local",
+                "filename": "kawaru_test.exe",   # 不在 allowed_file_types 中
+                "file_type": "exe",
+                "size": 1024,
+                "file_verify_code": "a" * 32,
+                "experiment_type": "",
+            },
+        )
+        assert rs.status_code == 400, rs.text
+        logger.info("test_preflight_invalid_file_type_rejected passed")
+
+    @pytest.mark.file
+    async def test_preflight_invalid_storage_type_rejected(self, admin_login: Tuple[AsyncClient, str, str]):
+        """预检：非法 storage_type 应返回 400"""
+        client, token, token_type = admin_login
+        content = _make_test_zip()
+
+        rs = await client.post(
+            "/files/preflight",
+            headers={"Authorization": f"{token_type.title()} {token}"},
+            json={
+                "storage_type": "s3_invalid",
+                "filename": TEST_FILENAME,
+                "file_type": "zip",
+                "size": len(content),
+                "file_verify_code": hashlib.md5(content).hexdigest(),
+                "experiment_type": "",
+            },
+        )
+        assert rs.status_code == 400, rs.text
+        logger.info("test_preflight_invalid_storage_type_rejected passed")
     @staticmethod
     async def _fetch_file_record(file_id: int):
         """读取数据库中的文件记录，便于断言 path/size 变化"""
@@ -327,12 +440,136 @@ class TestFile:
         rs = await client.post(
             "/files/preflight",
             headers=auth,
-            json=_build_preflight_payload(
-                size=size,
-                file_verify_code=file_verify_code,
-                total_parts=1,
-                storage_type="oss",
-            ),
+            json={
+                "storage_type": "local",
+                "filename": bad_filename,
+                "file_type": "zip",
+                "size": len(content),
+                "file_verify_code": total_hash,
+                "experiment_type": "imzML",
+                "organism": "",
+                "organism_part": "",
+                "condition": "",
+                "sample_growth_conditions": "",
+                "sample_stabilization": "",
+                "tissue_modification": "",
+                "maldi_matrix": "",
+                "maldi_matrix_application": "",
+                "solvent": "",
+                "total_parts": 2,
+            },
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+        logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
+
+        # 2. get upload oss_sts_token and oss_path
+        with open(zip_path, "rb") as f:
+            rs = await client.post(
+                "/files/upload",
+                headers=auth,
+                data={"pre_file_id": str(pre_file_id)},
+                files={"file": (TEST_FILENAME, f, "application/zip")},
+            )
+        assert rs.status_code == 200, rs.text
+        file_id = rs.json()["file_id"]
+        oss_sts_token = rs.json()["oss_sts_token"]
+        oss_path = rs.json()["oss_path"]
+        oss_bucket = rs.json()["oss_bucket"]
+
+        # 3. upload file to oss
+        # 3.1 get oss config
+        credentials_provider = oss.credentials.StaticCredentialsProvider(
+            access_key_id=oss_sts_token["AccessKeyId"],
+            access_key_secret=oss_sts_token["AccessKeySecret"],
+            security_token=oss_sts_token["SecurityToken"],
+        )
+
+        cfg = oss.config.load_default()
+        cfg.credentials_provider = credentials_provider
+        cfg.region = os.getenv("OSS_REGION_ID") or ""
+
+        # 3.2 create oss client and upload file
+        oss_client = oss.Client(cfg)
+
+        def _put_obect_from_path() -> oss.UploadResult:
+            uploader = oss_client.uploader(enable_checkpoint=True, checkpoint_dir=str(zip_path.parent / "checkpoint"))
+            result = uploader.upload_file(PutObjectRequest(
+                bucket=oss_bucket,
+                key=oss_path,
+            ), filepath=str(zip_path))
+            return result
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _put_obect_from_path)
+        assert result.status_code == 200, result.status
+        fc_request_id = result.headers.get("x-oss-request-id")
+
+        # 4. trigger oss upload complete
+        # 测试端直接调用该接口仅供测试，实际上传时由aliyun自动调用
+
+        # 4.1 获取当前登录用户名
+        rs = await client.get(
+            "/user",
+            headers=auth,
+        )
+        assert rs.status_code == 200, rs.text
+        username = rs.json()["username"]
+
+        rs = await client.post(
+            "/files/oss_upload_complete",
+            headers=auth,
+            params={
+                "file_id": str(file_id),
+                "current_username": username,
+                "fc_request_id": fc_request_id,
+            },
+        )
+        assert rs.status_code == 200, rs.text
+
+        await asyncio.sleep(10) # 延迟10秒，等待实验处理完成
+
+        TestFile._uploaded_file_id = file_id
+        logger.info((f"test_upload_to_oss passed: username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
+                     f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
+
+
+
+    # ------------------------------------------------------------------ #
+    # OSS上传测试
+    # ------------------------------------------------------------------ #
+    @pytest.mark.oss
+    async def test_upload_to_oss(self, admin_login: Tuple[AsyncClient, str, str]):
+        """测试上传到OSS的完整流程，验证文件成功上传并可访问"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        zip_path = _make_test_zip_to_local()
+        file_verify_code, size = await compute_file_md5(zip_path)
+        logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
+
+        # 1. preflight
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json={
+                "storage_type": "oss",
+                "filename": TEST_FILENAME,
+                "file_type": "zip",
+                "size": size,
+                "file_verify_code": file_verify_code,
+                "experiment_type": "imzML",
+                "organism": "",
+                "organism_part": "",
+                 "condition": "",
+                "sample_growth_conditions": "",
+                "sample_stabilization": "",
+                "tissue_modification": "",
+                "maldi_matrix": "",
+                "maldi_matrix_application": "",
+                "solvent": "",
+                "total_parts": 1
+            },
         )
         assert rs.status_code == 200, rs.text
         pre_file_id = rs.json()["file_id"]

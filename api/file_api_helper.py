@@ -15,6 +15,7 @@ from sqlmodel import and_, exists, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from storage_backend.storage import LocalStorage, OssStorage
+from background.file_background_helper import delete_oss_file_task
 from models.file_models import FileInDB, UserFileLink
 from models.user_models import UserInDB
 from exceptions import file_not_found_exception
@@ -71,7 +72,7 @@ async def save_upload_file(upload_file: UploadFile, destination: Path) -> None:
 ########
 # file 删
 ########
-async def delete_files_async(file_paths: list[str | Path]) -> int:
+async def delete_multiple_files_by_storage(file_paths: list[str | Path], storage_type: str) -> int:
     """
     异步删除多个文件
 
@@ -84,7 +85,12 @@ async def delete_files_async(file_paths: list[str | Path]) -> int:
 
     deleted_count = 0
     for file_path in file_paths:
-        await asyncio.to_thread(lambda p=file_path: LocalStorage.delete_file(p))
+        if storage_type == "local":
+            await asyncio.to_thread(lambda p=file_path: LocalStorage.delete_file(p))
+        elif storage_type == "oss":
+            delete_oss_file_task.delay(str(file_path)) # type: ignore # 直接调用任务队列删除避免阻塞
+        else:
+            raise NotImplementedError(f"Unsupported storage type: {storage_type}")
         deleted_count += 1
     return deleted_count
 
@@ -110,7 +116,7 @@ async def delete_file_by_storage(path: str | Path, storage_type: str) -> None:
     elif storage_type == "oss":
         res = await OssStorage.delete_file(str(path))
         if not res:
-            raise OSError(f"Failed to delete oss file: {path}")
+            raise OSError(f"Failed to delete oss file: {str(path)}")
 
     else:
         raise NotImplementedError(f"Unsupported storage type: {storage_type}")

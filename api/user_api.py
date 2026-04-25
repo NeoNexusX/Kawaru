@@ -213,10 +213,6 @@ async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: A
 
         await redis_client.delete(login_key)
 
-        # 3. Remove corresponding tasks
-        await TaskManager.remove_task(f"cleanup_stale_preflights_{token[0:8]}") # type:ignore
-        logger.warning(f"User {username} has logged out. Task has been removed from schedule.")
-
     except ExpiredSignatureError as exc:
         raise token_expired_exception from exc
 

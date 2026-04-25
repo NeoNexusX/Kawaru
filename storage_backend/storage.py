@@ -8,9 +8,13 @@ from background.file_background_helper import (
     validate_oss_file_task,
     get_oss_file_size_task,
     delete_oss_file_task,
+    get_oss_packup_sts_token_task,
 )
+
 from models.auth import OssStsToken
-from constants.file_constants import LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT, OSS_ZIP_STORAGE_ROOT
+from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
+                                      OSS_ZIP_STORAGE_ROOT, OSS_DEFAULT_TIMEOUT_SECONDS,
+                                     )
 from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT, OSS_EXPERIMENT_STORAGE_ROOT
 
 from tools.logger import get_logger
@@ -116,13 +120,13 @@ class OssStorage:
     OSS存储相关操作
     """
     @staticmethod
-    def prepare_storage_path(filename: str) -> str:
+    def prepare_storage_path(filename: str, file_type: str) -> str:
         """
         为OSS存储准备最终保存路径
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.lstrip('/')}/{filename}" # type: ignore
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> str:
@@ -133,7 +137,7 @@ class OssStorage:
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.lstrip('/')}/exp_{experiment_id}" # type: ignore
+        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}"
 
         return processed_dir
 
@@ -154,7 +158,24 @@ class OssStorage:
         return oss_sts_token
 
     @staticmethod
-    async def validate_file(file_path: str, size: int) -> bool:
+    async def get_packup_sts_token(packup_folder: str, zip_file_path: str) -> OssStsToken | None:
+        """
+        获取OSS打包STS Token(任务队列异步执行)
+
+        :param packup_folder: 要打包的oss文件夹路径（如"experiment/aaa/")
+        :param zip_file_path: 打包后的zip文件路径（如"data/aaa.zip")
+        :return: OSS打包STS Token模型
+        """
+        res = get_oss_packup_sts_token_task.delay(packup_folder, zip_file_path) # type: ignore
+        result = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        if result is None:
+            logger.error(f"failed to get oss packup sts token due to server timeout: from {packup_folder} to {zip_file_path}")
+            return None
+        oss_sts_token = OssStsToken(**result)
+        return oss_sts_token
+
+    @staticmethod
+    async def validate_file(file_path: str, size: int, file_verify_code: str) -> bool:
         """
         检查OSS文件是否存在且大小匹配
 
@@ -163,8 +184,8 @@ class OssStorage:
 
         :return: 是否存在且大小匹配，否则返回False
         """
-        res = validate_oss_file_task.delay(file_path, size) # type:ignore
-        is_file_exist = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        res = validate_oss_file_task.delay(file_path, size, file_verify_code) # type:ignore
+        is_file_exist = await wait_for_result(res, poll_interval=0.1, timeout=OSS_DEFAULT_TIMEOUT_SECONDS) # type: ignore # 此处需等待OSS端fc函数自动计算完hash
         if is_file_exist is None:
             logger.error(f"failed to validate oss file due to server timeout: {file_path}")
             return False

@@ -97,7 +97,6 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
         "smtp_port": int(email_config.smtp_port),
         "text_content": f"Welcome\r\n Your code is {code}"
     })
-    print(f"request_data: {request_data}") # TODO 后续可以删除
 
     task_result = send_smtp_email_task.delay(request_data.model_dump()) # type: ignore
     response = await wait_for_result(task_result, poll_interval=0.1)

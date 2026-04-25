@@ -151,7 +151,7 @@ async def clean_user_all_task(
                     # 没有其他用户持有，执行完全删除
                     file_record = await get_file_record_by_id(file_id, session)
                     if file_record.experiment_type == "imzML":
-                        await delete_experiment_files(session, file_id)
+                        await delete_experiment_files(session, file_id, file_record.storage_type)
 
                     # 创建一个临时的 user 对象用于删除
                     user_obj = UserInDB( # type: ignore

@@ -69,6 +69,7 @@ async def _admin_login(async_client):
     if not (username and password):
         pytest.skip("TEST_USER/TEST_PWD hasn't provided yet.")
 
+    # 登录
     rs = await client.post(
         "/login",
         data={
@@ -94,3 +95,10 @@ async def _admin_login(async_client):
         )
 
     yield client, token, token_type
+
+    # 测试结束后，退出登录
+    rs = await client.post(
+        "/logout",
+        headers={"Authorization": f"{token_type.title()} {token}"},
+    )
+    assert rs.status_code == 200, rs.text

@@ -19,6 +19,7 @@ STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
 OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
+OSS_EXPERIMENT_STORAGE_ROOT = config.oss.oss_experiment_storage_root
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
@@ -54,6 +55,13 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_dow
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
+OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
+FC_LOGSTORE_NAME = config.oss.fc_logstore_name
+FC_LOG_PROJECT_NAME = config.oss.fc_log_project_name
+FC_UNZIP_TIMEOUT_SECONDS = config.oss.fc_unzip_timeout_seconds
+FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
+FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
+
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "BYTES_IN_KB",
@@ -77,4 +85,13 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "DOWNLOAD_ZIP_TTL_MINUTES",
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",
     "OSS_ZIP_STORAGE_ROOT",
+    "OSS_EXPERIMENT_STORAGE_ROOT",
+    "FC_UNZIP_TIMEOUT_SECONDS",
+    "FC_PACKUP_ENDPOINT",
+    "FC_PACKUP_TIMEOUT_SECONDS",
+    "OSS_DEFAULT_TIMEOUT_SECONDS",
+    "FC_LOGSTORE_NAME",
+    "FC_LOG_PROJECT_NAME",
+    "OSS_REGION_ID",
+    "OSS_BUCKET_NAME",
 ]

@@ -13,6 +13,8 @@ CELERY_MODULE_IMPORTS = [
     "background.api_background",
     "background.file_background_helper",
     "background.experiment_background",
+    "background.experiment_background_helper",
+    "storage_backend.oss_log_helper",
 ]
 
 
@@ -24,6 +26,8 @@ class CeleryAsyncTask(CeleryTask):  # pylint: disable=abstract-method
         if asyncio.iscoroutine(result):
             return asyncio.run(result)
         return result
+
+
 def create_celery_app(
     cfg: Config,
     const_kwargs: dict,
