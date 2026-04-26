@@ -98,7 +98,8 @@ async def upload_file(file_record: OssUploadDep):
 #     invoke_logs = await get_fc_invoke_logs_by_request_id(request_id)
 #     invoke_status = await get_fc_invoke_status(request_id)
 #     final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
-#     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, "final_ibd_path": final_ibd_path}
+#     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, 
+# "final_ibd_path": final_ibd_path}
 @file_router.post("/test_api")
 async def test_api():
     """测试API"""
