@@ -40,8 +40,8 @@ from .conftest import logger
 TEST_FILENAME = "kawaru_functest"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
-TEST_IMZML_SIZE = 10240 * 1024  # 10 MB，调整此值控制 imzML 大小
-TEST_IBD_SIZE = 10240 * 1024  # 10 MB，调整此值控制 ibd 大小
+TEST_IMZML_SIZE = 1024 * 1024**2  # 1024 MB，调整此值控制 imzML 大小
+TEST_IBD_SIZE = 1024 * 1024**2  # 1024 MB，调整此值控制 ibd 大小
 
 
 def _make_test_zip(fill_size: int = TEST_FILL_SIZE) -> bytes:
@@ -59,7 +59,7 @@ def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = T
     """创建合法包含imzML和ibd文件的zip包到本地临时目录，并返回zip文件的路径"""
     temp_dir = Path("../test_temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = temp_dir / TEST_FILENAME
+    zip_path = temp_dir / f"{TEST_FILENAME}.zip"
 
     # 分块创建imzML文件
     _CHUNK_BUFFER_SIZE = 1024 # 1 KB # pylint:disable = invalid-name
