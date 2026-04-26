@@ -121,7 +121,6 @@ async def validate_oss_file_task(file_path: str, size: int, file_verify_code: st
 
             # 轮询获取oss端计算的file-verify-code
             meta_dict = meta.headers
-            logger.info(f"oss file {file_path} meta={meta_dict}")
             timeout_seconds = OSS_DEFAULT_TIMEOUT_SECONDS
             assert timeout_seconds is not None
             start_time = datetime.now()
@@ -365,15 +364,26 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             if not bucket_name:
                 raise HTTPException(status_code=500, detail="oss bucket name not set")
 
-            # 发送请求
-            req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-            res = await oss_client.delete_object(req)
+            keys = []
+            err_count = 0
+            if file_path.endswith('/'): # 针对文件夹进行处理
+                req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
+                res = await oss_client.list_objects_v2(req)
+                 # 提取所有匹配对象的 key
+                keys = [obj.key for obj in res.contents] if res.contents else []
 
-            if res.status_code != status.HTTP_204_NO_CONTENT:
-                logger.error(f"oss file {file_path} deleted failed")
+            if not keys:
+                keys = [file_path]
+            for key in keys:
+                req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
+                res = await oss_client.delete_object(req)
+                if res.status_code != status.HTTP_204_NO_CONTENT:
+                    logger.error(f"oss file {key} deleted failed")
+                    err_count += 1
+                    continue
+                logger.info(f"oss file {key} deleted")
+            if err_count > 0:
                 return False
-
-            logger.info(f"oss file {file_path} deleted")
             return True
         except Exception as e: # pylint:disable = broad-exception-caught
             logger.error(f"failed to delete oss file: {e}")

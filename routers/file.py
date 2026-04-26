@@ -66,7 +66,7 @@ async def list_files(list_file_response: ListPublicFilesDep):
     return list_file_response
 
 
-@file_router.post("/oss_upload_complete")
+@file_router.post("/oss_upload_complete", response_model=FilePublic)
 async def oss_upload_complete(file_record: OssUploadCompleteDep):
     """OSS上传完成时，前端调用该接口通知后端"""
     return file_record
