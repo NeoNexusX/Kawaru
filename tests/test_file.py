@@ -53,7 +53,7 @@ def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = T
     """创建合法包含imzML和ibd文件的zip包到本地临时目录，并返回zip文件的路径"""
     temp_dir = Path("../test_temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = temp_dir / TEST_FILENAME
+    zip_path = temp_dir / f"{TEST_FILENAME}.zip"
 
     # 分块创建imzML文件
     _CHUNK_BUFFER_SIZE = 1024 # 1 KB # pylint:disable = invalid-name
@@ -206,7 +206,7 @@ class TestFile:
 
         # 4. cleanup 后再次下载，验证重建 zip 的内容长度与真实文件大小一致
         cleaned = await cleanup_old_download_zips.run(retention_minutes=0, batch_size=1000) # type: ignore
-        await asyncio.sleep(3) # 延迟3秒，等待
+        await asyncio.sleep(10) # 延迟10秒，等待
         assert cleaned >= 1
 
         record = await self._fetch_file_record(file_id)

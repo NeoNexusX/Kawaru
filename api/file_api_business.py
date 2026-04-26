@@ -335,7 +335,7 @@ async def prepare_download_file(
                 )
                 if zip_path is None or zip_download_url is None:
                     raise file_content_missing_exception
-                zip_size = await OssStorage.get_file_size(zip_path)
+                zip_size = await OssStorage.get_file_size(zip_path) # type: ignore
                 if zip_size is None:
                     raise file_content_missing_exception
                 # 后台获取fc打包日志
