@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from database.db import get_async_engine
 from celery_runtime.state import get_celery_app
+from celery_runtime.result import wait_for_result
 from storage_backend.storage import LocalStorage
 from storage_backend.oss_log_helper import (
     get_fc_invoke_instance_id_by_request_id,
@@ -118,7 +119,7 @@ async def process_imzml_experiment_background_task(
                 experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
 
                 # 解压和验证
-                final_imzml_path, final_ibd_path = extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
+                final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
 
             elif storage_type == 'oss':
                 # 直接轮询oss端解压结果
@@ -249,23 +250,23 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         - ValueError: ZIP 文件包含不安全的路径
     """
     try:
-        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
+        with zipfile.ZipFile(zip_file_path_str, "r") as zip_ref:
             # 验证 ZIP 条目以防止路径遍历（Zip Slip）
-            temp_dir_resolved = target_dir.resolve()
+            temp_dir_resolved = Path(target_dir_str).resolve()
             for member in zip_ref.namelist():
-                member_path = (target_dir / member).resolve()
+                member_path = (Path(target_dir_str) / member).resolve()
                 # 检查路径是否在临时目录内（避免路径遍历攻击）
                 if not member_path.is_relative_to(temp_dir_resolved):
                     logger.error("unsafe file path in zip file: %s", member)
                     # TODO: 应该返回封禁标志，封禁该用户所有操作
                     raise ValueError("unsafe file path in zip file")
-            zip_ref.extractall(target_dir)
+            zip_ref.extractall(target_dir_str)
 
         # 查找 imzML 和 ibd 文件
         imzml_path = None
         ibd_path = None
 
-        for file_path in target_dir.iterdir():
+        for file_path in Path(target_dir_str).iterdir():
             if file_path.suffix == ".imzML":
                 imzml_path = file_path
             elif file_path.suffix.lower() == ".ibd":
@@ -283,10 +284,10 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
 
     except Exception as e:
         logger.error("invalid zip file: %s", e)
-        shutil.rmtree(target_dir, ignore_errors=True)
+        shutil.rmtree(target_dir_str, ignore_errors=True)
         raise
 
-    return imzml_path, ibd_path
+    return str(imzml_path), str(ibd_path)
 
 
 def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:
@@ -305,9 +306,9 @@ def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:
     # 匹配并提取路径
     for log in logs:
         if not final_imzml_path and "[imzML_path]" in log:
-            final_imzml_path = re.search(imzml_pattern, log).group(1).strip()
+            final_imzml_path = re.search(imzml_pattern, log).group(1).strip() # type: ignore
 
         if not final_ibd_path and "[ibd_path]" in log:
-            final_ibd_path = re.search(ibd_pattern, log).group(1).strip()
+            final_ibd_path = re.search(ibd_pattern, log).group(1).strip() # type: ignore
 
     return final_imzml_path, final_ibd_path
