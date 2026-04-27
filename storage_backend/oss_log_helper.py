@@ -57,15 +57,14 @@ async def get_fc_invoke_instance_id_by_request_id(request_id: str, timeout: int 
     """
     根据request_id获取函数计算的instance_id
 
-    这里超时可以不用设太高，因为函数计算只要一触发就会有instance_id
-
+    这里超时可以设置大一些，经实验证明，函数计算完成后才会将日志写入日志服务
     如果报错 **get fc invoke instance id failed due to server timeout**，尝试将timeout设高一些
     """
     start_time = datetime.now()
     while True:
-        await asyncio.sleep(0.5) # 提供一些延迟确保函数计算有时间触发
+        await asyncio.sleep(5) # 提供一些延迟确保函数计算有时间触发
         res = get_fc_invoke_instance_id_by_request_id_task.delay(request_id) # type: ignore
-        instance_id: str | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        instance_id: str | None = await wait_for_result(res, poll_interval=0.1, timeout=5) # type: ignore
         if instance_id is not None:
             break
         if (datetime.now() - start_time).seconds > timeout:
@@ -117,7 +116,7 @@ async def get_fc_invoke_instance_id_by_request_id_task(request_id: str) -> str |
     根据request_id获取函数计算日志的instanceID
     """
     # 构建查询语句，查询指定request_id的日志
-    query = f"* and requestId : {request_id}"
+    query = f"* | where requestId LIKE '{request_id}%'"
 
     # 执行查询
     logs = await fetch_fc_logs_async(query)

@@ -1,14 +1,15 @@
 import shutil
 import zipfile
 import re
+import asyncio
 from pathlib import Path
 
 from sqlmodel.ext.asyncio.session import AsyncSession
-from fastapi import HTTPException
 
 from database.db import get_async_engine
 from celery_runtime.state import get_celery_app
-from storage_backend.storage import LocalStorage
+from celery_runtime.result import wait_for_result
+from storage_backend.storage import LocalStorage, OssStorage
 from storage_backend.oss_log_helper import (
     get_fc_invoke_instance_id_by_request_id,
     get_fc_invoke_logs_by_request_id,
@@ -24,11 +25,10 @@ from models.file_models import FileInDB
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
-from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS
+from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS, OSS_EXPERIMENT_STORAGE_ROOT
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
 from exceptions.file_exceptions import storage_type_not_allowed_exception
-from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
 from tools.logger import get_logger
@@ -118,29 +118,30 @@ async def process_imzml_experiment_background_task(
                 experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
 
                 # 解压和验证
-                final_imzml_path, final_ibd_path = extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
+                final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
 
             elif storage_type == 'oss':
                 # 直接轮询oss端解压结果
                 if fc_request_id is None:
                     raise oss_fc_request_id_empty_exception
 
-                # 先获取函数计算的instance_id(说明函数计算开始调用)
-                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=10) # TODO： 最少延迟多少秒？
+                # 文件越大，计算时间越长，超时时间需要根据实际情况调整
+                # 根据实验结果，2GB文件至少有32秒的延迟，这里设置50秒超时
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS or 50) # TODO：根据实际情况调整超时时间
                 if instance_id is None:
-                    raise internal_server_error_exception
+                    raise RuntimeError("get fc invoke instance id failed")
 
                 # 等待函数计算完成
                 assert FC_UNZIP_TIMEOUT_SECONDS is not None
-                is_success = await get_fc_invoke_status(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS) # 文件越大，计算时间越长，超时时间需要根据实际情况调整
+                is_success = await get_fc_invoke_status(fc_request_id, timeout=10) # 根据实验结果，2GB文件至少有3秒的延迟，这里设置10秒超时
                 if is_success is None:
-                    raise internal_server_error_exception
+                    raise RuntimeError("get fc invoke status failed")
 
                 # 再获取并输出函数计算日志
                 invoke_logs = await get_fc_invoke_logs_by_request_id(fc_request_id)
                 if not invoke_logs:
                     logger.error(f"get fc invoke logs failed, request_id {fc_request_id}")
-                    raise internal_server_error_exception
+                    raise RuntimeError("get fc invoke logs failed")
 
                 # 输出函数计算日志至后端日志系统
                 for log in invoke_logs:
@@ -169,10 +170,6 @@ async def process_imzml_experiment_background_task(
 
             logger.info(f"completed imzml experiment processing exp_id={experiment_record.id} source_file_id={source_file_id}")
 
-        # TODO：是否需要HTTP Exception, internal server error会走到这里
-        # except HTTPException as e:
-        #     logger.error(e)
-        #     raise e
 
         except (zipfile.BadZipFile, FileNotFoundError) as e:
             #此处理论上experiment_record和storage_type一定存在，直接使用即可
@@ -186,23 +183,43 @@ async def process_imzml_experiment_background_task(
             logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 
+        except RuntimeError as e:
+            # 针对获取不到日志的情况，应当检查并删除oss端实验文件（防止出现获取不到日志但是实际解压成功的情况）
+            if source_file:
+                if source_file.storage_type == 'oss' and source_file is not None:
+                    # TODO: 如何设计一个更可靠的机制
+                    await asyncio.sleep(20) # 确保文件解压完成，再删除
+                    await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/")
+
+            # 回滚实验记录的修改，保持数据库一致性
+            await async_session.rollback()
+
+            # 删除原始zip，清理记录的file的path信息
+            if source_file:
+                async with AsyncSession(get_async_engine()) as async_session:
+                    await delete_source_file_and_clear_path(async_session, source_file_id)
+                    await async_session.commit()
+
+            logger.error("imzml experiment processing failed error=%s", e)
+
+            raise e
+
+
         except Exception as e:
             # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
             await async_session.rollback()
 
-            async with AsyncSession(get_async_engine()) as async_session:
-                # 删除原始zip，清理记录的file的path信息
-                if source_file:
+            # 删除原始zip，清理记录的file的path信息
+            if source_file:
+                async with AsyncSession(get_async_engine()) as async_session:
                     await delete_source_file_and_clear_path(async_session, source_file_id)
                     await async_session.commit()
+
             logger.error("imzml experiment processing failed error=%s", e)
             raise
 
 
-async def extract_and_validate_local_imzml_zip(
-    zip_file_path: Path,
-    target_dir: Path,
-) -> tuple[Path, Path]:
+async def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 
@@ -231,8 +248,8 @@ async def extract_and_validate_local_imzml_zip(
     return Path(imzml_path_str), Path(ibd_path_str)
 
 
-@celery_app.task() # type: ignore
-def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
+@celery_app.task()
+async def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 
@@ -249,23 +266,23 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
         - ValueError: ZIP 文件包含不安全的路径
     """
     try:
-        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
+        with zipfile.ZipFile(zip_file_path_str, "r") as zip_ref:
             # 验证 ZIP 条目以防止路径遍历（Zip Slip）
-            temp_dir_resolved = target_dir.resolve()
+            temp_dir_resolved = Path(target_dir_str).resolve()
             for member in zip_ref.namelist():
-                member_path = (target_dir / member).resolve()
+                member_path = (Path(target_dir_str) / member).resolve()
                 # 检查路径是否在临时目录内（避免路径遍历攻击）
                 if not member_path.is_relative_to(temp_dir_resolved):
                     logger.error("unsafe file path in zip file: %s", member)
                     # TODO: 应该返回封禁标志，封禁该用户所有操作
                     raise ValueError("unsafe file path in zip file")
-            zip_ref.extractall(target_dir)
+            zip_ref.extractall(target_dir_str)
 
         # 查找 imzML 和 ibd 文件
         imzml_path = None
         ibd_path = None
 
-        for file_path in target_dir.iterdir():
+        for file_path in Path(target_dir_str).iterdir():
             if file_path.suffix == ".imzML":
                 imzml_path = file_path
             elif file_path.suffix.lower() == ".ibd":
@@ -283,10 +300,10 @@ def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir
 
     except Exception as e:
         logger.error("invalid zip file: %s", e)
-        shutil.rmtree(target_dir, ignore_errors=True)
+        shutil.rmtree(target_dir_str, ignore_errors=True)
         raise
 
-    return imzml_path, ibd_path
+    return str(imzml_path), str(ibd_path)
 
 
 def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:
@@ -305,9 +322,9 @@ def parse_fc_invoke_logs(logs: list[str]) -> tuple[str | None, str | None]:
     # 匹配并提取路径
     for log in logs:
         if not final_imzml_path and "[imzML_path]" in log:
-            final_imzml_path = re.search(imzml_pattern, log).group(1).strip()
+            final_imzml_path = re.search(imzml_pattern, log).group(1).strip() # type: ignore
 
         if not final_ibd_path and "[ibd_path]" in log:
-            final_ibd_path = re.search(ibd_pattern, log).group(1).strip()
+            final_ibd_path = re.search(ibd_pattern, log).group(1).strip() # type: ignore
 
     return final_imzml_path, final_ibd_path

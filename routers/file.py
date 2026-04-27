@@ -74,7 +74,7 @@ async def list_files(list_file_response: ListPublicFilesDep):
     return list_file_response
 
 
-@file_router.post("/oss_upload_complete")
+@file_router.post("/oss_upload_complete", response_model=FilePublic)
 async def oss_upload_complete(file_record: OssUploadCompleteDep):
     """OSS上传完成时，前端调用该接口通知后端"""
     return file_record
@@ -99,9 +99,3 @@ async def upload_file(file_record: OssUploadDep):
 #     invoke_status = await get_fc_invoke_status(request_id)
 #     final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
 #     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, "final_ibd_path": final_ibd_path}
-@file_router.post("/test_api")
-async def test_api():
-    """测试API"""
-    res = get_oss_upload_sts_token_task.delay("testfile.txt") # type: ignore
-    result = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
-    return result
