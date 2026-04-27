@@ -5,12 +5,11 @@ import asyncio
 from pathlib import Path
 
 from sqlmodel.ext.asyncio.session import AsyncSession
-from fastapi import HTTPException
 
 from database.db import get_async_engine
 from celery_runtime.state import get_celery_app
 from celery_runtime.result import wait_for_result
-from storage_backend.storage import LocalStorage, OSSStorage
+from storage_backend.storage import LocalStorage, OssStorage
 from storage_backend.oss_log_helper import (
     get_fc_invoke_instance_id_by_request_id,
     get_fc_invoke_logs_by_request_id,
@@ -30,7 +29,6 @@ from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS, OSS_EXPERIMENT_ST
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
 from exceptions.file_exceptions import storage_type_not_allowed_exception
-from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
 from tools.logger import get_logger
@@ -129,7 +127,7 @@ async def process_imzml_experiment_background_task(
 
                 # 文件越大，计算时间越长，超时时间需要根据实际情况调整
                 # 根据实验结果，2GB文件至少有32秒的延迟，这里设置50秒超时
-                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS or 50)
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS or 50) # TODO：根据实际情况调整超时时间
                 if instance_id is None:
                     raise RuntimeError("get fc invoke instance id failed")
 
@@ -189,6 +187,7 @@ async def process_imzml_experiment_background_task(
             # 针对获取不到日志的情况，应当检查并删除oss端实验文件（防止出现获取不到日志但是实际解压成功的情况）
             if source_file:
                 if source_file.storage_type == 'oss' and source_file is not None:
+                    # TODO: 如何设计一个更可靠的机制
                     await asyncio.sleep(20) # 确保文件解压完成，再删除
                     await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/")
 
@@ -220,10 +219,7 @@ async def process_imzml_experiment_background_task(
             raise
 
 
-async def extract_and_validate_local_imzml_zip(
-    zip_file_path: Path,
-    target_dir: Path,
-) -> tuple[Path, Path]:
+async def extract_and_validate_local_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 
@@ -252,8 +248,8 @@ async def extract_and_validate_local_imzml_zip(
     return Path(imzml_path_str), Path(ibd_path_str)
 
 
-@celery_app.task() # type: ignore
-def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
+@celery_app.task()
+async def extract_and_validate_local_imzml_zip_task(zip_file_path_str: str, target_dir_str: str) -> tuple[str, str]:
     """
     解压并验证 imzML ZIP 文件,ZIP 文件必须包含两个文件：.imzML 和 .ibd,包含 Zip Slip 路径遍历攻击防护
 
