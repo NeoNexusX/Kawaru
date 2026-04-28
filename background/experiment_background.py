@@ -126,8 +126,10 @@ async def process_imzml_experiment_background_task(
                     raise oss_fc_request_id_empty_exception
 
                 # 文件越大，计算时间越长，超时时间需要根据实际情况调整
-                # 根据实验结果，2GB文件至少有32秒的延迟，这里设置50秒超时
-                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=FC_UNZIP_TIMEOUT_SECONDS or 50) # TODO：根据实际情况调整超时时间
+                # 根据实验结果，2GB文件至少有32秒的延迟，这里根据文件大小动态调整超时时间
+                zip_size_gb = source_file.size / (1024 * 1024 * 1024) # 转换为GB
+                unzip_timeout = int(zip_size_gb * 20) # 20秒/GB
+                instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=unzip_timeout)
                 if instance_id is None:
                     raise RuntimeError("get fc invoke instance id failed")
 
@@ -188,7 +190,7 @@ async def process_imzml_experiment_background_task(
             if source_file:
                 if source_file.storage_type == 'oss' and source_file is not None:
                     # TODO: 如何设计一个更可靠的机制
-                    await asyncio.sleep(20) # 确保文件解压完成，再删除
+                    await asyncio.sleep(unzip_timeout or 20) # type: ignore # 确保文件解压完成，再删除
                     await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/")
 
             # 回滚实验记录的修改，保持数据库一致性
