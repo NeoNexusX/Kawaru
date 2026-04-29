@@ -306,7 +306,6 @@ async def upload_simple_file(
     - 文件哈希和大小必须与预检记录匹配,否则上传失败
     - 上传失败时会清理预检记录
     """
-    logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
 
     pre_record = None
     final_path = None
@@ -327,8 +326,7 @@ async def upload_simple_file(
             if file is None:
                 raise HTTPException(status_code=400, detail="missing file parameter while storage_type is local")
 
-            assert file.filename is not None # 已经在validate_simple_upload 里面校验了
-            assert pre_record.file_verify_code is not None # 已经在validate_simple_upload 里面校验了
+            logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
 
             # 统一验证(业务层)
             await validate_simple_upload(current_user, file.filename, pre_record, storage_type)
@@ -357,6 +355,8 @@ async def upload_simple_file(
         elif storage_type == "oss":
             if filename is None:
                 raise HTTPException(status_code=400, detail="missing filename parameter while storage_type is oss")
+
+            logger.info(f"simple upload start user={current_user.id}, filename={filename},storage={storage_type}")
 
             # 统一验证(业务层)
             await validate_simple_upload(current_user, filename, pre_record, storage_type)
@@ -726,7 +726,7 @@ async def oss_upload_complete(
         # 检查请求签名
         callback_path = request.url.path
         query = request.url.query
-        if not check_oss_callback_signature(authorization, x_oss_pub_key_url, raw_body, callback_path, query):
+        if not await check_oss_callback_signature(authorization, x_oss_pub_key_url, raw_body, callback_path, query):
             raise HTTPException(status_code=400, detail="invalid oss callback signature")
 
         # 查询预检记录
@@ -774,7 +774,7 @@ async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
     pre_file_id: int = Form(...),
-    file: UploadFile = File(...),
+    filename: str = Form(...),
 ) -> FilePublic:
     """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
     storage_type = "oss"
@@ -783,7 +783,7 @@ async def oss_upload_file(
         async_session,
         storage_type,
         pre_file_id,
-        file,
+        filename=filename,
     )
 
 

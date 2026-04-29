@@ -451,7 +451,7 @@ async def check_oss_callback_signature(
             OSS_CALLBACK_PUBLIC_KEY = res.read()
 
     authorization_bytes = base64.b64decode(authorization)
-    sign_str = unquote(callback_path) + f"?{query}" + '\n' + raw_body
+    sign_str = unquote(callback_path) + (f"?{query}" if query else "") + '\n' + raw_body
     sign_str_md5 = hashlib.md5(sign_str.encode()).digest()
 
     bio = BIO.MemoryBuffer(OSS_CALLBACK_PUBLIC_KEY)
@@ -459,11 +459,19 @@ async def check_oss_callback_signature(
     try:
         result = rsa_pub.verify(sign_str_md5, authorization_bytes, 'md5')
     except Exception as e: # pylint: disable=W0718
-        logger.error("oss_callback_signature verify failed\n %s", e)
+        logger.error(
+            "oss_callback_signature verify failed,\nerror: %s," \
+            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
+            e, sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
+        )
         return False
 
     if not result:
-        logger.error("oss_callback_signature verify failed\n pub_key=%s\n auth_str=%s", OSS_CALLBACK_PUBLIC_KEY,sign_str)
+        logger.error(
+            "oss_callback_signature verify failed,\n" \
+            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
+            sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
+        )
         return False
 
     return True
