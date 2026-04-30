@@ -369,7 +369,7 @@ async def prepare_download_file(
 
 async def validate_simple_upload(
     current_user: UserInDB,
-    file: "UploadFile",
+    filename: str | None,
     pre_record: FileInDB,
     storage_type: str,
 ) -> None:
@@ -389,7 +389,7 @@ async def validate_simple_upload(
         raise invalid_request_parameters_exception
 
     # 文件名检查
-    if not file.filename:
+    if not filename:
         logger.error(f"filename missing user={current_user.id}")
         raise invalid_request_parameters_exception
 

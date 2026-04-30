@@ -6,9 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from pathlib import Path
+from urllib.parse import unquote
 
 import aiofiles
+from M2Crypto import RSA, BIO
+from httpx import AsyncClient
 from fastapi import UploadFile
 from sqlalchemy.orm import selectinload
 from sqlmodel import and_, exists, select
@@ -31,10 +36,11 @@ from constants.file_constants import (
     MAX_PARTS_PER_UPLOAD,
 )
 
-
 from tools.logger import get_logger
 logger = get_logger("api.file_api_helper")
 
+# OSS回调公钥常量
+OSS_CALLBACK_PUBLIC_KEY = None
 
 def prepare_part_temp_path(owner_id: int, file_hash: str, part_number: int) -> Path:
     """
@@ -115,6 +121,8 @@ async def delete_file_by_storage(path: str | Path, storage_type: str) -> None:
 
     elif storage_type == "oss":
         res = await OssStorage.delete_file(str(path))
+        if res is None:
+            return
         if not res:
             raise OSError(f"Failed to delete oss file: {str(path)}")
 
@@ -409,3 +417,63 @@ async def get_file_record_by_id(
         raise file_not_found_exception
 
     return file_record
+
+
+async def check_oss_callback_signature(
+        authorization: str,
+        oss_pub_key_url: str,
+        raw_body: str,
+        callback_path: str,
+        query: str = "",
+    ) -> bool:
+    """
+    检查OSS回调签名是否有效
+
+    Args:
+        authorization: OSS回调签名
+        oss_pub_key_url: OSS公钥URL
+        raw_body: OSS回调原始体
+        callback_path: OSS回调路径
+        query: OSS回调查询参数
+
+    Returns:
+        True 表示签名有效,False 表示无效
+    """
+
+    global OSS_CALLBACK_PUBLIC_KEY # pylint: disable=W0603
+    if not OSS_CALLBACK_PUBLIC_KEY:
+        pub_key_url = base64.b64decode(oss_pub_key_url).decode()
+        if (not pub_key_url.startswith("http://gosspublic.alicdn.com/")
+            and not pub_key_url.startswith("https://gosspublic.alicdn.com/")):
+            logger.error("oss_pub_key_url not valid")
+            return False
+        async with AsyncClient() as client:
+            res = await client.get(pub_key_url, timeout=5)
+            res.raise_for_status()
+            OSS_CALLBACK_PUBLIC_KEY = res.read()
+
+    authorization_bytes = base64.b64decode(authorization)
+    sign_str = unquote(callback_path) + (f"?{query}" if query else "") + '\n' + raw_body
+    sign_str_md5 = hashlib.md5(sign_str.encode()).digest()
+
+    bio = BIO.MemoryBuffer(OSS_CALLBACK_PUBLIC_KEY)
+    rsa_pub = RSA.load_pub_key_bio(bio)
+    try:
+        result = rsa_pub.verify(sign_str_md5, authorization_bytes, 'md5')
+    except Exception as e: # pylint: disable=W0718
+        logger.error(
+            "oss_callback_signature verify failed,\nerror: %s," \
+            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
+            e, sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
+        )
+        return False
+
+    if not result:
+        logger.error(
+            "oss_callback_signature verify failed,\n" \
+            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
+            sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
+        )
+        return False
+
+    return True

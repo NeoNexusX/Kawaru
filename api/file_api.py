@@ -3,7 +3,8 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import Depends, File, Form, UploadFile, HTTPException
+from urllib.parse import parse_qs
+from fastapi import Depends, File, Form, Header, Request, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -30,7 +31,8 @@ from api.file_api_business import (
 from api.file_api_helper import (
     get_file_record_by_id,
     save_upload_file,
-    prepare_part_temp_path
+    prepare_part_temp_path,
+    check_oss_callback_signature
 )
 from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
 from api.user_api import token_authen
@@ -280,7 +282,8 @@ async def upload_simple_file(
     async_session: AsyncSessionDep,
     storage_type: str = Form("local"),
     pre_file_id: int = Form(...),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    filename: str | None = Form(None),
 ) -> FilePublic:
     """
     【简单上传接口】
@@ -303,7 +306,6 @@ async def upload_simple_file(
     - 文件哈希和大小必须与预检记录匹配,否则上传失败
     - 上传失败时会清理预检记录
     """
-    logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
 
     pre_record = None
     final_path = None
@@ -319,13 +321,16 @@ async def upload_simple_file(
         # 查询预检记录
         pre_record = await get_file_record_by_id(pre_file_id, async_session)
 
-        # 统一验证(业务层)
-        await validate_simple_upload(current_user, file, pre_record, storage_type)
-
         # 根据存储类型动态处理不同的存储逻辑
-        assert file.filename is not None # 已经在validate_simple_upload 里面校验了
-        assert pre_record.file_verify_code is not None # 已经在validate_simple_upload 里面校验了
         if storage_type == "local":
+            if file is None:
+                raise HTTPException(status_code=400, detail="missing file parameter while storage_type is local")
+
+            logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
+
+            # 统一验证(业务层)
+            await validate_simple_upload(current_user, file.filename, pre_record, storage_type)
+
             # 如果是本地存储，保存文件并更新最终文件记录
             final_path = LocalStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
             await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
@@ -348,6 +353,14 @@ async def upload_simple_file(
                         f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
 
         elif storage_type == "oss":
+            if filename is None:
+                raise HTTPException(status_code=400, detail="missing filename parameter while storage_type is oss")
+
+            logger.info(f"simple upload start user={current_user.id}, filename={filename},storage={storage_type}")
+
+            # 统一验证(业务层)
+            await validate_simple_upload(current_user, filename, pre_record, storage_type)
+
             # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
             # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
             oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
@@ -357,7 +370,7 @@ async def upload_simple_file(
                 raise internal_server_error_exception
 
     except Exception as exc:
-        logger.error(f"simple upload failed user={current_user.id} filename={file.filename} error={exc}")
+        logger.error(f"simple upload failed user={current_user.id} filename={file.filename if file else filename} error={exc}")
         await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空
         raise file_persist_failed_exception from exc
 
@@ -676,10 +689,10 @@ async def get_file_list(
 
 
 async def oss_upload_complete(
-    file_id: int,
-    current_username: str,
-    fc_request_id: str,
-    async_session: AsyncSessionDep
+    async_session: AsyncSessionDep,
+    request: Request,
+    authorization: str = Header(...),
+    x_oss_pub_key_url: str = Header(...),
 ) -> FilePublic:
     """
     需要限制该接口只能由aliyun oss调用
@@ -697,6 +710,25 @@ async def oss_upload_complete(
     oss_path = None
 
     try:
+        # 解析请求体参数
+        raw_body = (await request.body()).decode()
+        data = parse_qs(raw_body)
+        if not data:
+            raise HTTPException(status_code=400, detail="missing required parameters")
+
+        file_id = int(data["file_id"][0]) or None
+        current_username = data["current_username"][0] or None
+        fc_request_id = data["fc_request_id"][0] or None
+
+        if file_id is None or current_username is None or fc_request_id is None:
+            raise HTTPException(status_code=400, detail="missing required parameters")
+
+        # 检查请求签名
+        callback_path = request.url.path
+        query = request.url.query
+        if not await check_oss_callback_signature(authorization, x_oss_pub_key_url, raw_body, callback_path, query):
+            raise HTTPException(status_code=400, detail="invalid oss callback signature")
+
         # 查询预检记录
         pre_record = await get_file_record_by_id(file_id, async_session)
         current_user = await get_user(current_username, async_session)
@@ -742,7 +774,7 @@ async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
     pre_file_id: int = Form(...),
-    file: UploadFile = File(...),
+    filename: str = Form(...),
 ) -> FilePublic:
     """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
     storage_type = "oss"
@@ -751,7 +783,7 @@ async def oss_upload_file(
         async_session,
         storage_type,
         pre_file_id,
-        file,
+        filename=filename,
     )
 
 

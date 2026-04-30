@@ -21,7 +21,7 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str) -> tu
     """
     logger.info(f"start to packup_oss_file, experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
 
-    async with AsyncClient(verify=False) as client: # TODO: 生产环境需要https认证访问，开发环境这里先关闭证书验证
+    async with AsyncClient() as client:
         # 获取STS Token 并构造credentials
         sts_token = await OssStorage.get_packup_sts_token(experiment_folder, dest_zip_path)
         if not sts_token:
