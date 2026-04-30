@@ -223,12 +223,15 @@ class OssStorage:
 
 
     @staticmethod
-    async def delete_file(file_path: str) -> bool:
+    async def delete_file(file_path: str) -> bool | None:
         """
         删除OSS文件
 
         :param file_path: OSS文件路径（如"folder/file.zip")
         """
+        if not file_path:
+            logger.warning("empty path for deletion, skipping")
+            return None
         res = delete_oss_file_task.delay(file_path) # type: ignore
         is_deleted: bool | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
         if is_deleted is None:

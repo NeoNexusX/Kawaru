@@ -223,7 +223,7 @@ async def cleanup_failed_experiments(
                             user_record.total_file_size,)
 
                 # 2. 删除实验文件(imzML、ibd)物理文件， delete_experiment_files 只处理物理文件删除，不操作数据库
-                await delete_experiment_files(session, exp.source_file_id)
+                await delete_experiment_files(session, exp.source_file_id, file_record.storage_type)
 
                 # 3. 删除真实文件和文件表记录
                 # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 ExperimentImzMLInDB 记录
