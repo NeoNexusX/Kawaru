@@ -51,6 +51,16 @@ class CelerySettings(BaseModel):
     large_file_poll_time: int
 
 
+class ComputeCelerySettings(BaseModel):
+    """重计算 Celery Worker 配置模型"""
+    enable_embedded_celery: bool = True
+    worker_concurrency: int
+    worker_log_level: str
+    worker_log_file: str
+    worker_disable_rate_limits: bool
+    worker_pool: str
+
+
 class EmailSettings(BaseModel):
     """邮件配置模型"""
     # Support for MailGun
@@ -164,6 +174,7 @@ class Config(BaseModel):
     database: DatabaseSettings
     redis: RedisSettings
     celery: CelerySettings
+    compute_celery: ComputeCelerySettings
     storage: StorageSettings
     oss: OSSSettings
     user: UserSettings

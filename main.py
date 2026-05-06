@@ -25,18 +25,18 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     # admin create
     await create_admin_user()
     #celery worker/beat subprocess
-    celery_worker_proc, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else (None, None)
-    # save process object so other parts of app can inspect/terminate if needed
-    app.state.celery_worker_proc = celery_worker_proc
+    workers, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else ({}, None)
+    # save process objects so other parts of app can inspect/terminate if needed
+    app.state.celery_workers = workers
     app.state.celery_beat_proc = celery_beat_proc
 
     yield
 
-    # shutdown: terminate celery worker if started
-    celery_worker_proc = getattr(app.state, 'celery_worker_proc', None)
+    # shutdown: terminate celery workers if started
+    workers = getattr(app.state, 'celery_workers', {})
     celery_beat_proc = getattr(app.state, 'celery_beat_proc', None)
-    if celery_worker_proc is not None or celery_beat_proc is not None:
-        await stop_embedded_celery(celery_worker_proc, celery_beat_proc)
+    if workers or celery_beat_proc is not None:
+        await stop_embedded_celery(workers, celery_beat_proc)
 
 
 app = FastAPI(lifespan=lifespan)

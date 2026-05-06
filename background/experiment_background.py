@@ -190,8 +190,8 @@ async def process_imzml_experiment_background_task(
             if source_file:
                 if source_file.storage_type == 'oss' and source_file is not None:
                     # TODO: 如何设计一个更可靠的机制
-                    await asyncio.sleep(unzip_timeout or 20) # type: ignore # 确保文件解压完成，再删除
-                    await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/")
+                    await asyncio.sleep(20) # 确保文件解压完成，再删除
+                    await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/") # type: ignore
 
             # 回滚实验记录的修改，保持数据库一致性
             await async_session.rollback()

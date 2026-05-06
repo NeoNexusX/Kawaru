@@ -66,6 +66,14 @@ celery:
   worker_pool: "prefork"
   large_file_poll_time: 1000
 
+compute_celery:
+  enable_embedded_celery: true
+  worker_concurrency: 4
+  worker_log_level: "INFO"
+  worker_log_file: "kawaru_logs/celery_compute.log"
+  worker_disable_rate_limits: True
+  worker_pool: "prefork"
+
 storage:
   root: storage
   local_root: local

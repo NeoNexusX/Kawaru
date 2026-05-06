@@ -126,7 +126,7 @@ class OssStorage:
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}" # type: ignore
 
     @staticmethod
     def create_experiment_directories(experiment_id: int) -> str:
@@ -137,7 +137,7 @@ class OssStorage:
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}"
+        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}" # type: ignore
 
         return processed_dir
 
