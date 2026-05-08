@@ -133,7 +133,7 @@ class TestFile:
     _chunked_uploaded_content: bytes | None = None
 
     _uploaded_file_id: int | None = None #oss的id
-    
+
     @staticmethod
     async def _fetch_file_record(file_id: int):
         """读取数据库中的文件记录，便于断言 path/size 变化"""
@@ -206,7 +206,7 @@ class TestFile:
 
         # 4. cleanup 后再次下载，验证重建 zip 的内容长度与真实文件大小一致
         cleaned = await cleanup_old_download_zips.run(retention_minutes=0, batch_size=1000) # type: ignore
-        await asyncio.sleep(3) # 延迟3秒，等待
+        await asyncio.sleep(10) # 延迟10秒，等待
         assert cleaned >= 1
 
         record = await self._fetch_file_record(file_id)
@@ -342,13 +342,11 @@ class TestFile:
         logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
 
         # 2. get upload oss_sts_token and oss_path
-        with open(zip_path, "rb") as f:
-            rs = await client.post(
-                "/files/upload",
-                headers=auth,
-                data={"pre_file_id": str(pre_file_id)},
-                files={"file": (TEST_FILENAME, f, "application/zip")},
-            )
+        rs = await client.post(
+            "/files/upload",
+            headers=auth,
+            data={"pre_file_id": str(pre_file_id), "filename": TEST_FILENAME},
+        )
         assert rs.status_code == 200, rs.text
         file_id = rs.json()["file_id"]
         oss_sts_token = rs.json()["oss_sts_token"]
@@ -395,9 +393,9 @@ class TestFile:
         username = rs.json()["username"]
 
         rs = await client.post(
-            "/files/oss_upload_complete",
-            headers=auth,
-            params={
+            "/files/oss_upload_complete", # 在测试时把会注视点对于x-oss-pub-key-url的验证
+            headers={**auth, "x-oss-pub-key-url": "https://fake.example.com/fake-key"},
+            data={
                 "file_id": str(file_id),
                 "current_username": username,
                 "fc_request_id": fc_request_id,

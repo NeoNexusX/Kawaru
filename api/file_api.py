@@ -49,6 +49,7 @@ from exceptions.file_exceptions import (
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.user_exceptions import user_not_found_exception
+from tools import retry_on_deadlock
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -100,24 +101,30 @@ async def preflight_create_file(
 
     # 尝试复用同哈希文件,否则创建新记录
     assert file_data.file_verify_code is not None
-    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code)
 
-    if reused_file:
-        file_record = reused_file
-    else:
-        file_record = FileInDB(
-            **file_data.model_dump(),
-            path="",  # 预检时设置为空字符串,上传成功后再更新
-            first_uploaded_by=current_user.username,
-        )
-        async_session.add(file_record)
-        await async_session.flush()  # 获取 file_id
+    async def _do_preflight() -> FileInDB:
+        reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
-    # 统一建立用户关联
-    await link_file_to_user(async_session, current_user, file_record, file_data.size)
-    await async_session.commit()
-    await async_session.refresh(file_record)
-    await async_session.refresh(current_user)
+        if reused_file:
+            file_record = reused_file
+        else:
+            file_record = FileInDB(
+                **file_data.model_dump(),
+                path="",  # 预检时设置为空字符串,上传成功后再更新
+                first_uploaded_by=current_user.username,
+            )
+            async_session.add(file_record)
+            await async_session.flush()  # 获取 file_id
+
+        # 统一建立用户关联
+        await link_file_to_user(async_session, current_user, file_record, file_data.size)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+        await async_session.refresh(current_user)
+        return file_record # type: ignore
+
+    # 并发场景下 user 行可能被多个事务争抢，遇死锁/锁等待时由 retry_on_deadlock 重试
+    file_record = await retry_on_deadlock(_do_preflight, async_session)
 
     logger.info(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
