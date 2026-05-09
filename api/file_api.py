@@ -45,6 +45,10 @@ from exceptions.file_exceptions import (
     user_download_limit_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
+<<<<<<< HEAD
+=======
+from exceptions.user_exceptions import user_not_found_exception
+>>>>>>> 30999af (将原本解决数据库并发写入的策略取消，增加m/z字段，CI流程做好标记)
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -689,6 +693,91 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
+<<<<<<< HEAD
+=======
+async def oss_upload_complete(
+    async_session: AsyncSessionDep,
+    request: Request,
+    authorization: str = Header(...),
+    x_oss_pub_key_url: str = Header(...),
+) -> FilePublic:
+    """
+    需要限制该接口只能由aliyun oss调用
+    在OSS上传时，前端设置好回调参数，OSS上传完成时，aliyun自动调用该接口通知后端，更新文件状态为已完成上传
+
+    :param file_id: 预检文件id
+    :param current_user_id: 当前用户id
+    :param fc_request_id: 函数计算用的request id
+    :param async_session: 异步数据库回话
+
+    :return: 更新后的文件记录
+    """
+    pre_record = None
+    current_user = None
+    oss_path = None
+
+    try:
+        # 解析请求体参数
+        raw_body = (await request.body()).decode()
+        data = parse_qs(raw_body)
+        if not data:
+            raise HTTPException(status_code=400, detail="missing required parameters")
+
+        file_id = int(data["file_id"][0]) or None
+        current_username = data["current_username"][0] or None
+        fc_request_id = data["fc_request_id"][0] or None
+
+        if file_id is None or current_username is None or fc_request_id is None:
+            raise HTTPException(status_code=400, detail="missing required parameters")
+
+        # # 检查请求签名
+        # callback_path = request.url.path
+        # query = request.url.query
+        # if not await check_oss_callback_signature(authorization, x_oss_pub_key_url, raw_body, callback_path, query):
+        #     raise HTTPException(status_code=400, detail="invalid oss callback signature")
+
+        # 查询预检记录
+        pre_record = await get_file_record_by_id(file_id, async_session)
+        current_user = await get_user(current_username, async_session)
+        if pre_record is None:
+            raise file_not_found_exception
+        if current_user is None:
+            raise user_not_found_exception
+        if pre_record.file_verify_code is None:
+            raise ValueError("file_verify_code not found in preflight record")
+
+        # 构建OSS文件路径
+        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
+
+        # celery任务验证oss文件
+        is_file_valid = await OssStorage.validate_file(oss_path, pre_record.size, pre_record.file_verify_code)
+        if not is_file_valid:
+            raise file_persist_failed_exception
+
+        # 更新文件路径
+        pre_record.path = oss_path
+        await async_session.commit()
+        await async_session.refresh(pre_record)
+        await async_session.refresh(current_user)
+
+    except HTTPException as e:
+        logger.error(f"oss_upload_complete failed: {e}")
+        if current_user is not None:
+            await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
+        raise e
+
+    except Exception as e:
+        logger.error(f"oss_upload_complete failed: {e}")
+        if current_user is not None:
+            await rollback_simple_upload(async_session, current_user, pre_record, final_path=oss_path)
+        raise internal_server_error_exception from e
+
+    # 触发实验文件提取任务(传入fc_request_id，用于关联oss端自动提取结果)
+    await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type, fc_request_id)
+    return pre_record # type: ignore # TODO: 返回值200
+
+
+>>>>>>> 30999af (将原本解决数据库并发写入的策略取消，增加m/z字段，CI流程做好标记)
 async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
