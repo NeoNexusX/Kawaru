@@ -242,7 +242,7 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
         "Statement": [
             {
             "Effect": "Allow",
-            "Action": ["oss:PutObject"],
+            "Action": ["oss:PutObject", "oss:GetObject", "oss:AbortMultipartUpload", "oss:ListMultipartUploadParts"],
             "Resource": [
                f"acs:oss:*:*:{OSS_BUCKET_NAME}/{file_path}"
             ]
