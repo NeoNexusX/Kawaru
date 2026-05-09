@@ -121,6 +121,7 @@ def _build_preflight_payload(
         "pixel_size_horizontal": 0,
         "pixel_size_vertical": 0,
         "resolving_power": 0,
+        "mz": 0,
         "total_parts": total_parts,
     }
 
@@ -403,7 +404,7 @@ class TestFile:
         )
         assert rs.status_code == 200, rs.text
 
-        await asyncio.sleep(10) # 延迟10秒，等待实验处理完成
+        await asyncio.sleep(20) # 延迟20秒，等待实验处理完成
 
         TestFile._uploaded_file_id = file_id
         logger.info((f"test_upload_to_oss passed: username={username} file_id={file_id} size={size} oss_path={oss_path}\n"

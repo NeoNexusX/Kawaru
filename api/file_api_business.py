@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func, update
+from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from celery.result import AsyncResult
 
@@ -128,16 +128,12 @@ async def link_file_to_user(
 
     # 2. 更新用户的文件统计信息
     if new_linker:
-        # 用原子 UPDATE 替代 "读-改-写" 模式，避免并发场景下的 S→X 锁升级死锁
-        await async_session.exec(
-            update(UserInDB)
-            .where(UserInDB.id == user.id) #type: ignore
-            .values(
-                file_count=UserInDB.file_count + 1,
-                total_file_size=UserInDB.total_file_size + file_size,
-            )
-        )
-        async_session.add(new_linker)
+        user.file_count = (user.file_count or 0) + 1
+        user.total_file_size = (user.total_file_size or 0) + file_size
+
+    # 3. 将用户对象和链接器对象添加到会话
+    async_session.add(new_linker)
+    async_session.add(user)
 
 #########################
 # File  - 查
