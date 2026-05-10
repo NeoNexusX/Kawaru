@@ -77,7 +77,7 @@ compute_celery:
 storage:
   root: storage
   local_root: local
-  max_file_size_gb: 2000000000
+  max_file_size_gb: 200
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
   allowed_storage_types: ["local"]

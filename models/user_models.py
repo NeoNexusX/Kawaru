@@ -44,6 +44,7 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0), description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
+    max_file_size: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, default=0), description="用户最大可处理文件总大小（字节）")
 
 
 class UserCreate(UserBase):
