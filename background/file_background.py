@@ -3,7 +3,7 @@ from datetime import timedelta
 from sqlmodel import select, func
 
 
-from api.experiment_api_business import delete_experiment_files
+from api.experiment_api_business import delete_origin_files
 
 from api.user_api_helper import get_user_by_id
 from api.file_api_helper import get_file_record_by_id, delete_file_by_storage
@@ -17,7 +17,7 @@ from database.db import get_standalone_async_session
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
-from models.experiment_models import ExperimentImzMLInDB, ExperimentStatus
+from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 
 from celery_runtime.state import get_celery_app
 
@@ -151,7 +151,7 @@ async def clean_user_all_task(
                     # 没有其他用户持有，执行完全删除
                     file_record = await get_file_record_by_id(file_id, session)
                     if file_record.experiment_type == "imzML":
-                        await delete_experiment_files(session, file_id, file_record.storage_type)
+                        await delete_origin_files(session, file_id, file_record.storage_type)
 
                     # 创建一个临时的 user 对象用于删除
                     user_obj = UserInDB( # type: ignore
@@ -177,32 +177,32 @@ async def cleanup_failed_experiments(
     batch_size: int = 100
 ) -> int:
     """
-    清理过期的失败实验记录
-    
+    清理过期的失败 origin 记录
+
     完整的清理流程:
-    1. 查询过期的失败实验记录
+    1. 查询过期的失败 origin 记录
     2. 手动更新所有相关用户的 file_count 和 total_file_size
-    3. 删除实验文件(imzML、ibd)物理文件
+    3. 删除 origin 文件(imzML、ibd)物理文件
     4. 删除文件表记录
-    5. 数据库自动级联删除关联的 UserFileLink 和 ExperimentImzMLInDB 记录
-    
+    5. 数据库自动级联删除关联的 UserFileLink 和 OriginImzMLInDB 记录
+
     注意:
     - 源 ZIP 文件会删除
-    - delete_experiment_files 仅处理物理文件删除，不涉及数据库操作
-    - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 ExperimentImzMLInDB
+    - delete_origin_files 仅处理物理文件删除，不涉及数据库操作
+    - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 OriginImzMLInDB
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
         now = utc_time()
         threshold = now - timedelta(minutes=ttl_minutes)
         cleaned = 0
-        # 第一步:查询过期的失败实验
+        # 第一步:查询过期的失败 origin 记录
         try:
-            failed_experiments = (await session.exec(select(ExperimentImzMLInDB).where(
-                        ExperimentImzMLInDB.status == ExperimentStatus.FAILED,
-                        ExperimentImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
-        # 第二步:处理每个失败的实验
-            for exp in failed_experiments:
+            failed_origins = (await session.exec(select(OriginImzMLInDB).where(
+                        OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                        OriginImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
+        # 第二步:处理每个失败的 origin
+            for exp in failed_origins:
                 # 查询关联的文件记录
                 file_record = (await session.exec(
                     select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
@@ -222,17 +222,17 @@ async def cleanup_failed_experiments(
                         logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
                             user_record.total_file_size,)
 
-                # 2. 删除实验文件(imzML、ibd)物理文件， delete_experiment_files 只处理物理文件删除，不操作数据库
-                await delete_experiment_files(session, exp.source_file_id, file_record.storage_type) # type: ignore
+                # 2. 删除 origin 文件(imzML、ibd)物理文件， delete_origin_files 只处理物理文件删除，不操作数据库
+                await delete_origin_files(session, exp.source_file_id, file_record.storage_type) # type: ignore
 
                 # 3. 删除真实文件和文件表记录
-                # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 ExperimentImzMLInDB 记录
+                # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 OriginImzMLInDB 记录
                 file_path = file_record.path.strip() # type: ignore[attr-defined]
                 if file_path and file_path != SOURCE_FILE_PATH_CLEARED :
                     await delete_file_by_storage(file_path, file_record.storage_type) # type: ignore[attr-defined]
                 await session.delete(file_record)
                 cleaned += 1
-                logger.debug("cleanup failed experiment: exp_id=%s", exp.id)
+                logger.debug("cleanup failed origin: exp_id=%s", exp.id)
 
         # 第三步:提交事务
             await session.commit()

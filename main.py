@@ -12,7 +12,7 @@ from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
 from routers.file import file_router
-from routers.experiment import experiment_router
+from routers.experiment import originexperiment_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
@@ -54,7 +54,7 @@ app.add_middleware(
 
 app.include_router(user_router)
 app.include_router(file_router)
-app.include_router(experiment_router)
+app.include_router(originexperiment_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":
