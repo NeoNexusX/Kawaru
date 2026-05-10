@@ -83,6 +83,13 @@ async def delete_origin_files(
         if origin_dir.exists() and not any(origin_dir.iterdir()):
             origin_dir.rmdir()
             logger.debug("cleaned up origin directory path=%s", origin_dir)
+
+    # 删除 origin 目录(如果为空)(仅在本地存储时需要手动删除目录)
+    if origin.imzml_path and storage_type == "local":
+        origin_dir = Path(origin.imzml_path).parent
+        if origin_dir.exists() and not any(origin_dir.iterdir()):
+            origin_dir.rmdir()
+            logger.debug("cleaned up origin directory path=%s", origin_dir)
     if origin.imzml_path and storage_type == "oss":
         origin_dir = f"{str(Path(origin.imzml_path).parent)}/"
         if await OssStorage.delete_file(origin_dir):

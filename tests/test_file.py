@@ -446,8 +446,6 @@ class TestFile:
         assert rs.status_code == 200, rs.text
         username = rs.json()["username"]
 
-<<<<<<< HEAD
-=======
         rs = await client.post(
             "/files/oss_upload_complete", # 在测试时把会注视点对于x-oss-pub-key-url的验证
             headers={**auth, "x-oss-pub-key-url": "https://fake.example.com/fake-key"},
@@ -461,7 +459,6 @@ class TestFile:
 
         await asyncio.sleep(20) # 延迟20秒，等待实验处理完成
 
->>>>>>> 30999af (将原本解决数据库并发写入的策略取消，增加m/z字段，CI流程做好标记)
         TestFile._uploaded_file_id = file_id
         logger.info((f"test_upload_to_local passed: upload_time_seconds={upload_time_seconds} username={username} file_id={file_id} size={size}\n"
                      f"real-md5={file_verify_code}"))
