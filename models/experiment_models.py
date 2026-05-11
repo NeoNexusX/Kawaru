@@ -87,6 +87,7 @@ class OriginImzMLPublic(ExperimentPublic):
     """ImzML 原始数据公开模型(继承公共字段，添加 imzML 特有字段)"""
     imzml_size: int
     ibd_size: int
+    status: str
 
 
 #########################
