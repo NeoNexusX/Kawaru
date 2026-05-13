@@ -6,11 +6,9 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
-    OssUploadCompleteDep, OssUploadDep
+    OssUploadDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
-from background.file_background_helper import get_oss_upload_sts_token_task
-from celery_runtime.result import wait_for_result
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -72,12 +70,6 @@ async def get_upload_status(status: PartStatusDep):
 async def list_files(list_file_response: ListPublicFilesDep):
     """查询文件列表"""
     return list_file_response
-
-
-@file_router.post("/oss_upload_complete", response_model=FilePublic)
-async def oss_upload_complete(file_record: OssUploadCompleteDep):
-    """OSS上传完成时，前端调用该接口通知后端"""
-    return file_record
 
 
 @file_router.post("/upload", response_model=FilePublic)
