@@ -5,6 +5,7 @@ class OssUploadCallback(BaseModel):
     filename: str
     file_path: str
     is_success: bool
+    act_hash: str | None = None
     imzml_path: str | None = None
     ibd_path: str | None = None
     imzml_size: int | None = None

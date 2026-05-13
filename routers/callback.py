@@ -12,7 +12,7 @@ callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了�
 @callback_router.get("/get_expected_hash")
 async def get_expected_hash(expected_hash: GetExpectHashDep):
     """获取文件的理论哈希"""
-    return {expected_hash: expected_hash}
+    return {"expected_hash": expected_hash}
 
 @callback_router.get("/config", response_model=GetConfigDep)
 async def get_config(config: GetConfigDep):

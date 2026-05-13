@@ -3,17 +3,23 @@ from fastapi import Depends
 from zipfile import BadZipFile
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
+from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_experiment_record, mark_experiment, delete_source_file_and_clear_path
 from models.file_models import FileInDB, FilePublic
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
 from models.callback_models import OssUploadCallback
-from exceptions.file_exceptions import file_content_missing_exception, storage_type_not_allowed_exception
+from exceptions.file_exceptions import (
+    file_content_missing_exception,
+    storage_type_not_allowed_exception,
+    hash_size_validation_failed_exception,
+)
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
+from tools.time_tools import utc_time
 from tools.logger import get_logger
 
 logger = get_logger("api.callback_api")
@@ -34,6 +40,7 @@ async def get_expected_hash(
     if not file_record.file_verify_code:
         logger.warning("file record not found file_verify_code filename=%s", filename)
         raise file_content_missing_exception
+    logger.info("get expected hash filename=%s, expected hash=%s", filename, file_record.file_verify_code)
     return file_record.file_verify_code
 
 
@@ -58,6 +65,7 @@ async def oss_upload_callback(
     ibd_path = callback_info.ibd_path
     imzml_size = callback_info.imzml_size
     ibd_size = callback_info.ibd_size
+    act_hash = callback_info.act_hash
     error_type = callback_info.error_type
 
     source_file = None
@@ -101,14 +109,29 @@ async def oss_upload_callback(
             logger.error("imzml size or ibd size is empty or <= 0, filename=%s", filename)
             raise file_content_missing_exception
 
+        # 验证文件哈希是否为空
+        if not act_hash:
+            logger.error("act hash is empty, filename=%s", filename)
+            raise hash_size_validation_failed_exception
+
         # 更新文件路径和实验路径
-        source_file.file_path = file_path
+        source_file.path = file_path
+        source_file.upload_hash = utc_time()
         experiment_record.imzml_path = imzml_path
         experiment_record.ibd_path = ibd_path
         experiment_record.imzml_size = imzml_size
         experiment_record.ibd_size = ibd_size
         async_session.add(source_file)
         async_session.add(experiment_record)
+
+        # 标记OSS文件为持久化
+        is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true"})
+        is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true"})
+        is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true"})
+
+        if not is_file_tagged or not is_imzml_tagged or not is_ibd_tagged:
+            logger.error("oss tag file persistent failed, filename=%s", filename)
+            raise internal_server_error_exception
 
         # 提交事务
         await async_session.commit()

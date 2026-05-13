@@ -9,6 +9,7 @@ from background.file_background_helper import (
     get_oss_file_size_task,
     delete_oss_file_task,
     get_oss_packup_sts_token_task,
+    tag_oss_file_task,
 )
 
 from models.auth import OssStsToken
@@ -238,3 +239,24 @@ class OssStorage:
             logger.error(f"failed to delete oss file due to server timeout: {file_path}")
             return False
         return is_deleted
+
+
+    @staticmethod
+    async def tag_oss_file(file_path: str, tag: dict[str, str]) -> bool:
+        """
+        给OSS文件打标签
+
+        :param file_path: OSS文件路径（如"folder/file.zip")
+        :param tag: 标签字典（如{"key1": "value1", "key2": "value2"})
+
+        :return: 是否成功，否则返回False
+        """
+        if not file_path:
+            logger.error("empty path for tagging")
+            return False
+        res = tag_oss_file_task.delay(file_path, tag) # type: ignore
+        is_tagged = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        if is_tagged is None:
+            logger.error(f"failed to tag oss file due to server timeout: {file_path}")
+            return False
+        return is_tagged

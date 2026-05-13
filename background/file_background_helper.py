@@ -20,7 +20,8 @@ from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_oss_v2 import HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request
+from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
+                                  Tag, PutObjectTaggingRequest, Tagging, TagSet)
 
 from celery_runtime.state import get_celery_app
 
@@ -145,6 +146,38 @@ async def validate_oss_file_task(file_path: str, size: int, file_verify_code: st
 
         except Exception as e: # pylint:disable = broad-exception-caught
             logger.error(f"failed to validate oss file: {e}")
+            return False
+
+
+@celery_app.task()
+async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
+    """为OSS文件添加标签"""
+    with create_oss_client_context() as oss_client:
+        try:
+            # 创建OSS客户端
+            if oss_client is None:
+                raise HTTPException(status_code=500, detail="oss client create failed")
+
+            # 获取bucket名称
+            bucket_name = OSS_BUCKET_NAME
+            if not bucket_name:
+                raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+            # 构造tagging
+            tag_set: list[Tag] = []
+            for key, value in tags.items():
+                tag_set.append(Tag(key=key, value=value))
+            tagging = Tagging(tag_set=TagSet(tag_set))
+
+            # 发送请求
+            req = PutObjectTaggingRequest(bucket=bucket_name, key=file_path, tagging=tagging) # type: ignore
+            res = await oss_client.put_object_tagging(req)
+            if res.status_code != status.HTTP_200_OK:
+                logger.warning(f"oss file {file_path} tag failed, status code {res.status_code}")
+                return False
+            return True
+        except Exception as e: # pylint:disable = broad-exception-caught
+            logger.error(f"failed to tag oss file: {e}")
             return False
 
 
