@@ -118,6 +118,8 @@ async def oss_upload_callback(
         return source_file
 
     except (BadZipFile, FileNotFoundError) as e:
+        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除
+        async_session.add(source_file)
         await mark_experiment(
             async_session = async_session,
             experiment=experiment_record.id, # type:ignore
@@ -126,6 +128,7 @@ async def oss_upload_callback(
             status=ExperimentStatus.FAILED
         )
         await async_session.commit()
+        await async_session.refresh(source_file)
         await async_session.refresh(experiment_record)
 
         logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file.file_id}\nerror={e}")
