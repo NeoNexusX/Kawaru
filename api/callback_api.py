@@ -116,7 +116,7 @@ async def oss_upload_callback(
 
         # 更新文件路径和实验路径
         source_file.path = file_path
-        source_file.upload_hash = utc_time()
+        source_file.uploaded_at = utc_time()
         experiment_record.imzml_path = imzml_path
         experiment_record.ibd_path = ibd_path
         experiment_record.imzml_size = imzml_size
