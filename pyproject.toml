@@ -41,5 +41,5 @@ dependencies = [
     "watchfiles>=1.1.1",
     "aliyun-log-python-sdk>=0.9.44",
     "pytest-order>=1.3.0",
-    "m2crypto>=0.47.0",
+    "m2crypto<0.43",
 ]
