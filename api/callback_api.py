@@ -5,7 +5,7 @@ from zipfile import BadZipFile
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
-from api.experiment_api_business import create_experiment_record, mark_experiment, delete_source_file_and_clear_path
+from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from models.file_models import FileInDB, FilePublic
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
@@ -24,6 +24,7 @@ from tools.logger import get_logger
 
 logger = get_logger("api.callback_api")
 
+# TODO: 针对此处每个api，需要验证签名
 
 async def get_expected_hash(
     filename: str,
@@ -70,7 +71,7 @@ async def oss_upload_callback(
 
     source_file = None
     source_file_id = None
-    experiment_record = None
+    origin_record = None
     try:
         source_file = await get_file_by_filename(filename, async_session)
         source_file_id = source_file.file_id # type: ignore
@@ -81,7 +82,7 @@ async def oss_upload_callback(
             raise storage_type_not_allowed_exception
 
         # 创建实验记录
-        experiment_record = await create_experiment_record(
+        origin_record = await create_origin_record(
             source_file_id=source_file.file_id, # type: ignore
             experiment_name=filename,
             async_session=async_session
@@ -117,12 +118,12 @@ async def oss_upload_callback(
         # 更新文件路径和实验路径
         source_file.path = file_path
         source_file.uploaded_at = utc_time()
-        experiment_record.imzml_path = imzml_path
-        experiment_record.ibd_path = ibd_path
-        experiment_record.imzml_size = imzml_size
-        experiment_record.ibd_size = ibd_size
+        origin_record.imzml_path = imzml_path
+        origin_record.ibd_path = ibd_path
+        origin_record.imzml_size = imzml_size
+        origin_record.ibd_size = ibd_size
         async_session.add(source_file)
-        async_session.add(experiment_record)
+        async_session.add(origin_record)
 
         # 标记OSS文件为持久化
         is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true"})
@@ -136,25 +137,25 @@ async def oss_upload_callback(
         # 提交事务
         await async_session.commit()
         await async_session.refresh(source_file)
-        await async_session.refresh(experiment_record)
+        await async_session.refresh(origin_record)
 
         return source_file
 
     except (BadZipFile, FileNotFoundError) as e:
         source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除
         async_session.add(source_file)
-        await mark_experiment(
+        await mark_origin(
             async_session = async_session,
-            experiment=experiment_record.id, # type:ignore
+            origin=origin_record.id, # type:ignore
             storage_type="oss", # type:ignore
             error_message=str(e),
             status=ExperimentStatus.FAILED
         )
         await async_session.commit()
         await async_session.refresh(source_file)
-        await async_session.refresh(experiment_record)
+        await async_session.refresh(origin_record)
 
-        logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file.file_id}\nerror={e}")
+        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}")
         raise invalid_zip_file_exception from e
 
     except Exception as e:

@@ -12,8 +12,8 @@ from database.db import create_db_and_tables
 from api.user_api import create_admin_user
 from routers.user import user_router
 from routers.file import file_router
-from routers.experiment import experiment_router
 from routers.callback import callback_router
+from routers.experiment import originexperiment_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
@@ -26,18 +26,18 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     # admin create
     await create_admin_user()
     #celery worker/beat subprocess
-    celery_worker_proc, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else (None, None)
-    # save process object so other parts of app can inspect/terminate if needed
-    app.state.celery_worker_proc = celery_worker_proc
+    workers, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else ({}, None)
+    # save process objects so other parts of app can inspect/terminate if needed
+    app.state.celery_workers = workers
     app.state.celery_beat_proc = celery_beat_proc
 
     yield
 
-    # shutdown: terminate celery worker if started
-    celery_worker_proc = getattr(app.state, 'celery_worker_proc', None)
+    # shutdown: terminate celery workers if started
+    workers = getattr(app.state, 'celery_workers', {})
     celery_beat_proc = getattr(app.state, 'celery_beat_proc', None)
-    if celery_worker_proc is not None or celery_beat_proc is not None:
-        await stop_embedded_celery(celery_worker_proc, celery_beat_proc)
+    if workers or celery_beat_proc is not None:
+        await stop_embedded_celery(workers, celery_beat_proc)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -55,8 +55,8 @@ app.add_middleware(
 
 app.include_router(user_router)
 app.include_router(file_router)
-app.include_router(experiment_router)
 app.include_router(callback_router)
+app.include_router(originexperiment_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":

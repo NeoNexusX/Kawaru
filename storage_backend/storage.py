@@ -16,7 +16,7 @@ from models.auth import OssStsToken
 from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
                                       OSS_ZIP_STORAGE_ROOT, OSS_DEFAULT_TIMEOUT_SECONDS,
                                      )
-from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT, OSS_EXPERIMENT_STORAGE_ROOT
+from constants.experiment_constants import ORIGIN_STORAGE_ROOT, OSS_ORIGIN_STORAGE_ROOT
 
 from tools.logger import get_logger
 
@@ -51,15 +51,15 @@ class LocalStorage:
         return LOCAL_STORAGE_ROOT / file_path
 
     @staticmethod
-    def create_experiment_directories(experiment_id: int) -> Path:
+    def create_origin_directories(origin_id: int) -> Path:
         """
-        创建并返回 实验目录
+        创建并返回 origin目录
         Return:
             processed_dir Path对象
         Raise:
             None
         """
-        processed_dir = EXPERIMENT_STORAGE_ROOT / f"exp_{experiment_id}"
+        processed_dir = ORIGIN_STORAGE_ROOT / f"org_{origin_id}"
         processed_dir.mkdir(parents=True, exist_ok=True)
 
         return processed_dir
@@ -127,18 +127,18 @@ class OssStorage:
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}" # type: ignore
 
     @staticmethod
-    def create_experiment_directories(experiment_id: int) -> str:
+    def create_origin_directories(origin_id: int) -> str:
         """
-        创建并返回 实验目录
+        创建并返回 origin目录
         Return:
             str路径
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}"
+        processed_dir = f"{OSS_ORIGIN_STORAGE_ROOT.rstrip('/')}/org_{origin_id}" # type: ignore
 
         return processed_dir
 

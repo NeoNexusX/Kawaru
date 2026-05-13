@@ -15,7 +15,7 @@ from celery.result import AsyncResult
 
 from database.db import get_async_engine
 from api.user_api_helper import get_user_by_id
-from api.experiment_api_business import get_imzml_experiment_by_file_id
+from api.experiment_api_business import get_origin_imzml_by_file_id
 from api.experiment_api_helper import validate_experiment_type, packup_oss_file
 from api.file_api_helper import (
     check_user_quota,
@@ -104,7 +104,7 @@ async def append_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     return new_linker
 
 
-async def link_file_to_user( #TODO 风险，后面加锁
+async def link_file_to_user(
     async_session: AsyncSession,
     user: UserInDB,
     file: FileInDB,
@@ -267,41 +267,41 @@ async def prepare_download_file(
         else:
             raise download_not_implemented_exception
 
-        # 处理实验文件(imzML) # TODO： 封装函数
+        # 处理 origin 文件(imzML) # TODO： 封装函数
         if file_record.experiment_type == "imzML":
             assert file_record.file_id is not None
-            experiment = await get_imzml_experiment_by_file_id(session, file_record.file_id)
+            origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
 
-            if not experiment or experiment.status != ExperimentStatus.COMPLETED:
+            if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
                 logger.warning(
-                    "experiment not found or not completed file_id=%s", file_record.file_id
+                    "origin not found or not completed file_id=%s", file_record.file_id
                 )
                 raise file_content_missing_exception
 
-            # 根据存储类型获取实验文件路径
+            # 根据存储类型获取 origin 文件路径
             imzml_path, ibd_path = None, None
             # TODO： 封装函数
             if storage_type == "local":
-                imzml_path = Path(experiment.imzml_path) if experiment.imzml_path else None
-                ibd_path = Path(experiment.ibd_path) if experiment.ibd_path else None
+                imzml_path = Path(origin.imzml_path) if origin.imzml_path else None
+                ibd_path = Path(origin.ibd_path) if origin.ibd_path else None
                 if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
-                    logger.warning("experiment files missing file_id=%s", file_record.file_id)
+                    logger.warning("origin files missing file_id=%s", file_record.file_id)
                     raise file_content_missing_exception
             elif storage_type == "oss":
-                imzml_path = experiment.imzml_path if experiment.imzml_path else None
-                ibd_path = experiment.ibd_path if experiment.ibd_path else None
+                imzml_path = origin.imzml_path if origin.imzml_path else None
+                ibd_path = origin.ibd_path if origin.ibd_path else None
                 if (
                     not imzml_path or not ibd_path or
                     not await OssStorage.check_file_exist(imzml_path) or
                     not await OssStorage.check_file_exist(ibd_path)
                 ):
-                    logger.warning("experiment files missing file_id=%s", file_record.file_id)
+                    logger.warning("origin files missing file_id=%s", file_record.file_id)
                     raise file_content_missing_exception
 
-                # 校验oss中的实验文件夹是否存在
-                experiment_path = f"{Path(imzml_path).parent}/"
-                if not await OssStorage.check_file_exist(experiment_path):
-                    logger.warning("experiment folder not found file_id=%s, experiment_path=%s", file_record.file_id, experiment_path)
+                # 校验oss中的 origin 文件夹是否存在
+                origin_path = f"{Path(imzml_path).parent}/"
+                if not await OssStorage.check_file_exist(origin_path):
+                    logger.warning("origin folder not found file_id=%s, origin_path=%s", file_record.file_id, origin_path)
                     raise file_content_missing_exception
             else:
                 raise download_not_implemented_exception
@@ -329,7 +329,7 @@ async def prepare_download_file(
 
             elif storage_type == "oss":
                 zip_path, zip_download_url, fc_request_id = await packup_oss_file(
-                    packup_folder = experiment_path, # type: ignore # 理论上experiment_path存在，直接用即可
+                    packup_folder = origin_path, # type: ignore # 理论上origin_path存在，直接用即可
                     zip_file_path = f"{OSS_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
                     timeout_seconds = FC_PACKUP_TIMEOUT_SECONDS,
                 )

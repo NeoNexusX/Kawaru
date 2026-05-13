@@ -1,19 +1,19 @@
-"""存储和实验相关的异常定义"""
+"""存储和 origin 相关的异常定义"""
 from starlette import status
 from fastapi import HTTPException
 from exceptions.utils_exception import format_exception_detail
 
 
-# 实验不存在异常
-experiment_not_found_exception = HTTPException(
+# origin 不存在异常
+origin_not_found_exception = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
-    detail=format_exception_detail("experiment not found")
+    detail=format_exception_detail("origin not found")
 )
 
-# 无权限访问实验异常
-experiment_permission_denied_exception = HTTPException(
+# 无权限访问 origin 异常
+origin_permission_denied_exception = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN,
-    detail=format_exception_detail("permission denied to access this experiment")
+    detail=format_exception_detail("permission denied to access this origin")
 )
 
 # 源文件不存在异常
@@ -60,8 +60,8 @@ oss_fc_request_id_empty_exception = HTTPException(
 
 
 __all__ = [
-    "experiment_not_found_exception",
-    "experiment_permission_denied_exception",
+    "origin_not_found_exception",
+    "origin_permission_denied_exception",
     "source_file_not_found_exception",
     "invalid_zip_file_exception",
     "unsafe_zip_path_exception",

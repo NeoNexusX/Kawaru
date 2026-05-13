@@ -16,7 +16,7 @@ from storage_backend.oss_log_helper import (
     get_fc_invoke_status,
 )
 from api.experiment_api_business import (
-    create_experiment_record, mark_experiment, delete_source_file_and_clear_path
+    create_origin_record, mark_origin, delete_source_file_and_clear_path
 )
 from api.experiment_api_helper import validate_imzml_files
 from api.file_api_helper import get_file_record_by_id
@@ -25,7 +25,7 @@ from models.file_models import FileInDB
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
-from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS, OSS_EXPERIMENT_STORAGE_ROOT
+from constants.file_constants import FC_UNZIP_TIMEOUT_SECONDS, OSS_ORIGIN_STORAGE_ROOT
 
 from exceptions.experiment_exceptions import invalid_zip_file_exception, oss_fc_request_id_empty_exception
 from exceptions.file_exceptions import storage_type_not_allowed_exception
@@ -103,22 +103,22 @@ async def process_imzml_experiment_background_task(
         try:
             logger.info(f"starting imzml experiment processing user={user_id} file={source_file_id}")
 
-            # 阶段1: 查询文件记录并创建实验记录
+            # 阶段1: 查询文件记录并创建 origin 记录
             # 查询源文件
             source_file = await get_file_record_by_id(source_file_id, async_session)
             storage_type = source_file.storage_type
 
-            # 创建实验记录
-            experiment_record = await create_experiment_record(async_session, experiment_name, source_file_id)
-            assert experiment_record.id is not None
+            # 创建 origin 记录
+            origin_record = await create_origin_record(async_session, experiment_name, source_file_id)
+            assert origin_record.id is not None
 
             #阶段2: 处理实验文件
             if storage_type == 'local':
                 # 创建正式目录（helper 层）
-                experiment_dir = LocalStorage.create_experiment_directories(experiment_record.id)
+                origin_dir = LocalStorage.create_origin_directories(origin_record.id)
 
                 # 解压和验证
-                final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), experiment_dir)
+                final_imzml_path, final_ibd_path = await extract_and_validate_local_imzml_zip(Path(source_file.path), origin_dir)
 
             elif storage_type == 'oss':
                 # 直接轮询oss端解压结果
@@ -163,26 +163,26 @@ async def process_imzml_experiment_background_task(
             else:
                 raise storage_type_not_allowed_exception
 
-            # 更新实验记录
-            await mark_experiment(async_session,experiment_record,storage_type,final_imzml_path,final_ibd_path)
+            # 更新 origin 记录
+            await mark_origin(async_session,origin_record,storage_type,final_imzml_path,final_ibd_path)
 
             # 保留原始 ZIP 文件与数据库 path 字段，由定时任务统一清理
             await async_session.commit()
-            await async_session.refresh(experiment_record)
+            await async_session.refresh(origin_record)
 
-            logger.info(f"completed imzml experiment processing exp_id={experiment_record.id} source_file_id={source_file_id}")
+            logger.info(f"completed imzml experiment processing exp_id={origin_record.id} source_file_id={source_file_id}")
 
 
         except (zipfile.BadZipFile, FileNotFoundError) as e:
-            #此处理论上experiment_record和storage_type一定存在，直接使用即可
-            await mark_experiment(async_session = async_session,
-                                    experiment=experiment_record.id, # type:ignore
+            #此处理论上 origin_record 和 storage_type 一定存在，直接使用即可
+            await mark_origin(async_session = async_session,
+                                    origin=origin_record.id, # type:ignore
                                     storage_type=storage_type, # type:ignore
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
             await async_session.commit()
-            await async_session.refresh(experiment_record) # type: ignore
-            logger.error(f"invalid file ,exp id & file id is {experiment_record.id} & {source_file_id}\nerror={e}") #type:ignore
+            await async_session.refresh(origin_record) # type: ignore
+            logger.error(f"invalid file ,exp id & file id is {origin_record.id} & {source_file_id}\nerror={e}") #type:ignore
             raise invalid_zip_file_exception from e
 
         except RuntimeError as e:
@@ -190,10 +190,10 @@ async def process_imzml_experiment_background_task(
             if source_file:
                 if source_file.storage_type == 'oss' and source_file is not None:
                     # TODO: 如何设计一个更可靠的机制
-                    await asyncio.sleep(unzip_timeout or 20) # type: ignore # 确保文件解压完成，再删除
-                    await OssStorage.delete_file(f"{OSS_EXPERIMENT_STORAGE_ROOT.strip('/')}/{source_file.filename}/")
+                    await asyncio.sleep(20) # 确保文件解压完成，再删除
+                    await OssStorage.delete_file(f"{OSS_ORIGIN_STORAGE_ROOT.strip('/')}/{source_file.filename}/") # type: ignore
 
-            # 回滚实验记录的修改，保持数据库一致性
+            # 回滚 origin 记录的修改，保持数据库一致性
             await async_session.rollback()
 
             # 删除原始zip，清理记录的file的path信息
@@ -208,7 +208,7 @@ async def process_imzml_experiment_background_task(
 
 
         except Exception as e:
-            # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
+            # 针对其他的异常，回滚 origin 记录的修改，保持数据库一致性
             await async_session.rollback()
 
             # 删除原始zip，清理记录的file的path信息

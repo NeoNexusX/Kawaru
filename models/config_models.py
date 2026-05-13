@@ -51,6 +51,16 @@ class CelerySettings(BaseModel):
     large_file_poll_time: int
 
 
+class ComputeCelerySettings(BaseModel):
+    """重计算 Celery Worker 配置模型"""
+    enable_embedded_celery: bool = True
+    worker_concurrency: int
+    worker_log_level: str
+    worker_log_file: str
+    worker_disable_rate_limits: bool
+    worker_pool: str
+
+
 class EmailSettings(BaseModel):
     """邮件配置模型"""
     # Support for MailGun
@@ -93,7 +103,8 @@ class OSSSettings(BaseModel):
     oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
     oss_zip_storage_root: str | None = None
-    oss_experiment_storage_root: str | None = None
+    oss_packup_zip_storage_root: str | None = None
+    oss_origin_storage_root: str | None = None
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     fc_logstore_name: str | None = Field(default=None, description="函数计算SLS日志存储名称")
     fc_log_project_name: str | None = Field(default=None, description="函数计算SLS日志项目名称")
@@ -164,6 +175,7 @@ class Config(BaseModel):
     database: DatabaseSettings
     redis: RedisSettings
     celery: CelerySettings
+    compute_celery: ComputeCelerySettings
     storage: StorageSettings
     oss: OSSSettings
     user: UserSettings

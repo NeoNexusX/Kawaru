@@ -3,8 +3,7 @@
 #########################
 import json
 from typing import Annotated, Any
-from urllib.parse import parse_qs
-from fastapi import Depends, File, Form, Header, Request, UploadFile, HTTPException
+from fastapi import Depends, File, Form, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -32,11 +31,10 @@ from api.file_api_helper import (
     get_file_record_by_id,
     save_upload_file,
     prepare_part_temp_path,
-    check_oss_callback_signature
 )
-from api.experiment_api_business import delete_experiment_files, valid_file_uploaded
+from api.experiment_api_business import delete_origin_files, valid_file_uploaded
 from api.user_api import token_authen
-from api.user_api_helper import count_items, get_user
+from api.user_api_helper import count_items
 from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
@@ -45,10 +43,8 @@ from exceptions.file_exceptions import (
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
-    file_not_found_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
-from exceptions.user_exceptions import user_not_found_exception
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -100,13 +96,14 @@ async def preflight_create_file(
 
     # 尝试复用同哈希文件,否则创建新记录
     assert file_data.file_verify_code is not None
-    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code)
+
+    reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
     if reused_file:
         file_record = reused_file
     else:
         file_record = FileInDB(
-            **file_data.model_dump(),
+             **file_data.model_dump(),
             path="",  # 预检时设置为空字符串,上传成功后再更新
             first_uploaded_by=current_user.username,
         )
@@ -118,6 +115,7 @@ async def preflight_create_file(
     await async_session.commit()
     await async_session.refresh(file_record)
     await async_session.refresh(current_user)
+
 
     logger.info(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
@@ -257,7 +255,7 @@ async def get_part_upload_status(
         is_complete=False,
     )
 
-    # 检查文件是否已完成上传(复用 valid_file_uploaded,对 imzML 类型额外验证实验状态)
+    # 检查文件是否已完成上传(复用 valid_file_uploaded,对 imzML 类型额外验证 origin 状态)
     assert current_user.id is not None
     user_file_ids = await get_user_file_ids(session, current_user.id)
     if file_record.file_id in user_file_ids and await valid_file_uploaded(session, file_record):
@@ -495,7 +493,7 @@ async def delete_user_file(
        - 返回状态:unlinked
     
     2. 如果文件只属于当前用户:
-       - 删除实验相关文件(如果有,如 imzML、ibd)
+       - 删除 origin 相关文件(如果有,如 imzML、ibd)
        - 删除文件物理文件
        - 删除所有分片记录和物理文件
        - 删除文件数据库记录
@@ -523,9 +521,9 @@ async def delete_user_file(
         return {"file_id": file_id, "status": "unlinked"}
 
     # 没有其他用户持有该文件,执行完全删除
-    # 删除实验相关文件(如果有)
+    # 删除 origin 相关文件(如果有)
     if file_record.experiment_type == "imzML":
-        await delete_experiment_files(session, file_id, file_record.storage_type)
+        await delete_origin_files(session, file_id, file_record.storage_type)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -551,11 +549,11 @@ async def get_download_file_metadata(
     流程:
     1. 权限验证(用户是否拥有该文件)
     2. 下载次数限制检查(非管理员用户)
-    3. 准备下载文件(处理实验文件ZIP打包)
+    3. 准备下载文件(处理 origin 文件ZIP打包)
     4. 更新下载统计(文件下载次数、用户下载次数)
-    
-    实验文件处理:
-    - 如果原始文件不存在,但实验文件(imzML、ibd)存在
+
+    origin 文件处理:
+    - 如果原始文件不存在,但 origin 文件(imzML、ibd)存在
     - 动态创建 ZIP 包,包含 imzML 和 ibd 文件
     - ZIP 包保存在临时目录,供下载使用
     
