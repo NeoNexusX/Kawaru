@@ -418,6 +418,34 @@ async def get_file_record_by_id(
 
     return file_record
 
+async def get_file_by_filename(
+    filename: str,
+    async_session: AsyncSession,
+    load_parts: bool = False,
+) -> FileInDB:
+    """
+    根据文件名查询文件记录
+
+    可选参数:
+    load_parts: bool 是否同时加载分片信息
+
+    Returns:
+        文件记录对象,不存在则返回 None
+    Raises:
+        file_not_found_exception: 文件记录不存在
+    """
+    statement = select(FileInDB).where(FileInDB.filename == filename)
+
+    if load_parts:
+        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found filename=%s", filename)
+        raise file_not_found_exception
+
+    return file_record
+
 
 async def check_oss_callback_signature(
         authorization: str,

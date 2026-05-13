@@ -128,7 +128,7 @@ async def process_imzml_experiment_background_task(
                 # 文件越大，计算时间越长，超时时间需要根据实际情况调整
                 # 根据实验结果，2GB文件至少有32秒的延迟，这里根据文件大小动态调整超时时间
                 zip_size_gb = source_file.size / (1024 * 1024 * 1024) # 转换为GB
-                unzip_timeout = max(int(zip_size_gb * 20), 7) # 20秒/GB
+                unzip_timeout = max(int(zip_size_gb * 40), 7) # 40秒/GB
                 instance_id = await get_fc_invoke_instance_id_by_request_id(fc_request_id, timeout=unzip_timeout)
                 if instance_id is None:
                     raise RuntimeError("get fc invoke instance id failed")
