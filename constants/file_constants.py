@@ -20,6 +20,8 @@ LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
 OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
 OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
+OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
+
 
 # 文件大小限制
 MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB

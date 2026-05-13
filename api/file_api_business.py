@@ -36,7 +36,7 @@ from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
-    OSS_ZIP_STORAGE_ROOT,
+    OSS_PACKUP_ZIP_STORAGE_ROOT,
     FC_PACKUP_TIMEOUT_SECONDS,
 )
 from exceptions import (
@@ -330,7 +330,7 @@ async def prepare_download_file(
             elif storage_type == "oss":
                 zip_path, zip_download_url, fc_request_id = await packup_oss_file(
                     packup_folder = origin_path, # type: ignore # 理论上origin_path存在，直接用即可
-                    zip_file_path = f"{OSS_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
+                    zip_file_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
                     timeout_seconds = FC_PACKUP_TIMEOUT_SECONDS,
                 )
                 if zip_path is None or zip_download_url is None:
