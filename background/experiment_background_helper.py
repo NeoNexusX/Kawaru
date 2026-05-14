@@ -47,7 +47,7 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeo
         request_id = res.headers["X-FC-Request-ID"]
 
         # 返回签名后的下载URL
-        if res.status_code != status.HTTP_302_FOUND:
+        if res.status_code != status.HTTP_200_OK:
             logger.error(f"packup_oss_file failed, status_code={res.status_code}, content={res.text}")
             return (None, None, request_id)
 

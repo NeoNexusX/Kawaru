@@ -102,6 +102,7 @@ class FilePublic(FileBase):
     oss_sts_token: OssStsToken | None = Field(default=None)
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
+    oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
 
 
 class FileListResponse(SQLModel):

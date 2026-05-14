@@ -35,7 +35,7 @@ from api.file_api_helper import (
 from api.experiment_api_business import delete_origin_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items
-from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME
+from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     file_persist_failed_exception,
@@ -310,6 +310,7 @@ async def upload_simple_file(
     oss_path = None
     oss_bucket = None
     oss_sts_token = None
+    oss_region_id = None
 
     try:
         # 只有全局配置允许local存储时，才创建本地存储目录
@@ -363,12 +364,13 @@ async def upload_simple_file(
             # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
             oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
             oss_bucket = OSS_BUCKET_NAME
+            oss_region_id = OSS_REGION_ID
             oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
             if not oss_sts_token or not oss_path:
                 raise internal_server_error_exception
 
     except Exception as exc:
-        logger.error(f"simple upload failed user={current_user.id} filename={file.filename if file else filename} error={exc}")
+        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}")
         await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空
         raise file_persist_failed_exception from exc
 
@@ -382,6 +384,7 @@ async def upload_simple_file(
         pre_record.oss_path = oss_path
         pre_record.oss_sts_token = oss_sts_token
         pre_record.oss_bucket = oss_bucket
+        pre_record.oss_region_id = oss_region_id
 
     return pre_record # type: ignore
 

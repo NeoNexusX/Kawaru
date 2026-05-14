@@ -126,11 +126,11 @@ async def oss_upload_callback(
         async_session.add(origin_record)
 
         # 标记OSS文件为持久化
-        is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true"})
-        is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true"})
-        is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true"})
+        is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
+        is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
+        is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
 
-        if not is_file_tagged or not is_imzml_tagged or not is_ibd_tagged:
+        if not all([is_file_tagged, is_imzml_tagged, is_ibd_tagged]):
             logger.error("oss tag file persistent failed, filename=%s", filename)
             raise internal_server_error_exception
 

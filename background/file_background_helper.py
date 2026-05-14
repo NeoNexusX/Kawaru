@@ -284,7 +284,8 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     }
 
     # 构建role_session_name
-    role_session_name = f"upload-{str(Path(file_path).stem)}-{datetime.now().timestamp()}"
+    code = hashlib.md5(str(Path(file_path).stem).encode()).hexdigest()
+    role_session_name = f"upload-{code}-{datetime.now().timestamp()}"
 
     # 调用STS API获取上传STS Token
     result = _get_oss_sts_token(policy, role_session_name)
@@ -327,7 +328,8 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
     }
 
     # 构建role_session_name
-    role_session_name = f"packup-{str(Path(packup_folder).stem)}-{datetime.now().timestamp()}"
+    code = hashlib.md5(str(Path(packup_folder).stem).encode()).hexdigest()
+    role_session_name = f"packup-{code}-{datetime.now().timestamp()}"
 
     # 调用STS API获取打包STS Token
     result = _get_oss_sts_token(policy, role_session_name)
@@ -399,7 +401,9 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
             keys = []
             err_count = 0
+            is_folder = False
             if file_path.endswith('/'): # 针对文件夹进行处理
+                is_folder = True
                 req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
                 res = await oss_client.list_objects_v2(req)
                  # 提取所有匹配对象的 key
@@ -415,6 +419,14 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
                     err_count += 1
                     continue
                 logger.info(f"oss file {key} deleted")
+
+            if is_folder:
+                req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+                res = await oss_client.delete_object(req)
+                if res.status_code != status.HTTP_204_NO_CONTENT:
+                    logger.error(f"oss folder {file_path} deleted failed")
+                    err_count += 1
+
             if err_count > 0:
                 return False
 
