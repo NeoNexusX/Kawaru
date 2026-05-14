@@ -8,8 +8,8 @@ storage_config = config.storage
 
 # 存储路径常量
 STORAGE_ROOT = Path(storage_config.root)
-EXPERIMENT_STORAGE_ROOT = STORAGE_ROOT / "experiments"
-OSS_EXPERIMENT_STORAGE_ROOT = config.oss.oss_experiment_storage_root
+ORIGIN_STORAGE_ROOT = STORAGE_ROOT / "origin"
+OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 
 # 失败实验清理策略
 FAILED_EXPERIMENT_TTL_MINUTES = int(getattr(storage_config, "failed_experiment_ttl_minutes", 30))
@@ -21,9 +21,9 @@ SOURCE_FILE_PATH_CLEARED = "<SOURCE_PATH_CLEARED_AFTER_PROCESS>"
 
 __all__ = [
     "STORAGE_ROOT",
-    "EXPERIMENT_STORAGE_ROOT",
+    "ORIGIN_STORAGE_ROOT",
     "FAILED_EXPERIMENT_TTL_MINUTES",
     "CLEANUP_FAILED_EXPERIMENTS_INTERVAL_MINUTES",
     "SOURCE_FILE_PATH_CLEARED",
-    "OSS_EXPERIMENT_STORAGE_ROOT"
+    "OSS_ORIGIN_STORAGE_ROOT",
 ]

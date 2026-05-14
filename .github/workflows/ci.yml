@@ -3,7 +3,7 @@ name: CI
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-on:
+on: #push和pr都会触发
   push:
     branches: [test]
   pull_request:
@@ -49,7 +49,7 @@ jobs:
       SECRET_KEY: ci-secret-key
       LOG_DIR: kawaru_logs
       LOG_LEVEL: info
-      CONFIG_PATH: ${{ github.workspace }}/.github/ci/config.yaml
+      CONFIG_PATH: ${{ github.workspace }}/.github/ci/config.yaml #从该路径去读取文件
       REGION_PATH: ${{ github.workspace }}/external/countries-states-cities-database/json/countries.json
 
     steps:
@@ -66,10 +66,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Create CI config
+      - name: Create CI config #会临时生成comfig.yaml文件
         run: |
           mkdir -p .github/ci
-          cat > .github/ci/config.yaml <<'EOF'
+          cat > .github/ci/config.yaml <<'EOF' 
           server:
             name: Kawaru
             port: 8000
@@ -191,22 +191,15 @@ jobs:
             max_solvent_length: 128
           EOF
 
-      - name: Install dependencies
+      - name: Install dependencies #TODO 将日志密码提取出来，添加密码环境变量进去
         run: uv sync --frozen
 
       - name: Sanity check imports
         run: uv run python -m compileall main.py api background boot celery_runtime constants database models routers storage_backend tests
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: false
-          load: true
-          tags: kawaru:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        #1 先启动 FastAPI 后端
+        #2 需要判活或者等待
+        #3 从 ./Kawaru/api.log 提取初始管理员密码
+        #4 生成.env.pytest（密码使用刚刚提取的，用户名固定）
+      - name: Run file tests 
+        run: uv run pytest tests/test_file.py -m "file" -q

@@ -66,10 +66,18 @@ celery:
   worker_pool: "prefork"
   large_file_poll_time: 1000
 
+compute_celery:
+  enable_embedded_celery: true
+  worker_concurrency: 4
+  worker_log_level: "INFO"
+  worker_log_file: "kawaru_logs/celery_compute.log"
+  worker_disable_rate_limits: True
+  worker_pool: "prefork"
+
 storage:
   root: storage
   local_root: local
-  max_file_size_gb: 2000000000
+  max_file_size_gb: 200
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
   allowed_storage_types: ["local"]
@@ -93,7 +101,8 @@ oss:
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_experiment_storage_root: experiments/
+  oss_packup_zip_storage_root: packup/
+  oss_origin_storage_root: origin/
   oss_default_timeout_seconds: 20
   fc_logstore_name: default-logs
   fc_log_project_name: serverless-cn-shenzhen-9afc325b-4ea0-5018-9990-ebeba007d53e

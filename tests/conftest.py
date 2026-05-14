@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Limits, Timeout
 
 from tools.logger import get_logger
 from boot.config import get_config
@@ -19,9 +19,20 @@ load_dotenv(project_env_path)
 load_dotenv(pytest_env_path)
 
 BASE_URL = os.getenv("BASE_URL")
+CALLBACK_URL = os.getenv("CALLBACK_URL")
 UPLOAD_FILE_DIR = os.getenv("UPLOAD_FILE_DIR")
 TEST_USER = os.getenv("TEST_USER")
 TEST_PWD = os.getenv("TEST_PWD")
+
+# 并发测试配置
+MAX_CONNECTIONS = 1200
+MAX_KEEPALIVE_CONNECTIONS = 200
+REQUEST_TIMEOUT = 60.0  # 增加超时时间
+BASE_URL = os.getenv("BASE_URL")
+
+if not BASE_URL:
+    pytest.fail("Environment variable BASE_URL is required")
+
 
 # 初始化日志系统
 def _init_logging(log_level: Optional[str] = None, log_dir: Optional[str] = None) -> None:
@@ -58,6 +69,26 @@ async def _async_client():
     if not BASE_URL:
         pytest.fail("Environment variable BASE_URL is required")
     async with AsyncClient(base_url=BASE_URL, timeout=60) as client:
+        yield client
+
+
+@pytest.fixture(scope="session", name="async_client_pool")
+async def _async_client_pool():
+    limits = Limits(
+        max_connections=MAX_CONNECTIONS,
+        max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
+        keepalive_expiry=60.0
+    )
+    assert BASE_URL is not None
+    async with AsyncClient(
+        base_url=BASE_URL,
+        limits=limits,
+        timeout=Timeout(REQUEST_TIMEOUT, connect=20.0),
+        follow_redirects=True,
+        max_redirects=3,
+        http2=True,
+        trust_env=False
+    ) as client:
         yield client
 
 

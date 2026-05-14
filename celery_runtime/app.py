@@ -14,6 +14,7 @@ CELERY_MODULE_IMPORTS = [
     "background.file_background_helper",
     "background.experiment_background",
     "background.experiment_background_helper",
+    "background.compute_background",
     "storage_backend.oss_log_helper",
 ]
 
@@ -52,6 +53,10 @@ def create_celery_app(
         "beat_scheduler": "redbeat.schedulers.RedBeatScheduler",
         "worker_pool_restarts": False,
         "task_async_backend": "asyncio",
+        "task_default_queue": "default",
+        "task_routes": {
+            "background.compute_background.*": {"queue": "compute"},
+        },
         "timezone": "UTC",
         "enable_utc": True,
         "worker_disable_rate_limits": cfg.celery.worker_disable_rate_limits,

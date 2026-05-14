@@ -1,5 +1,4 @@
 import os
-import asyncio
 from httpx import AsyncClient
 
 from fastapi import status
@@ -15,30 +14,18 @@ celery_app = get_celery_app()
 
 
 @celery_app.task()
-async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str) -> tuple[str | None, str | None, str | None]:
+async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeout_seconds: int) -> tuple[str | None, str | None, str | None]:
     """
     打包 OSS 中的实验文件夹
     """
     logger.info(f"start to packup_oss_file, experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
 
-    async with AsyncClient() as client:
-        # 获取STS Token 并构造credentials
-        sts_token = await OssStorage.get_packup_sts_token(experiment_folder, dest_zip_path)
-        if not sts_token:
-            logger.error(f"get_packup_sts_token failed, experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
-            return (None, None, None)
-
-        credentials = {}
-        credentials["accessKeyId"] = sts_token.AccessKeyId
-        credentials["accessKeySecret"] = sts_token.AccessKeySecret
-        credentials["securityToken"] = sts_token.SecurityToken
-
+    async with AsyncClient(timeout=timeout_seconds) as client:
         # 构造event json
         event = {
             "bucket": OSS_BUCKET_NAME,
             "source-dir": experiment_folder,
             "dest-file": dest_zip_path,
-            "credentials": credentials,
         }
 
         # 获取FC打包函数的token和url配置

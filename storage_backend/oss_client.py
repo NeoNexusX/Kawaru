@@ -90,8 +90,8 @@ def check_oss_config(config: OSSSettings):
         raise ValueError("oss region_id is empty")
     if config.oss_zip_storage_root is None:
         raise ValueError("oss oss_zip_storage_root is empty")
-    if config.oss_experiment_storage_root is None:
-        raise ValueError("oss oss_experiment_storage_root is empty")
+    if config.oss_origin_storage_root is None:
+        raise ValueError("oss oss_origin_storage_root is empty")
     if config.oss_upload_sts_token_expire_minutes is None:
         raise ValueError("oss oss_upload_sts_token_expire_minutes is empty")
     if config.oss_download_sts_token_expire_minutes is None:

@@ -19,6 +19,7 @@
 import os
 import io
 import json
+import time
 import asyncio
 from pathlib import Path
 import math
@@ -36,17 +37,17 @@ from api.file_api_helper import get_file_record_by_id
 from background.file_background import cleanup_old_download_zips
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine
-from tools.cal_hash import compute_file_md5
+from tools.cal_hash import compute_file_md5, compute_imzml_md5
 from .conftest import logger
 
 # ------------------------------------------------------------------ #
 # 测试文件参数，按需修改
 # ------------------------------------------------------------------ #
-TEST_FILENAME = "kawaru_functest"
+TEST_FILENAME = "test_oss_100MB_2"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
-TEST_IMZML_SIZE = 10240 * 1024  # 10 MB，调整此值控制 imzML 大小
-TEST_IBD_SIZE = 10240 * 1024  # 10 MB，调整此值控制 ibd 大小
+TEST_IMZML_SIZE = 100 * 1024 * 1024  # 512 MB，调整此值控制 imzML 大小
+TEST_IBD_SIZE =  100 * 1024 * 1024  # 512 MB，调整此值控制 ibd 大小
 
 
 def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = TEST_IBD_SIZE) -> Path:
@@ -105,8 +106,8 @@ def _build_preflight_payload(
         "size": size,
         "file_verify_code": file_verify_code,
         "experiment_type": "imzML",
-        "organism": "",
-        "organism_part": "",
+        "organism": "org3",
+        "organism_part": "part4",
         "condition": "",
         "sample_growth_conditions": "",
         "sample_stabilization": "",
@@ -114,13 +115,14 @@ def _build_preflight_payload(
         "maldi_matrix": "",
         "maldi_matrix_application": "",
         "solvent": "",
-        "is_public": False,
+        "is_public": True,
         "polarity": "",
         "ionisation_source": "",
         "analyzer": "",
         "pixel_size_horizontal": 0,
         "pixel_size_vertical": 0,
         "resolving_power": 0,
+        "mz": 0,
         "total_parts": total_parts,
     }
 
@@ -133,7 +135,7 @@ class TestFile:
     _chunked_uploaded_content: bytes | None = None
 
     _uploaded_file_id: int | None = None #oss的id
-    
+
     @staticmethod
     async def _fetch_file_record(file_id: int):
         """读取数据库中的文件记录，便于断言 path/size 变化"""
@@ -206,7 +208,7 @@ class TestFile:
 
         # 4. cleanup 后再次下载，验证重建 zip 的内容长度与真实文件大小一致
         cleaned = await cleanup_old_download_zips.run(retention_minutes=0, batch_size=1000) # type: ignore
-        await asyncio.sleep(3) # 延迟3秒，等待
+        await asyncio.sleep(10) # 延迟10秒，等待
         assert cleaned >= 1
 
         record = await self._fetch_file_record(file_id)
@@ -323,10 +325,11 @@ class TestFile:
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
         zip_path = _make_test_zip_to_local()
-        file_verify_code, size = await compute_file_md5(zip_path) # type: ignore
+        file_verify_code, size = await compute_imzml_md5(zip_path) # type: ignore
         logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
 
         # 1. preflight
+        start_time_seconds = time.perf_counter()
         rs = await client.post(
             "/files/preflight",
             headers=auth,
@@ -342,13 +345,11 @@ class TestFile:
         logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
 
         # 2. get upload oss_sts_token and oss_path
-        with open(zip_path, "rb") as f:
-            rs = await client.post(
-                "/files/upload",
-                headers=auth,
-                data={"pre_file_id": str(pre_file_id)},
-                files={"file": (TEST_FILENAME, f, "application/zip")},
-            )
+        rs = await client.post(
+            "/files/upload",
+            headers=auth,
+            data={"pre_file_id": str(pre_file_id), "filename": TEST_FILENAME},
+        )
         assert rs.status_code == 200, rs.text
         file_id = rs.json()["file_id"]
         oss_sts_token = rs.json()["oss_sts_token"]
@@ -370,6 +371,14 @@ class TestFile:
         # 3.2 create oss client and upload file
         oss_client = oss.Client(cfg)
 
+        # 3.3 获取当前登录用户名
+        rs = await client.get(
+            "/user",
+            headers=auth,
+        )
+        assert rs.status_code == 200, rs.text
+        username = rs.json()["username"]
+
         def _put_obect_from_path() -> oss.UploadResult:
             uploader = oss_client.uploader(enable_checkpoint=True, checkpoint_dir=str(zip_path.parent / "checkpoint"))
             result = uploader.upload_file(PutObjectRequest(
@@ -382,11 +391,54 @@ class TestFile:
         result = await loop.run_in_executor(None, _put_obect_from_path)
         assert result.status_code == 200, result.status
         fc_request_id = result.headers.get("x-oss-request-id")
+        end_time_seconds = time.perf_counter()
+        upload_time_seconds = round(end_time_seconds - start_time_seconds, 2)
 
-        # 4. trigger oss upload complete
-        # 测试端直接调用该接口仅供测试，实际上传时由aliyun自动调用
+        TestFile._uploaded_file_id = file_id
+        logger.info((f"test_upload_to_oss passed: upload_time_seconds={upload_time_seconds} username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
+                     f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
 
-        # 4.1 获取当前登录用户名
+    @pytest.mark.file
+    async def test_upload_to_local(self, admin_login: Tuple[AsyncClient, str, str]):
+        """测试上传到本地存储的完整流程，验证文件成功上传并可访问"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        zip_path = _make_test_zip_to_local()
+        file_verify_code, size = await compute_file_md5(zip_path) # type: ignore
+        logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
+
+        # 1. preflight
+        start_time_seconds = time.perf_counter()
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json=_build_preflight_payload(
+                size=size,
+                file_verify_code=file_verify_code,
+                total_parts=1,
+                storage_type="local",
+            ),
+        )
+        assert rs.status_code == 200, rs.text
+        pre_file_id = rs.json()["file_id"]
+        logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
+
+        # 2. upload
+        with open(zip_path, "rb") as f:
+            rs = await client.post(
+                "/files/upload_simple",
+                headers=auth,
+                data={"pre_file_id": str(pre_file_id)},
+                files={"file": (TEST_FILENAME, f, "application/zip")},
+            )
+        assert rs.status_code == 200, rs.text
+        end_time_seconds = time.perf_counter()
+        upload_time_seconds = round(end_time_seconds - start_time_seconds, 2)
+
+        file_id = rs.json()["file_id"]
+
+        # 3. 获取当前登录用户名
         rs = await client.get(
             "/user",
             headers=auth,
@@ -394,22 +446,9 @@ class TestFile:
         assert rs.status_code == 200, rs.text
         username = rs.json()["username"]
 
-        rs = await client.post(
-            "/files/oss_upload_complete",
-            headers=auth,
-            params={
-                "file_id": str(file_id),
-                "current_username": username,
-                "fc_request_id": fc_request_id,
-            },
-        )
-        assert rs.status_code == 200, rs.text
-
-        await asyncio.sleep(10) # 延迟10秒，等待实验处理完成
-
         TestFile._uploaded_file_id = file_id
-        logger.info((f"test_upload_to_oss passed: username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
-                     f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
+        logger.info((f"test_upload_to_local passed: upload_time_seconds={upload_time_seconds} username={username} file_id={file_id} size={size}\n"
+                     f"real-md5={file_verify_code}"))
 
 
     # ------------------------------------------------------------------ #
@@ -417,7 +456,7 @@ class TestFile:
     # ------------------------------------------------------------------ #
 
     @pytest.mark.file
-    @pytest.mark.oss
+    # @pytest.mark.oss
     @pytest.mark.order("last")
     async def test_cleanup_uploaded_file(self, admin_login: Tuple[AsyncClient, str, str]):
         """清理测试产生的文件，确保不污染数据库"""

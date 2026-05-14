@@ -9,13 +9,14 @@ from background.file_background_helper import (
     get_oss_file_size_task,
     delete_oss_file_task,
     get_oss_packup_sts_token_task,
+    tag_oss_file_task,
 )
 
 from models.auth import OssStsToken
 from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
                                       OSS_ZIP_STORAGE_ROOT, OSS_DEFAULT_TIMEOUT_SECONDS,
                                      )
-from constants.experiment_constants import EXPERIMENT_STORAGE_ROOT, OSS_EXPERIMENT_STORAGE_ROOT
+from constants.experiment_constants import ORIGIN_STORAGE_ROOT, OSS_ORIGIN_STORAGE_ROOT
 
 from tools.logger import get_logger
 
@@ -50,15 +51,15 @@ class LocalStorage:
         return LOCAL_STORAGE_ROOT / file_path
 
     @staticmethod
-    def create_experiment_directories(experiment_id: int) -> Path:
+    def create_origin_directories(origin_id: int) -> Path:
         """
-        创建并返回 实验目录
+        创建并返回 origin目录
         Return:
             processed_dir Path对象
         Raise:
             None
         """
-        processed_dir = EXPERIMENT_STORAGE_ROOT / f"exp_{experiment_id}"
+        processed_dir = ORIGIN_STORAGE_ROOT / f"org_{origin_id}"
         processed_dir.mkdir(parents=True, exist_ok=True)
 
         return processed_dir
@@ -126,18 +127,18 @@ class OssStorage:
 
         文件直接保存在 OSS 存储桶的 OSS_ZIP_STORAGE_ROOT 下
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}" # type: ignore
 
     @staticmethod
-    def create_experiment_directories(experiment_id: int) -> str:
+    def create_origin_directories(origin_id: int) -> str:
         """
-        创建并返回 实验目录
+        创建并返回 origin目录
         Return:
             str路径
         Raise:
             None
         """
-        processed_dir = f"{OSS_EXPERIMENT_STORAGE_ROOT.rstrip('/')}/exp_{experiment_id}"
+        processed_dir = f"{OSS_ORIGIN_STORAGE_ROOT.rstrip('/')}/org_{origin_id}" # type: ignore
 
         return processed_dir
 
@@ -238,3 +239,24 @@ class OssStorage:
             logger.error(f"failed to delete oss file due to server timeout: {file_path}")
             return False
         return is_deleted
+
+
+    @staticmethod
+    async def tag_oss_file(file_path: str, tag: dict[str, str]) -> bool:
+        """
+        给OSS文件打标签
+
+        :param file_path: OSS文件路径（如"folder/file.zip")
+        :param tag: 标签字典（如{"key1": "value1", "key2": "value2"})
+
+        :return: 是否成功，否则返回False
+        """
+        if not file_path:
+            logger.error("empty path for tagging")
+            return False
+        res = tag_oss_file_task.delay(file_path, tag) # type: ignore
+        is_tagged = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        if is_tagged is None:
+            logger.error(f"failed to tag oss file due to server timeout: {file_path}")
+            return False
+        return is_tagged

@@ -64,6 +64,8 @@ class FileBase(SQLModel):
                                        sa_column=Column(Float, nullable=False, default=0.0),)
     resolving_power: float = Field(default=0.0,description="分辨率 (Resolving Power)，如 100000（无单位，或指 FWHM）",
                                    sa_column=Column(Float, nullable=False, default=0.0),)
+    mz: float = Field(default=0.0,description="质荷比 (m/z, Mass-to-Charge Ratio)",
+                      sa_column=Column(Float, nullable=False, default=0.0),)
 
 class FileCreate(FileBase):
     """创建文件时的请求模型(普通上传和分片上传)"""
