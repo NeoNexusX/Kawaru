@@ -115,9 +115,13 @@ async def oss_upload_callback(
             logger.error("act hash is empty, filename=%s", filename)
             raise hash_size_validation_failed_exception
 
+        # 更新文件大小
+        source_file.size = await OssStorage.get_file_size(file_path)
+
         # 更新文件路径和实验路径
         source_file.path = file_path
         source_file.uploaded_at = utc_time()
+        origin_record.status = ExperimentStatus.COMPLETED
         origin_record.imzml_path = imzml_path
         origin_record.ibd_path = ibd_path
         origin_record.imzml_size = imzml_size
