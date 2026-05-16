@@ -56,13 +56,9 @@ app.add_middleware(
 
 app.include_router(user_router)
 app.include_router(file_router)
-<<<<<<< HEAD
 app.include_router(callback_router)
 app.include_router(originexperiment_router)
 app.include_router(processing_router)
-=======
-app.include_router(originexperiment_router)
->>>>>>> 0a772829eb3866bba9cfcbd8bd9c39c807668db2
 
 # update ：uvicorn run config
 if __name__ == "__main__":
