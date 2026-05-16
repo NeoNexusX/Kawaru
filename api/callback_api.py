@@ -6,7 +6,7 @@ from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
-from models.file_models import FileInDB, FilePublic
+from models.file_models import FileInDB, FilePublic, FileStatus
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
 from models.callback_models import OssUploadCallback
@@ -81,6 +81,10 @@ async def oss_upload_callback(
             logger.error("file record storage_type not match to oss, filename=%s, storage_type=%s", filename, source_file.storage_type)
             raise storage_type_not_allowed_exception
 
+        # 标记文件进入处理状态
+        source_file.status = FileStatus.PROCESSING
+        async_session.add(source_file)
+
         # 创建实验记录
         origin_record = await create_origin_record(
             source_file_id=source_file.file_id, # type: ignore
@@ -121,6 +125,7 @@ async def oss_upload_callback(
         # 更新文件路径和实验路径
         source_file.path = file_path
         source_file.uploaded_at = utc_time()
+        source_file.status = FileStatus.COMPLETED
         origin_record.status = ExperimentStatus.COMPLETED
         origin_record.imzml_path = imzml_path
         origin_record.ibd_path = ibd_path
@@ -146,7 +151,8 @@ async def oss_upload_callback(
         return source_file
 
     except (BadZipFile, FileNotFoundError) as e:
-        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除
+        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除 # type: ignore
+        source_file.status = FileStatus.FAILED # type: ignore
         async_session.add(source_file)
         await mark_origin(
             async_session = async_session,
@@ -159,7 +165,7 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}")
+        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}") # type: ignore
         raise invalid_zip_file_exception from e
 
     except Exception as e:

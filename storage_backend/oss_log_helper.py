@@ -194,11 +194,11 @@ async def fetch_fc_logs_async(query: str) -> list[QueriedLog] | None:
         """
         # 获取oss日志客户端
         client = get_oss_log_client()
-        res = None
+        res = None # type: ignore
 
         # 执行查询
         try:
-            res = client.get_log_all_v2(
+            res = client.get_log_all_v2( # type: ignore
                 project = FC_LOG_PROJECT_NAME,
                 logstore = FC_LOGSTORE_NAME,
                 from_time = ( datetime.now() - timedelta(days=1)).timestamp(), # 查询最近一天的日志

@@ -8,6 +8,7 @@ storage_config = config.storage
 
 # 存储路径常量
 STORAGE_ROOT = Path(storage_config.root)
+PROCESSED_STORAGE_ROOT = STORAGE_ROOT / "processed"
 ORIGIN_STORAGE_ROOT = STORAGE_ROOT / "origin"
 OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 

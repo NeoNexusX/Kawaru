@@ -21,7 +21,7 @@ from api.experiment_api_business import (
 from api.experiment_api_helper import validate_imzml_files
 from api.file_api_helper import get_file_record_by_id
 
-from models.file_models import FileInDB
+from models.file_models import FileInDB, FileStatus
 from models.user_models import UserInDB
 from models.experiment_models import ExperimentStatus
 
@@ -166,6 +166,10 @@ async def process_imzml_experiment_background_task(
             # 更新 origin 记录
             await mark_origin(async_session,origin_record,storage_type,final_imzml_path,final_ibd_path)
 
+            # 标记源文件为已完成
+            source_file.status = FileStatus.COMPLETED  # type: ignore
+            async_session.add(source_file)
+
             # 保留原始 ZIP 文件与数据库 path 字段，由定时任务统一清理
             await async_session.commit()
             await async_session.refresh(origin_record)
@@ -180,6 +184,9 @@ async def process_imzml_experiment_background_task(
                                     storage_type=storage_type, # type:ignore
                                     error_message=str(e),
                                     status=ExperimentStatus.FAILED)
+            if source_file:
+                source_file.status = FileStatus.FAILED  # type: ignore
+                async_session.add(source_file)
             await async_session.commit()
             await async_session.refresh(origin_record) # type: ignore
             logger.error(f"invalid file ,exp id & file id is {origin_record.id} & {source_file_id}\nerror={e}") #type:ignore

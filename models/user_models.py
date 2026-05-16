@@ -44,7 +44,11 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0), description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
-    max_file_size: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, default=0), description="用户最大可处理文件总大小（字节）")
+    processed_file_size: int = Field(
+        default=0,
+        sa_column=Column("max_file_size", BigInteger, nullable=False, default=0),
+        description="用户已处理文件总大小（字节）"
+    )
 
 
 class UserCreate(UserBase):
@@ -85,3 +89,16 @@ class UserUpdate(BaseModel):
     region: str | None = Field(default=None, max_length=user_config.max_region_length)
     orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)
+
+
+class UserQuotaPublic(SQLModel):
+    """用户配额统一返回模型"""
+    # 上传文件相关
+    max_file_size_gb: int = Field(description="单文件上传大小限额（GB）")
+    total_uploaded_size_bytes: int = Field(description="用户已上传文件总大小（字节）")
+    file_count: int = Field(description="用户文件数量")
+    max_files_per_user: int = Field(description="最大文件数量")
+
+    # 处理相关
+    max_processing_size_gb: int = Field(description="处理累计限额（GB）")
+    total_processed_size_bytes: int = Field(description="用户已处理总大小（字节）")

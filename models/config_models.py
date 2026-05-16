@@ -125,6 +125,7 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
+    max_processing_size_gb: int
 
 
 class SampleInfoSettings(BaseModel):

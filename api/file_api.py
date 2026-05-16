@@ -54,6 +54,7 @@ from models.file_models import (
     PartCreate,
     PartInDB,
     PartPublic,
+    FileStatus,
 )
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
@@ -182,12 +183,12 @@ async def upload_file_part(
         is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
         if is_merged:
             await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
-
-        await async_session.commit()
-        await async_session.refresh(current_user)
-        await async_session.refresh(file_record)
+            file_record.status = FileStatus.PROCESSING
         if not is_merged:
             await async_session.refresh(part_record)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+        await async_session.refresh(current_user)
         logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
 
     except Exception as exc:
@@ -214,6 +215,7 @@ async def validate_and_merge_parts(
     is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
     if is_merged:
         await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
+        file_record.status = FileStatus.PROCESSING
 
     await async_session.commit()
 
@@ -370,13 +372,14 @@ async def upload_simple_file(
                 raise internal_server_error_exception
 
     except Exception as exc:
-        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}")
+        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}") # type: ignore
         await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空
         raise file_persist_failed_exception from exc
 
     # 如果是本地存储，在此处触发实验文件提取任务
     if storage_type == "local":
         await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
+        pre_record.status = FileStatus.PROCESSING
 
     # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_path和oss_sts_token（仅供返回前端）
     if oss_path and oss_sts_token:

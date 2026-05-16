@@ -42,6 +42,9 @@ MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
 MAX_FILES_PER_USER = int(storage_config.max_files_per_user)
 MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
 
+# 用户处理配额
+MAX_PROCESSING_SIZE_PER_USER = int(config.user.max_processing_size_gb) * BYTES_IN_GB
+
 # 下载次数限制
 MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
 
@@ -81,6 +84,7 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "MAX_FILENAME_LENGTH",
     "MAX_FILES_PER_USER",
     "MAX_TOTAL_STORAGE_PER_USER",
+    "MAX_PROCESSING_SIZE_PER_USER",
     "MAX_DOWNLOADS_PER_USER",
     "PREFLIGHT_TTL_MINUTES",
     "CLEANUP_PREFLIGHTS_INTERVAL_MINUTES",

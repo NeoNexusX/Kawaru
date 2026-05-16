@@ -141,6 +141,7 @@ user:
   max_region_length: 128
   max_orcid_length: 128
   max_homepage_length: 128
+  max_processing_size_gb: 200
 
 sample_info:
   max_experiment_name_length: 128
