@@ -371,6 +371,12 @@ async def upload_simple_file(
             if not oss_sts_token or not oss_path:
                 raise internal_server_error_exception
 
+            # 标记文件进入上传中状态
+            pre_record.status = FileStatus.UPLOADING
+            async_session.add(pre_record)
+            await async_session.commit()
+            await async_session.refresh(pre_record)
+
     except Exception as exc:
         logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}") # type: ignore
         await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空

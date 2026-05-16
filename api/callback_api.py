@@ -81,10 +81,6 @@ async def oss_upload_callback(
             logger.error("file record storage_type not match to oss, filename=%s, storage_type=%s", filename, source_file.storage_type)
             raise storage_type_not_allowed_exception
 
-        # 标记文件进入处理状态
-        source_file.status = FileStatus.PROCESSING
-        async_session.add(source_file)
-
         # 创建实验记录
         origin_record = await create_origin_record(
             source_file_id=source_file.file_id, # type: ignore
