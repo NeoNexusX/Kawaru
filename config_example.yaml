@@ -103,12 +103,15 @@ oss:
   oss_zip_storage_root: data/
   oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
+  oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
   fc_logstore_name: default-logs
   fc_log_project_name: serverless-cn-hangzhou-aa660bbc-2121-50eb-8de1-2d1d263fecc2
   fc_unzip_timeout_seconds: 40
   fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
   fc_packup_timeout_seconds: 200
+  fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
+  fc_algorithm_timeout_seconds: 60
 
 admin_info:
   username: kawaru

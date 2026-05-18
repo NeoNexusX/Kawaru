@@ -66,6 +66,8 @@ FC_LOG_PROJECT_NAME = config.oss.fc_log_project_name
 FC_UNZIP_TIMEOUT_SECONDS = config.oss.fc_unzip_timeout_seconds
 FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
 FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
+FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
+FC_ALGORITHM_TIMEOUT_SECONDS = config.oss.fc_algorithm_timeout_seconds
 
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
@@ -95,6 +97,8 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "FC_UNZIP_TIMEOUT_SECONDS",
     "FC_PACKUP_ENDPOINT",
     "FC_PACKUP_TIMEOUT_SECONDS",
+    "FC_ALGORITHM_ENDPOINT",
+    "FC_ALGORITHM_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "FC_LOGSTORE_NAME",
     "FC_LOG_PROJECT_NAME",

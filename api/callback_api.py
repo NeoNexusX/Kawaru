@@ -2,20 +2,25 @@ from typing import Annotated
 from fastapi import Depends
 from zipfile import BadZipFile
 
+from sqlmodel import select
+
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
+from api.processing_api_business import get_process_run_by_id, mark_process_run
 from models.file_models import FileInDB, FilePublic, FileStatus
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
-from models.callback_models import OssUploadCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback
+from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
+from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
 )
-from exceptions.experiment_exceptions import invalid_zip_file_exception
+from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
@@ -171,13 +176,88 @@ async def oss_upload_callback(
         # 删除原始zip，清理记录的file的path信息
         if source_file_id:
             async with AsyncSession(get_async_engine()) as async_session:
-                await delete_source_file_and_clear_path(async_session, source_file_id)
+                await delete_source_file_and_clear_path(async_session, source_file_id) # type: ignore
                 await async_session.commit()
 
         logger.error("oss upload callback error, filename=%s, error=%s", filename, e)
         raise internal_server_error_exception from e
 
 
+async def algorithm_callback(
+    callback_info: AlgorithmCallback,
+    async_session: AsyncSessionDep,
+) -> ExperimentProcessRunInDB:
+    """
+    FC 算法处理完成回调
+
+    根据处理结果更新 process_run 状态和用户配额。
+
+    :param callback_info: 算法回调信息
+    :param async_session: 异步会话依赖
+    :return: ExperimentProcessRunInDB
+    """
+    run_id = callback_info.run_id
+    is_success = callback_info.is_success
+    out_path = callback_info.out_path
+    output_size = callback_info.output_size
+    error_type = callback_info.error_type
+    error_message = callback_info.error_message
+
+    try:
+        run_record = await get_process_run_by_id(async_session, run_id)
+        if not run_record:
+            logger.error("process run not found for algorithm callback run_id=%s", run_id)
+            raise invalid_process_request_exception
+
+        # 处理失败
+        if not is_success:
+            await mark_process_run(
+                async_session, run_record,
+                status=ProcessingStatus.FAILED,
+                error_message=error_message or error_type or "FC algorithm processing failed",
+            )
+            await async_session.commit()
+            await async_session.refresh(run_record)
+            logger.info("algorithm callback failed run_id=%s error=%s", run_id, error_message)
+            return run_record
+
+        # 校验回调数据完整性
+        if not out_path or not output_size or output_size <= 0:
+            logger.error("algorithm callback data incomplete run_id=%s", run_id)
+            raise file_content_missing_exception
+
+        # 更新 run 状态
+        await mark_process_run(
+            async_session, run_record,
+            status=ProcessingStatus.COMPLETED,
+            out_path=out_path,
+            output_size=output_size,
+        )
+
+        # 累加用户处理配额
+        user = (await async_session.exec(
+            select(UserInDB).where(UserInDB.id == run_record.user_id)
+        )).first()
+        if user is not None:
+            user.processed_file_size += output_size
+            async_session.add(user)
+
+        await async_session.commit()
+        await async_session.refresh(run_record)
+
+        logger.info(
+            "algorithm callback success run_id=%s out_path=%s output_size=%s",
+            run_id, out_path, output_size,
+        )
+        return run_record
+
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("algorithm callback error run_id=%s error=%s", run_id, e)
+        raise internal_server_error_exception from e
+
+
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
+AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]

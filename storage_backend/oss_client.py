@@ -102,4 +102,5 @@ def check_oss_config(config: OSSSettings):
 
 def init_oss_summary(client: oss_aio.AsyncClient | None):
     """同步包装异步验证"""
-    asyncio.run(oss_summary(client))
+    loop = asyncio.get_event_loop()
+    asyncio.run_coroutine_threadsafe(oss_summary(client), loop)

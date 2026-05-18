@@ -11,3 +11,13 @@ class OssUploadCallback(BaseModel):
     imzml_size: int | None = None
     ibd_size: int | None = None
     error_type: str | None = None
+
+
+class AlgorithmCallback(BaseModel):
+    """FC算法处理完成回调模型"""
+    run_id: int
+    is_success: bool
+    out_path: str | None = None
+    output_size: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None

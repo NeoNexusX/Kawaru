@@ -27,18 +27,12 @@ from api.processing_api_helper import (
     check_processing_quota,
     create_run_output_dir,
     validate_algorithms_config,
-    validate_algorithms_json,
 )
-from background.compute_background import execute_algorithm_pipeline_task
-from celery_runtime.result import wait_for_result
-from boot.config import get_config
-from exceptions.experiment_exceptions import invalid_process_request_exception, origin_file_not_found_on_disk_exception
+from exceptions.experiment_exceptions import invalid_process_request_exception
 from tools import utc_time
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api_business")
-
-large_file_poll_time = get_config().celery.large_file_poll_time
 
 
 #########################
@@ -286,112 +280,6 @@ async def get_storage_type_by_source_file_id(
     )
     file_record = result.first()
     return file_record.storage_type if file_record else "local"
-
-
-#########################
-# 管线执行
-#########################
-
-async def execute_process_run_pipeline(
-    async_session: AsyncSession,
-    run_id: int,
-    imzml_path: str,
-    output_dir: Path,
-) -> None:
-    """
-    算法管线编排
-
-    1. 读取 run 记录，准备输入
-    2. 提交到 compute worker，阻塞等待结果
-    3. 结果写入 DB，提交事务
-    4. 异常时标记 failed
-    """
-    run_record = await get_process_run_by_id(async_session, run_id)
-    if not run_record:
-        logger.error("process run not found run_id=%s", run_id)
-        return
-
-    config = validate_algorithms_json(run_record.params_json)  # type: ignore
-    if config is None:
-        raise invalid_process_request_exception
-
-    res = execute_algorithm_pipeline_task.delay(imzml_path, run_record.params_json, str(output_dir)) # type: ignore
-    out_path = await wait_for_result(res, poll_interval=0.1, timeout=large_file_poll_time)
-    if out_path is None:
-        logger.error("algorithm pipeline timeout run_id=%s", run_id)
-        await fail_run(run_id, "timeout")
-        raise TimeoutError(f"algorithm pipeline timeout run_id={run_id}")
-
-    await complete_run(async_session, run_record, out_path) # type: ignore
-    await async_session.flush()
-
-
-async def complete_run(
-    async_session: AsyncSession,
-    run_record: ExperimentProcessRunInDB,
-    out_path: str,
-) -> None:
-    """
-    管线成功完成后的收尾工作：
-
-    1. 获取输出目录总大小
-    2. 更新 run 状态为 completed
-    3. 累加用户已处理配额
-    不提交事务 — 由编排层统一管理
-    """
-    abs_out_path = Path(out_path)
-    if not abs_out_path.exists():
-        raise origin_file_not_found_on_disk_exception
-
-    output_size = _dir_size(abs_out_path)
-
-    if output_size == 0:
-        logger.warning("output_size is 0, possible pipeline issue run_id=%s out_path=%s", run_record.id, out_path)
-
-    await mark_process_run(
-        async_session, run_record,
-        status=ProcessingStatus.COMPLETED,
-        out_path=out_path,
-        output_size=output_size,
-    )
-
-    user = (
-        await async_session.exec(
-            select(UserInDB).where(UserInDB.id == run_record.user_id))).first()
-    if user is not None:
-        user.processed_file_size += output_size
-        async_session.add(user)
-
-    logger.info(
-        "completed pipeline run_id=%s out_path=%s output_size=%s",
-        run_record.id, out_path, output_size,
-    )
-
-
-def _dir_size(path: Path) -> int:
-    """递归计算目录下所有文件总大小"""
-    if path.is_file():
-        return path.stat().st_size
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-
-
-async def fail_run(run_id: int, error_message: str) -> None:
-    """
-    管线失败后的收尾工作：
-
-    1. 打开独立 session（原 session 可能已不可用）
-    2. 查找 run 记录并标记为 failed
-    3. 提交事务
-    """
-    async with AsyncSession(get_async_engine(standalone=True)) as fail_session:
-        fail_record = await get_process_run_by_id(fail_session, run_id)
-        if fail_record:
-            await mark_process_run(
-                fail_session, fail_record,
-                status=ProcessingStatus.FAILED,
-                error_message=error_message,
-            )
-            fail_session.add(fail_record)
 
 
 def cleanup_output_files(run_id: int) -> None:

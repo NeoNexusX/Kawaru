@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep
+from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep
 
 callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
 
@@ -23,3 +23,9 @@ async def get_config(config: GetConfigDep):
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
     """OSS上传完成回调"""
     return file_record
+
+
+@callback_router.post("/algorithm_callback", response_model=AlgorithmCallbackDep)
+async def algorithm_callback(run_record: AlgorithmCallbackDep):
+    """FC算法处理完成回调"""
+    return run_record

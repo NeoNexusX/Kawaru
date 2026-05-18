@@ -8,7 +8,6 @@ from fastapi import Depends
 from api.processing_api_business import (
     create_process_run,
     delete_process_run,
-    execute_process_run_pipeline,
     get_process_run_by_id,
     get_user_runs,
     list_public_runs_by_file_id,
@@ -16,7 +15,7 @@ from api.processing_api_business import (
     validate_process_request,
     get_storage_type_by_source_file_id,
 )
-from api.processing_api_helper import assert_run_ownership, create_run_output_dir
+from api.processing_api_helper import assert_run_ownership
 from api.user_api import token_authen
 from database.db import AsyncSessionDep
 from exceptions.experiment_exceptions import invalid_process_request_exception
@@ -27,6 +26,8 @@ from models.processing_models import (
     ExperimentProcessRunInDB,
 )
 from models.user_models import UserInDB
+from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
+from background.processing_background import trigger_fc_algorithm_task
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api")
@@ -37,7 +38,7 @@ async def create_algorithm_task(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunInDB:
-    """创建算法处理任务"""
+    """创建算法处理任务 — 写 DB + 异步触发 FC"""
     run_record = None
     try:
         origin = await validate_process_request(
@@ -46,15 +47,25 @@ async def create_algorithm_task(
 
         assert current_user.id is not None
         run_record = await create_process_run(
-            async_session, origin, body.algorithms, current_user.id, body.is_public,)
-
-        output_dir = create_run_output_dir(run_record.id)  # type: ignore
-        await execute_process_run_pipeline(
-            async_session, run_record.id, origin.imzml_path, output_dir,  # type: ignore
+            async_session, origin, body.algorithms, current_user.id, body.is_public,
         )
 
+        # 构造 OSS 输出路径
+        oss_output_path = f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{run_record.id}.zarr/" # type: ignore
+
+        # 先提交数据库，让 run_id 生效
         await async_session.commit()
         await async_session.refresh(run_record)
+        await async_session.refresh(origin)
+
+        # 异步触发 FC 函数执行算法处理
+        trigger_fc_algorithm_task.delay( # type: ignore
+            run_id=run_record.id,
+            imzml_path=origin.imzml_path,
+            config_json=run_record.params_json,
+            output_path=oss_output_path,
+        )
+
         return run_record
 
     except Exception as e:
