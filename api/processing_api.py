@@ -4,10 +4,12 @@ Processing API — API 入口层
 from typing import Annotated
 
 from fastapi import Depends
+from fastapi.exceptions import HTTPException
 
 from api.processing_api_business import (
     create_process_run,
     delete_process_run,
+    get_origin_for_processing,
     get_process_run_by_id,
     get_user_runs,
     list_public_runs_by_file_id,
@@ -41,9 +43,12 @@ async def create_algorithm_task(
     """创建算法处理任务 — 写 DB + 异步触发 FC"""
     run_record = None
     try:
-        origin = await validate_process_request(
-            async_session, body.file_id, body.algorithms, current_user,
-        )
+        # 1. 纯校验（配额、算法配置）
+        if not await validate_process_request(current_user, body.algorithms):
+            raise invalid_process_request_exception
+
+        # 2. 查文件归属 + 就绪 origin
+        origin = await get_origin_for_processing(async_session, body.file_id, current_user)
 
         assert current_user.id is not None
         run_record = await create_process_run(
@@ -68,6 +73,8 @@ async def create_algorithm_task(
 
         return run_record
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("create algorithm task failed user=%s file_id=%s", current_user.id, body.file_id)
         await rollback_process_run(async_session, run_record)

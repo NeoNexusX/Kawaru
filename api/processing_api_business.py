@@ -234,37 +234,56 @@ async def get_user_runs(
 #########################
 
 async def validate_process_request(
-    async_session: AsyncSession,
-    file_id: int,
-    algorithms_config: ProcessingAlgorithmsConfig,
     current_user: UserInDB,
-) -> OriginImzMLInDB:
+    algorithms_config: ProcessingAlgorithmsConfig,
+) -> bool:
     """
-    整合创建流程的前置校验，全部通过则返回 origin
+    纯校验，不查 DB。校验通过返回 True。
 
     校验链：
     1. 用户处理配额未超限
-    2. 文件存在且属于当前用户
-    3. origin 存在且状态为 COMPLETED
-    4. 算法配置至少选中一个算法
-
-    Raises:
-        invalid_process_request_exception: 任一校验失败
+    2. 算法配置至少选中一个算法
     """
     if not check_processing_quota(current_user):
-        raise invalid_process_request_exception
+        logger.warning("processing quota exceeded user=%s", current_user.id)
+        return False
 
+    if validate_algorithms_config(algorithms_config) is None:
+        logger.warning("no algorithm selected user=%s", current_user.id)
+        return False
+
+    return True
+
+
+async def get_origin_for_processing(
+    async_session: AsyncSession,
+    file_id: int,
+    current_user: UserInDB,
+) -> OriginImzMLInDB:
+    """
+    校验文件归属 + 获取就绪的 origin 记录。
+
+    Raises:
+        invalid_process_request_exception
+    """
     file_record = (
         await async_session.exec(
-            select(FileInDB).where(FileInDB.file_id == file_id))).first()
-    if not file_record or not await assert_file_owner(async_session, file_record, current_user):
+            select(FileInDB).where(FileInDB.file_id == file_id)
+        )
+    ).first()
+    if not file_record:
+        logger.warning("file not found file_id=%s user=%s", file_id, current_user.id)
+        raise invalid_process_request_exception
+    if not await assert_file_owner(async_session, file_record, current_user):
+        logger.warning("file permission denied file_id=%s user=%s", file_id, current_user.id)
         raise invalid_process_request_exception
 
     origin = await get_origin_imzml_by_file_id(async_session, file_id)
-    if not origin or not assert_origin_ready(origin):
+    if not origin:
+        logger.warning("origin not found file_id=%s", file_id)
         raise invalid_process_request_exception
-
-    if validate_algorithms_config(algorithms_config) is None:
+    if not assert_origin_ready(origin):
+        logger.warning("origin not ready file_id=%s status=%s", file_id, origin.status)
         raise invalid_process_request_exception
 
     return origin
