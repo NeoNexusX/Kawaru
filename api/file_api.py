@@ -4,6 +4,7 @@
 import json
 from typing import Annotated, Any
 from fastapi import Depends, File, Form, UploadFile, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -29,6 +30,7 @@ from api.file_api_business import (
 )
 from api.file_api_helper import (
     get_file_record_by_id,
+    delete_file_by_storage,
     save_upload_file,
     prepare_part_temp_path,
 )
@@ -38,6 +40,7 @@ from api.user_api_helper import count_items
 from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
+    file_content_missing_exception,
     file_persist_failed_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
@@ -536,6 +539,10 @@ async def delete_user_file(
     # 删除 origin 相关文件(如果有)
     if file_record.experiment_type == "imzML":
         await delete_origin_files(session, file_id, file_record.storage_type)
+        # 同步删除对应的 TIC 图像
+        if file_record.tic_path:
+            await delete_file_by_storage(file_record.tic_path, file_record.storage_type)
+            logger.info("deleted tic image file_id=%s tic_path=%s", file_id, file_record.tic_path)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -715,6 +722,29 @@ async def oss_upload_file(
     )
 
 
+async def get_file_tic_url(
+    file_id: int,
+    session: AsyncSessionDep,
+) -> RedirectResponse:
+    """
+    获取文件的 TIC 图像 OSS 签名 URL，302 重定向。
+
+    用于前端直接 <img src="/files/{file_id}/tic"> 展示缩略图。
+    """
+    file_record = await get_file_record_by_id(file_id, session)
+    if not file_record.tic_path:
+        raise file_content_missing_exception
+
+    if file_record.storage_type != "oss":
+        raise file_content_missing_exception
+
+    url = await OssStorage.get_presigned_download_url(file_record.tic_path)
+    if not url:
+        raise file_content_missing_exception
+
+    return RedirectResponse(url=url, status_code=302)
+
+
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
@@ -726,3 +756,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
+TicRedirectDep = Annotated[Any, Depends(get_file_tic_url)] #TODO

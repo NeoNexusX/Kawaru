@@ -9,10 +9,11 @@ from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from api.processing_api_business import get_process_run_by_id, mark_process_run
+from background.processing_background import trigger_fc_tic_task
 from models.file_models import FileInDB, FilePublic, FileStatus
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
-from models.callback_models import OssUploadCallback, AlgorithmCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
@@ -149,6 +150,9 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
+        # 异步触发 FC 生成 TIC 图像
+        trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+
         return source_file
 
     except (BadZipFile, FileNotFoundError) as e:
@@ -257,7 +261,50 @@ async def algorithm_callback(
         raise internal_server_error_exception from e
 
 
+async def tic_callback(
+    callback_info: TicCallback,
+    async_session: AsyncSessionDep,
+) -> FileInDB:
+    """
+    FC TIC 图像生成回调。
+
+    更新文件的 tic_path 字段。
+    """
+    file_id = callback_info.file_id
+    is_success = callback_info.is_success
+    tic_path = callback_info.tic_path
+
+    try:
+        file_record = (
+            await async_session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id)
+            )
+        ).first()
+        if not file_record:
+            logger.error("tic callback: file not found file_id=%s", file_id)
+            raise file_content_missing_exception
+
+        if not is_success:
+            logger.warning("tic generation failed file_id=%s error=%s",
+                           file_id, callback_info.error_message)
+            return file_record
+
+        file_record.tic_path = tic_path
+        async_session.add(file_record)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+
+        logger.info("tic callback success file_id=%s tic_path=%s", file_id, tic_path)
+        return file_record
+
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("tic callback error file_id=%s error=%s", file_id, e)
+        raise internal_server_error_exception from e
+
+
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
 AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
+TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]

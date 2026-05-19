@@ -1,7 +1,10 @@
 """
 FC 算法处理触发模块。
 
-通过 HTTP 触发阿里云 FC 函数执行算法管线，
+通过 HTTP 触发器统一触发 FC 函数，通过 task_type 字段区分任务类型：
+- task_type=algorithm: 算法管线处理
+- task_type=tic: TIC 图像生成
+
 FC 函数处理完成后通过回调接口返回结果。
 """
 import os
@@ -17,6 +20,32 @@ from tools.logger import get_logger
 logger = get_logger("background.processing_background")
 celery_app = get_celery_app()
 
+# 共用同一个端点、token、超时
+FC_URL = FC_ALGORITHM_ENDPOINT
+FC_TIMEOUT = FC_ALGORITHM_TIMEOUT_SECONDS
+FC_TOKEN = os.getenv("OSS_FC_ALGORITHM_TOKEN")
+
+
+async def _trigger(event: dict) -> bool:
+    """发送 HTTP 请求到 FC，返回是否成功触发。"""
+    if not FC_URL or not FC_TOKEN:
+        logger.error("fc_algorithm_endpoint or OSS_FC_ALGORITHM_TOKEN not found")
+        return False
+
+    async with AsyncClient(timeout=FC_TIMEOUT) as client:
+        res = await client.post(
+            FC_URL,
+            json=event,
+            headers={
+                "Authorization": f"Bearer {FC_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
+    ok = res.status_code == status.HTTP_200_OK
+    if not ok:
+        logger.error("trigger fc failed: status=%s content=%s", res.status_code, res.text)
+    return ok
+
 
 @celery_app.task()
 async def trigger_fc_algorithm_task(
@@ -25,47 +54,35 @@ async def trigger_fc_algorithm_task(
     config_json: str,
     output_path: str,
 ) -> None:
-    """
-    通过 HTTP 触发 FC 函数执行算法处理
+    """触发 FC 执行算法管线处理"""
+    event = {
+        "task_type": "algorithm",
+        "run_id": run_id,
+        "imzml_path": imzml_path,
+        "config_json": config_json,
+        "output_path": output_path,
+    }
+    logger.info("trigger fc algorithm run_id=%s imzml_path=%s", run_id, imzml_path)
+    if await _trigger(event):
+        logger.info("trigger fc algorithm success run_id=%s", run_id)
+    else:
+        logger.error("trigger fc algorithm failed run_id=%s", run_id)
 
-    FC 函数处理完成后会通过自身环境变量中配置的回调地址通知主服务，
-    本任务只负责触发，不等待结果。
-    """
-    logger.info(
-        "trigger fc algorithm run_id=%s imzml_path=%s output_path=%s",
-        run_id, imzml_path, output_path,
-    )
 
-    async with AsyncClient(timeout=FC_ALGORITHM_TIMEOUT_SECONDS) as client:
-        event = {
-            "run_id": run_id,
-            "imzml_path": imzml_path,
-            "config_json": config_json,
-            "output_path": output_path,
-        }
-
-        fc_token = os.getenv("OSS_FC_ALGORITHM_TOKEN")
-        fc_url = FC_ALGORITHM_ENDPOINT
-        if not fc_url or not fc_token:
-            logger.error(
-                "fc_algorithm_endpoint or OSS_FC_ALGORITHM_TOKEN not found, run_id=%s",
-                run_id,
-            )
-            return
-
-        res = await client.post(
-            fc_url,
-            json=event,
-            headers={
-                "Authorization": f"Bearer {fc_token}",
-                "Content-Type": "application/json",
-            },
-        )
-
-        if res.status_code != status.HTTP_200_OK:
-            logger.error(
-                "trigger fc algorithm failed run_id=%s status=%s content=%s",
-                run_id, res.status_code, res.text,
-            )
-        else:
-            logger.info("trigger fc algorithm success run_id=%s", run_id)
+@celery_app.task()
+async def trigger_fc_tic_task(
+    file_id: int,
+    imzml_path: str,
+) -> None:
+    """触发 FC 生成 TIC 图像"""
+    event = {
+        "task_type": "tic",
+        "file_id": file_id,
+        "imzml_path": imzml_path,
+        "tic_dest": f"tic/file_{file_id}.jpeg",
+    }
+    logger.info("trigger fc tic file_id=%s imzml_path=%s", file_id, imzml_path)
+    if await _trigger(event):
+        logger.info("trigger fc tic success file_id=%s", file_id)
+    else:
+        logger.error("trigger fc tic failed file_id=%s", file_id)

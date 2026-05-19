@@ -32,7 +32,9 @@ async def packup_oss_file(packup_folder: str,
     res = packup_oss_file_task.delay(packup_folder, zip_file_path, timeout_seconds)  # type: ignore
     dest_zip_path, zip_download_url, fc_request_id = await wait_for_result(res, poll_interval=0.1, timeout=timeout_seconds) # type: ignore # 大文件打包超时时间需配置大一些
     if dest_zip_path is None or zip_download_url is None:
-        logger.error(f"failed to packup oss file due to server timeout: from {packup_folder} to {zip_file_path}")
+        logger.error(
+            f"failed to packup oss file: from {packup_folder} to {zip_file_path}, "
+            f"fc_request_id={fc_request_id}")
         return (None, None, fc_request_id)
     return dest_zip_path, zip_download_url, fc_request_id
 

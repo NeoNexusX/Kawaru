@@ -13,6 +13,7 @@ from background.file_background_helper import (
     delete_oss_file_task,
     get_oss_packup_sts_token_task,
     tag_oss_file_task,
+    get_oss_presigned_url_task,
 )
 
 from models.auth import OssStsToken
@@ -288,3 +289,19 @@ class OssStorage:
             logger.error(f"failed to tag oss file due to server timeout: {file_path}")
             return False
         return is_tagged
+
+    @staticmethod
+    async def get_presigned_download_url(file_path: str, expires: int = 300) -> str | None:
+        """
+        获取 OSS 文件预签名下载 URL。
+
+        :param file_path: OSS文件路径
+        :param expires: 过期时间（秒）
+        :return: 预签名 URL
+        """
+        res: AsyncResult = get_oss_presigned_url_task.delay(file_path, expires) # type: ignore
+        url: str | None = await wait_for_result(res, poll_interval=0.1, timeout=OSS_DEFAULT_TIMEOUT_SECONDS) # type: ignore
+        if url is None:
+            logger.error("failed to get presigned url due to server timeout: %s", file_path)
+            return None
+        return url

@@ -21,3 +21,12 @@ class AlgorithmCallback(BaseModel):
     output_size: int | None = None
     error_type: str | None = None
     error_message: str | None = None
+
+
+class TicCallback(BaseModel):
+    """FC TIC 图像生成完成回调模型"""
+    file_id: int
+    is_success: bool
+    tic_path: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None

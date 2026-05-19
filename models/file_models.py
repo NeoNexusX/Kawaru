@@ -115,6 +115,7 @@ class FilePublic(FileBase):
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
+    tic_path: str | None = Field(default=None, description="TIC图像在OSS上的路径")
 
 
 class FileListResponse(SQLModel):
@@ -139,6 +140,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
+    tic_path: str | None = Field(default=None, max_length=255, description="TIC 图像在 OSS 上的路径")
 
     # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(

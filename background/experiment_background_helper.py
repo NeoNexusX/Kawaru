@@ -46,12 +46,15 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeo
         )
         request_id = res.headers["X-FC-Request-ID"]
 
-        # 返回签名后的下载URL
-        if res.status_code != status.HTTP_200_OK:
+        # 返回签名后的下载URL（兼容 200 和 3xx 重定向响应）#TODO 这个地方原本是检查200状态码，但FC打包函数可能会返回3xx重定向到OSS的URL
+        if res.status_code not in (status.HTTP_200_OK, 301, 302, 303, 307, 308):
             logger.error(f"packup_oss_file failed, status_code={res.status_code}, content={res.text}")
             return (None, None, request_id)
 
-        zip_download_url = res.headers["Location"]
+        zip_download_url = res.headers.get("Location")
+        if not zip_download_url:
+            logger.error("packup_oss_file succeeded but Location header is missing")
+            return (None, None, request_id)
         logger.info(f"packup_oss_file success, zip_download_url={zip_download_url}")
 
     return (dest_zip_path, zip_download_url, request_id)

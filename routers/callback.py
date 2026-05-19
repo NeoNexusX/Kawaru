@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep
+from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep, TicCallbackDep
 
 callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
 
@@ -29,3 +29,9 @@ async def oss_upload_callback(file_record: OssUploadCallbackDep):
 async def algorithm_callback(run_record: AlgorithmCallbackDep):
     """FC算法处理完成回调"""
     return run_record
+
+
+@callback_router.post("/tic_callback", response_model=TicCallbackDep)
+async def tic_callback(file_record: TicCallbackDep):
+    """FC TIC图像生成回调"""
+    return file_record
