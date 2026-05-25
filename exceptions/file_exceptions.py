@@ -123,7 +123,15 @@ oss_client_create_failed_exception = HTTPException(
 )
 
 
+# OSS 打包回调异常定义
+oss_packup_callback_error_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail=format_exception_detail("oss packup callback error: url not provided")
+)
+
+
 __all__ = [
+    "oss_packup_callback_error_exception",
     "invalid_user_for_file_list_sync_exception",
     "file_not_found_exception",
     "permission_denied_exception",

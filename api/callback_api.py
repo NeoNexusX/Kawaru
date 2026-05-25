@@ -3,10 +3,13 @@ from fastapi import Depends
 from zipfile import BadZipFile
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
+from database.redis_client import redis_client
 from storage_backend.storage import OssStorage
+
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
-from models.file_models import FileInDB, FilePublic
+
+from models.file_models import FileInDB, FilePublic, PackupStatus
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
 from models.callback_models import OssUploadCallback
@@ -14,6 +17,7 @@ from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
+    oss_packup_callback_error_exception,
 )
 from exceptions.experiment_exceptions import invalid_zip_file_exception
 from exceptions.common_exceptions import internal_server_error_exception
@@ -176,6 +180,30 @@ async def oss_upload_callback(
         raise internal_server_error_exception from e
 
 
+async def oss_packup_callback(
+    filename: str,
+    status: PackupStatus,
+    zip_path: str | None = None,
+) -> None:
+    """
+    处理OSS文件打包回调
+    """
+    r = redis_client
+    try:
+        # 打包成功，存储URL，更新状态为COMPLETED
+        if status == PackupStatus.COMPLETED:
+            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+        # 打包失败，更新状态为FAILED
+        if status == PackupStatus.FAILED:
+            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+
+    except Exception as e:
+        logger.error("oss packup callback error, filename=%s, error=%s", filename, e)
+        raise internal_server_error_exception from e
+
+
+
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
+OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

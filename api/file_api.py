@@ -14,7 +14,8 @@ from api.file_api_business import (
     get_file_record_by_hash,
     get_user_file_ids,
     link_file_to_user,
-    prepare_download_file,
+    prepare_download_file_oss,
+    prepare_download_file_local,
     rollback_simple_upload,
     get_reuse_file_by_hash,
     save_and_persist_part,
@@ -43,6 +44,7 @@ from exceptions.file_exceptions import (
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    download_not_implemented_exception
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from models.file_models import (
@@ -571,6 +573,7 @@ async def get_download_file_metadata(
     """
 
     file_record = await get_file_record_by_id(file_id, session)
+    storage_type = file_record.storage_type
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
@@ -583,18 +586,31 @@ async def get_download_file_metadata(
             raise user_download_limit_exception
 
     # 准备下载文件(业务层处理)
-    _, oss_download_url = await prepare_download_file(session, file_record)
+    oss_download_url = None
+    if storage_type == "local":
+        await prepare_download_file_local(session, file_record)
+    elif storage_type == "oss":
+        oss_download_url = await prepare_download_file_oss(session, file_record)
+    else:
+        raise download_not_implemented_exception
 
     # 更新下载统计(业务层处理)
-    await update_download_stats(session, file_record, current_user)
+    if file_record.storage_type == "oss" and oss_download_url != "<PACKING>":
+        await update_download_stats(session, file_record, current_user)
+    elif file_record.storage_type == "local":
+        await update_download_stats(session, file_record, current_user)
+
     await session.commit()
     await session.refresh(current_user)
     await session.refresh(file_record)
 
-    logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
+    if oss_download_url == "<PACKING>":
+        logger.info(f"download packup file in progress, user={current_user.id} file_id={file_id} filename={file_record.filename}")
+    else:
+        logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
 
     file_download_meta = FileDownloadMeta.from_record(file_record)
-    file_download_meta.oss_download_url = oss_download_url
+    file_download_meta.oss_download_url = oss_download_url if storage_type == "oss" else None
 
     return file_download_meta
 

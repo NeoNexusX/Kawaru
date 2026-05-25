@@ -13,12 +13,13 @@ from background.file_background_helper import (
     delete_oss_file_task,
     get_oss_packup_sts_token_task,
     tag_oss_file_task,
+    sign_url_task,
 )
 
 from models.auth import OssStsToken
 from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
                                       OSS_ZIP_STORAGE_ROOT, OSS_DEFAULT_TIMEOUT_SECONDS,
-                                      OSS_PACKUP_ZIP_STORAGE_ROOT
+                                      OSS_PACKUP_ZIP_STORAGE_ROOT, DOWNLOAD_ZIP_TTL_MINUTES
                                      )
 from constants.experiment_constants import ORIGIN_STORAGE_ROOT, OSS_ORIGIN_STORAGE_ROOT
 
@@ -199,9 +200,9 @@ class OssStorage:
     @staticmethod
     async def check_file_exist(file_path: str) -> bool:
         """
-        检查OSS文件是否存在
+        检查OSS文件或文件夹是否存在
 
-        :param file_path: OSS文件路径（如"folder/file.zip")
+        :param file_path: OSS文件路径或文件夹路径（如"folder/file.zip"或"folder/")
         :return: 是否存在，否则返回False
         """
         res: AsyncResult = check_oss_file_exist_task.delay(file_path) # type:ignore
@@ -279,12 +280,27 @@ class OssStorage:
 
         :return: 是否成功，否则返回False
         """
-        if not file_path:
-            logger.error("empty path for tagging")
-            return False
         res: AsyncResult = tag_oss_file_task.delay(file_path, tag) # type: ignore
         is_tagged: bool = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
         if is_tagged is None:
             logger.error(f"failed to tag oss file due to server timeout: {file_path}")
             return False
         return is_tagged
+
+
+    @staticmethod
+    async def sign_download_url(file_path: str, expires: int = DOWNLOAD_ZIP_TTL_MINUTES * 60) -> str | None:
+        """
+        签名OSS文件下载URL
+
+        :param file_path: OSS文件路径（如"folder/file.zip")
+        :param expires: 过期时间（秒），默认值为DOWNLOAD_ZIP_TTL_MINUTES * 60
+
+        :return: str 签名后的URL
+        """
+        res: AsyncResult = sign_url_task.delay(file_path, expires) # type: ignore
+        sign_url: str | None = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
+        if sign_url is None:
+            logger.error(f"failed to sign oss file due to server timeout: {file_path}")
+            return None
+        return sign_url

@@ -8,6 +8,7 @@ from __future__ import annotations
 import zipfile
 import shutil
 from pathlib import Path
+from celery.result import AsyncResult
 
 from celery_runtime.result import wait_for_result
 from background.experiment_background_helper import packup_oss_file_task
@@ -18,23 +19,21 @@ from tools.logger import get_logger
 logger = get_logger("api.experiment_api_helper")
 
 
-async def packup_oss_file(packup_folder: str,
-                          zip_file_path: str,
-                          timeout_seconds: int | None = 20
-                          ) -> tuple[str | None, str | None, str | None]:
+async def packup_oss_file(filename: str, packup_folder: str, zip_file_path: str) -> str | None:
     """
     打包OSS文件夹为zip文件
 
+    :param filename: 文件名
     :param packup_folder: 要打包的oss文件夹路径（如"experiment/aaa/")
     :param zip_file_path: 打包后的zip文件路径（如"data/aaa.zip")
-    :return: 打包后的zip文件路径
+    :return: 函数调用ID
     """
-    res = packup_oss_file_task.delay(packup_folder, zip_file_path, timeout_seconds)  # type: ignore
-    dest_zip_path, zip_download_url, fc_request_id = await wait_for_result(res, poll_interval=0.1, timeout=timeout_seconds) # type: ignore # 大文件打包超时时间需配置大一些
-    if dest_zip_path is None or zip_download_url is None:
-        logger.error(f"failed to packup oss file due to server timeout: from {packup_folder} to {zip_file_path}")
-        return (None, None, fc_request_id)
-    return dest_zip_path, zip_download_url, fc_request_id
+    res: AsyncResult = packup_oss_file_task.delay(filename, packup_folder, zip_file_path)  # type: ignore
+    fc_request_id: str | None = await wait_for_result(res, poll_interval=0.1) # type: ignore # 大文件打包超时时间需配置大一些
+    if fc_request_id is None:
+        logger.error(f"failed to trigger packup oss file due to server timeout: from {packup_folder} to {zip_file_path}")
+        return None
+    return fc_request_id
 
 
 def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:

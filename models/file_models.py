@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 import aiofiles
@@ -21,6 +22,13 @@ config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
 user_config = config.user
+
+
+class PackupStatus(str, Enum):
+    """文件打包状态"""
+    PACKING = "packing"
+    FAILED = "failed"
+    COMPLETED = "completed"
 
 
 class FileBase(SQLModel):

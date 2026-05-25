@@ -1,6 +1,7 @@
 from fastapi import APIRouter
+from fastapi import status
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep
+from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, OssPackupCallbackDep
 
 callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
 
@@ -23,3 +24,8 @@ async def get_config(config: GetConfigDep):
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
     """OSS上传完成回调"""
     return file_record
+
+@callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)
+async def oss_packup_callback(packup_status: OssPackupCallbackDep): # pylint: disable=unused-argument
+    """OSS打包完成回调"""
+    return

@@ -14,16 +14,17 @@ celery_app = get_celery_app()
 
 
 @celery_app.task()
-async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeout_seconds: int) -> tuple[str | None, str | None, str | None]:
+async def packup_oss_file_task(filename: str, experiment_folder: str, dest_zip_path: str) -> str | None:
     """
-    打包 OSS 中的实验文件夹
+    异步触发打包 OSS 中的实验文件夹
     """
     logger.info(f"start to packup_oss_file, experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
 
-    async with AsyncClient(timeout=timeout_seconds) as client:
+    async with AsyncClient(timeout=20) as client: # 20秒超时，这个超时是发送异步请求的超时，不是等待FC打包完成的超时
         # 构造event json
         event = {
             "bucket": OSS_BUCKET_NAME,
+            "filename": filename,
             "source-dir": experiment_folder,
             "dest-file": dest_zip_path,
         }
@@ -33,7 +34,7 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeo
         fc_url = FC_PACKUP_ENDPOINT
         if not fc_url or not fc_token:
             logger.error("fc_packup_endpoint or fc_packup_token not found")
-            return (None, None, None)
+            return None
 
         # 调用FC打包函数
         res = await client.post(
@@ -42,16 +43,17 @@ async def packup_oss_file_task(experiment_folder: str, dest_zip_path: str, timeo
             headers={
                 "Authorization": f"Bearer {fc_token}",
                 "Content-Type": "application/json",
+                "X-Fc-Invocation-Type": "Async",
             },
         )
+
+        # 触发异步打包任务，应返回状态码202 Accepted，包含request_id
+        if res.status_code != status.HTTP_202_ACCEPTED:
+            logger.error(f"packup_oss_file trigger failed, status_code={res.status_code}, content={res.text}")
+            return None
+
         request_id = res.headers["X-FC-Request-ID"]
+        logger.info(f"packup_oss_file task triggered, request_id={request_id},"
+                    f"experiment_folder={experiment_folder}, dest_zip_path={dest_zip_path}")
 
-        # 返回签名后的下载URL
-        if res.status_code != status.HTTP_200_OK:
-            logger.error(f"packup_oss_file failed, status_code={res.status_code}, content={res.text}")
-            return (None, None, request_id)
-
-        zip_download_url = res.headers["Location"]
-        logger.info(f"packup_oss_file success, zip_download_url={zip_download_url}")
-
-    return (dest_zip_path, zip_download_url, request_id)
+    return request_id
