@@ -4,7 +4,6 @@ from httpx import AsyncClient
 from fastapi import status
 
 from celery_runtime.state import get_celery_app
-from storage_backend.storage import OssStorage
 from constants.file_constants import OSS_BUCKET_NAME, FC_PACKUP_ENDPOINT
 from tools.logger import get_logger
 
@@ -36,7 +35,7 @@ async def packup_oss_file_task(filename: str, experiment_folder: str, dest_zip_p
             logger.error("fc_packup_endpoint or fc_packup_token not found")
             return None
 
-        # 调用FC打包函数
+        # 异步触发调用FC打包函数（不等待）
         res = await client.post(
             fc_url,
             json=event,
