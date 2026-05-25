@@ -10,7 +10,7 @@ import datetime
 import zipfile
 import hashlib
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import HTTPException, status
 import aiofiles
@@ -219,7 +219,11 @@ async def check_oss_file_exist_task(file_path: str) -> bool:
             return True
 
         except Exception as e: # pylint:disable = broad-exception-caught
-            logger.error(f"failed to check oss file: {e}")
+            if "NoSuchKey" in str(e):
+                logger.warning(f"oss file {file_path} not exist")
+            else:
+                logger.error(f"failed to check oss file: {e}")
+
             return False
 
 
@@ -463,7 +467,7 @@ async def sign_url_task(file_path: str, expires: int) -> str | None:
                 key=file_path,        # 指定对象键名
                 response_content_disposition="attachment",# 设置为强制下载
             ),
-            expires=expires,
+            expires=timedelta(seconds=expires),
         )
 
         sign_url = pre_result.url
