@@ -3,6 +3,11 @@ from starlette import status
 from fastapi import HTTPException
 from exceptions.utils_exception import format_exception_detail
 
+# origin 类型不支持异常
+origin_type_not_supported_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail=format_exception_detail("origin type not supported")
+)
 
 # origin 不存在异常
 origin_not_found_exception = HTTPException(
@@ -68,4 +73,6 @@ __all__ = [
     "zip_extraction_failed_exception",
     "invalid_zip_content_exception",
     "imzml_validation_failed_exception",
+    "oss_fc_request_id_empty_exception",
+    "origin_type_not_supported_exception",
 ]

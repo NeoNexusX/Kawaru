@@ -96,8 +96,8 @@ storage:
   failed_experiment_ttl_minutes: 30
 
 oss:
-  region_id: cn-shenzhen
-  bucket_name: kawaru-storage
+  region_id: cn-hangzhou
+  bucket_name: kawaru-oss
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
@@ -105,10 +105,10 @@ oss:
   oss_origin_storage_root: origin/
   oss_default_timeout_seconds: 20
   fc_logstore_name: default-logs
-  fc_log_project_name: serverless-cn-shenzhen-9afc325b-4ea0-5018-9990-ebeba007d53e
+  fc_log_project_name: serverless-cn-hangzhou-aa660bbc-2121-50eb-8de1-2d1d263fecc2
   fc_unzip_timeout_seconds: 40
-  fc_packup_endpoint: https://zip-oss-f-a-dbd-zip-oss-f-a-dbd-vcuczpjhjn.cn-shenzhen.fcapp.run
-  fc_packup_timeout_seconds: 40
+  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
+  fc_packup_timeout_seconds: 200
 
 admin_info:
   username: kawaru

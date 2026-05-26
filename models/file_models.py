@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 import aiofiles
@@ -21,6 +22,13 @@ config = get_config()
 storage_config = config.storage
 sample_config = config.sample_info
 user_config = config.user
+
+
+class PackupStatus(str, Enum):
+    """文件打包状态"""
+    PACKING = "packing"
+    FAILED = "failed"
+    COMPLETED = "completed"
 
 
 class FileBase(SQLModel):
@@ -102,6 +110,7 @@ class FilePublic(FileBase):
     oss_sts_token: OssStsToken | None = Field(default=None)
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
+    oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
 
 
 class FileListResponse(SQLModel):

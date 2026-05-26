@@ -10,7 +10,7 @@ import datetime
 import zipfile
 import hashlib
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import HTTPException, status
 import aiofiles
@@ -21,15 +21,14 @@ from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
-                                  Tag, PutObjectTaggingRequest, Tagging, TagSet)
+                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest)
 
 from celery_runtime.state import get_celery_app
 
-from storage_backend.oss_client import create_oss_client_context
+from storage_backend.oss_client import create_oss_client_context, create_oss_sync_client
 
 from constants.file_constants import (
-    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME,
-    OSS_DEFAULT_TIMEOUT_SECONDS
+    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, OSS_DEFAULT_TIMEOUT_SECONDS
 )
 
 from tools.logger import get_logger
@@ -220,7 +219,11 @@ async def check_oss_file_exist_task(file_path: str) -> bool:
             return True
 
         except Exception as e: # pylint:disable = broad-exception-caught
-            logger.error(f"failed to check oss file: {e}")
+            if "NoSuchKey" in str(e):
+                logger.warning(f"oss file {file_path} not exist")
+            else:
+                logger.error(f"failed to check oss file: {e}")
+
             return False
 
 
@@ -284,7 +287,8 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     }
 
     # 构建role_session_name
-    role_session_name = f"upload-{str(Path(file_path).stem)}-{datetime.now().timestamp()}"
+    code = hashlib.md5(str(Path(file_path).stem).encode()).hexdigest()
+    role_session_name = f"upload-{code}-{datetime.now().timestamp()}"
 
     # 调用STS API获取上传STS Token
     result = _get_oss_sts_token(policy, role_session_name)
@@ -327,7 +331,8 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
     }
 
     # 构建role_session_name
-    role_session_name = f"packup-{str(Path(packup_folder).stem)}-{datetime.now().timestamp()}"
+    code = hashlib.md5(str(Path(packup_folder).stem).encode()).hexdigest()
+    role_session_name = f"packup-{code}-{datetime.now().timestamp()}"
 
     # 调用STS API获取打包STS Token
     result = _get_oss_sts_token(policy, role_session_name)
@@ -399,7 +404,9 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
             keys = []
             err_count = 0
+            is_folder = False
             if file_path.endswith('/'): # 针对文件夹进行处理
+                is_folder = True
                 req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
                 res = await oss_client.list_objects_v2(req)
                  # 提取所有匹配对象的 key
@@ -415,6 +422,14 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
                     err_count += 1
                     continue
                 logger.info(f"oss file {key} deleted")
+
+            if is_folder:
+                req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
+                res = await oss_client.delete_object(req)
+                if res.status_code != status.HTTP_204_NO_CONTENT:
+                    logger.error(f"oss folder {file_path} deleted failed")
+                    err_count += 1
+
             if err_count > 0:
                 return False
 
@@ -422,3 +437,41 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
         except Exception as e: # pylint:disable = broad-exception-caught
             logger.error(f"failed to delete oss file: {e}")
             return False
+
+
+@celery_app.task()
+async def sign_url_task(file_path: str, expires: int) -> str | None:
+    """
+    签名OSS文件下载URL
+
+    :param file_path: OSS文件路径（如"folder/file.zip")
+    :param expires: 过期时间（秒），默认值为OSS_DEFAULT_TIMEOUT_SECONDS
+
+    :return: str 签名后的URL
+    """
+    oss_client = create_oss_sync_client()
+    try:
+        # 创建OSS客户端
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 生成预签名的URL
+        pre_result = oss_client.presign(
+            GetObjectRequest(
+                bucket=bucket_name,  # 指定存储空间名称
+                key=file_path,        # 指定对象键名
+                response_content_disposition="attachment",# 设置为强制下载
+            ),
+            expires=timedelta(seconds=expires),
+        )
+
+        sign_url = pre_result.url
+        return sign_url
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to sign oss file: {e}")
+        return None
