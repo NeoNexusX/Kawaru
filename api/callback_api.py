@@ -121,6 +121,9 @@ async def oss_upload_callback(
 
         # 更新文件大小
         source_file.size = await OssStorage.get_file_size(file_path)
+        if not source_file.size or source_file.size <= 0:
+            logger.error("oss get file size failed, filename=%s", filename)
+            raise internal_server_error_exception
 
         # 更新文件路径和实验路径
         source_file.path = file_path
@@ -193,9 +196,11 @@ async def oss_packup_callback(
         # 打包成功，存储URL，更新状态为COMPLETED
         if status == PackupStatus.COMPLETED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
         # 打包失败，更新状态为FAILED
         if status == PackupStatus.FAILED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
 
     except Exception as e:
         logger.error("oss packup callback error, filename=%s, error=%s", filename, e)

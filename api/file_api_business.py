@@ -467,6 +467,9 @@ async def prepare_download_file_oss(
                 await redis_client.expire(oss_packup_key, DOWNLOAD_ZIP_TTL_MINUTES * 60 or 360)
 
                 zip_download_url = "<PACKING>"
+            else:
+                logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
+                raise origin_type_not_supported_exception
 
         if not zip_download_url:
             logger.error("zip_download_url is None, filename=%s", file_record.filename)

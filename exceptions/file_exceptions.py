@@ -126,7 +126,7 @@ oss_client_create_failed_exception = HTTPException(
 # OSS 打包回调异常定义
 oss_packup_callback_error_exception = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("oss packup callback error: url not provided")
+    detail=format_exception_detail("oss packup callback error: zip_path not provided")
 )
 
 
