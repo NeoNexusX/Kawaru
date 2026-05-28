@@ -31,8 +31,7 @@ def create_oss_client_context():
 def create_oss_client() -> oss_aio.AsyncClient | None:
     """
     Create OSS client without context manager
-
-    :param sync_client: 是否创建同步客户端
+    Note: The caller is responsible for closing the client to release resources.
     """
     _oss_client = None
     logger = get_logger("oss_storage")
@@ -50,6 +49,32 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
             raise ValueError("oss region_id is empty")
         cfg.region = oss_config.region_id
         _oss_client = oss_aio.AsyncClient(cfg)
+    except Exception as exc: # pylint: disable=broad-exception-caught
+        logger.error("create oss client failed: %s", exc)
+    return _oss_client
+
+
+def create_oss_sync_client() -> oss.Client | None:
+    """
+    Create OSS sync client without context manager
+
+    """
+    _oss_client = None
+    logger = get_logger("oss_storage")
+    try:
+        oss_config = get_config().oss
+        # Read credentials from environment variables to authenticate
+        access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
+        access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
+        if not access_key_id or not access_key_secret:
+            raise ValueError("oss access_key_id or access_key_secret is empty")
+        credentials_provider = oss.credentials.EnvironmentVariableCredentialsProvider()
+        cfg = oss.config.load_default()
+        cfg.credentials_provider = credentials_provider
+        if not oss_config.region_id:
+            raise ValueError("oss region_id is empty")
+        cfg.region = oss_config.region_id
+        _oss_client = oss.Client(cfg)
     except Exception as exc: # pylint: disable=broad-exception-caught
         logger.error("create oss client failed: %s", exc)
     return _oss_client

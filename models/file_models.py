@@ -24,12 +24,17 @@ sample_config = config.sample_info
 user_config = config.user
 
 
-class FileStatus(str, Enum):
+class FileStatus(str, Enum): # TODO
     """文件处理状态枚举"""
     UPLOADING = "uploading"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+class PackupStatus(str, Enum):
+    """文件打包状态"""
+    PACKING = "packing"
+    FAILED = "failed"
+    COMPLETED = "completed"
 
 
 class FileBase(SQLModel):

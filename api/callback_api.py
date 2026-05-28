@@ -5,12 +5,15 @@ from zipfile import BadZipFile
 from sqlmodel import select
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
+from database.redis_client import redis_client
 from storage_backend.storage import OssStorage
+
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from api.processing_api_business import get_process_run_by_id, mark_process_run
 from background.processing_background import trigger_fc_tic_task
-from models.file_models import FileInDB, FilePublic, FileStatus
+from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
+
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback
@@ -20,6 +23,7 @@ from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
+    oss_packup_callback_error_exception,
 )
 from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
@@ -123,6 +127,9 @@ async def oss_upload_callback(
 
         # 更新文件大小
         source_file.size = await OssStorage.get_file_size(file_path)
+        if not source_file.size or source_file.size <= 0:
+            logger.error("oss get file size failed, filename=%s", filename)
+            raise internal_server_error_exception
 
         # 更新文件路径和实验路径
         source_file.path = file_path
@@ -302,9 +309,34 @@ async def tic_callback(
         logger.error("tic callback error file_id=%s error=%s", file_id, e)
         raise internal_server_error_exception from e
 
+async def oss_packup_callback(
+    filename: str,
+    status: PackupStatus,
+    zip_path: str | None = None,
+) -> None:
+    """
+    处理OSS文件打包回调
+    """
+    r = redis_client
+    try:
+        # 打包成功，存储URL，更新状态为COMPLETED
+        if status == PackupStatus.COMPLETED:
+            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+        # 打包失败，更新状态为FAILED
+        if status == PackupStatus.FAILED:
+            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+
+    except Exception as e:
+        logger.error("oss packup callback error, filename=%s, error=%s", filename, e)
+        raise internal_server_error_exception from e
+
+
 
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
 AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
+OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

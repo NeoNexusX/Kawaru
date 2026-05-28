@@ -21,7 +21,7 @@ cors:
     - "Content-Length"
 
 token:
-  token_expire_minutes: 1440
+  token_expire_minutes: 360
   login_expire_minutes: 120
   algorithm: HS256
 

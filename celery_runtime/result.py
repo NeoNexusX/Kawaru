@@ -14,7 +14,7 @@ async def wait_for_result(result: AsyncResult | GroupResult, poll_interval: floa
             await asyncio.sleep(poll_interval)
 
         if isinstance(result, GroupResult):
-            results: Sequence[AsyncResult] = result.results
+            results: Sequence[AsyncResult] = result.results # type: ignore
             result_list = []
             for sub_result in results:
                 if sub_result.failed():

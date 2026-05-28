@@ -18,18 +18,17 @@ from alibabacloud_credentials.client import Client as CredentialClient
 from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
+from alibabacloud_oss_v2 import Client as OssSyncClient
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
                                   Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest)
-from alibabacloud_oss_v2 import Client as OssSyncClient
 
 from celery_runtime.state import get_celery_app
 
-from storage_backend.oss_client import create_oss_client_context
+from storage_backend.oss_client import create_oss_client_context, create_oss_sync_client
 
 from constants.file_constants import (
-    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME,
-    OSS_DEFAULT_TIMEOUT_SECONDS
+    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, OSS_DEFAULT_TIMEOUT_SECONDS
 )
 
 from tools.logger import get_logger
@@ -220,7 +219,11 @@ async def check_oss_file_exist_task(file_path: str) -> bool:
             return True
 
         except Exception as e: # pylint:disable = broad-exception-caught
-            logger.error(f"failed to check oss file: {e}")
+            if "NoSuchKey" in str(e):
+                logger.warning(f"oss file {file_path} not exist")
+            else:
+                logger.error(f"failed to check oss file: {e}")
+
             return False
 
 
@@ -435,6 +438,43 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             logger.error(f"failed to delete oss file: {e}")
             return False
 
+
+@celery_app.task()
+async def sign_url_task(file_path: str, expires: int) -> str | None:
+    """
+    签名OSS文件下载URL
+
+    :param file_path: OSS文件路径（如"folder/file.zip")
+    :param expires: 过期时间（秒），默认值为OSS_DEFAULT_TIMEOUT_SECONDS
+
+    :return: str 签名后的URL
+    """
+    oss_client = create_oss_sync_client()
+    try:
+        # 创建OSS客户端
+        if oss_client is None:
+            raise HTTPException(status_code=500, detail="oss client create failed")
+
+        # 获取bucket名称
+        bucket_name = OSS_BUCKET_NAME
+        if not bucket_name:
+            raise HTTPException(status_code=500, detail="oss bucket name not set")
+
+        # 生成预签名的URL
+        pre_result = oss_client.presign(
+            GetObjectRequest(
+                bucket=bucket_name,  # 指定存储空间名称
+                key=file_path,        # 指定对象键名
+                response_content_disposition="attachment",# 设置为强制下载
+            ),
+            expires=timedelta(seconds=expires),
+        )
+
+        sign_url = pre_result.url
+        return sign_url
+    except Exception as e: # pylint:disable = broad-exception-caught
+        logger.error(f"failed to sign oss file: {e}")
+        return None
 
 @celery_app.task()
 def get_oss_presigned_url_task(file_path: str, expires: int = 300) -> str | None:

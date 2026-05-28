@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from celery.result import AsyncResult
 
 from database.db import get_async_engine
+from database.redis_client import redis_client
 from api.user_api_helper import get_user_by_id
 from api.experiment_api_business import get_origin_imzml_by_file_id
 from api.experiment_api_helper import validate_experiment_type, packup_oss_file
@@ -38,6 +39,7 @@ from constants.file_constants import (
     LOCAL_STORAGE_ROOT,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     FC_PACKUP_TIMEOUT_SECONDS,
+    DOWNLOAD_ZIP_TTL_MINUTES,
 )
 from exceptions import (
     duplicate_file_exception,
@@ -51,11 +53,11 @@ from exceptions import (
     part_number_out_of_range_exception,
     user_file_limit_exception,
     hash_size_validation_failed_exception,
-    download_not_implemented_exception
+    origin_type_not_supported_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, PartInDB
+from models.file_models import FileCreate, FileInDB, PartInDB, PackupStatus
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus
@@ -240,10 +242,10 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
-async def prepare_download_file(
+async def prepare_download_file_local(
     session: AsyncSession,
     file_record: FileInDB,
-) -> tuple[Path | str, str | None]:
+) -> Path:
     """
     准备下载文件,处理实验文件的ZIP打包
 
@@ -253,19 +255,12 @@ async def prepare_download_file(
     Raises:
         file_content_missing_exception: 文件内容缺失
     """
-    storage_type = file_record.storage_type
     try:
-        # 根据存储类型检查源文件是否存在
-        if storage_type == "local":
-            path = Path(file_record.path) if file_record.path else None
-            # 文件存在,直接返回
-            if path and path.exists():
-                return (path, None)
-        elif storage_type == "oss":
-            # 文件存在逻辑由oss端fc处理
-            pass
-        else:
-            raise download_not_implemented_exception
+        # 检查源文件是否存在
+        path = Path(file_record.path) if file_record.path else None
+        # 文件存在,直接返回
+        if path and path.exists():
+            return path
 
         # 处理 origin 文件(imzML) # TODO： 封装函数
         if file_record.experiment_type == "imzML":
@@ -278,71 +273,30 @@ async def prepare_download_file(
                 )
                 raise file_content_missing_exception
 
-            # 根据存储类型获取 origin 文件路径
-            imzml_path, ibd_path = None, None
-            # TODO： 封装函数
-            if storage_type == "local":
-                imzml_path = Path(origin.imzml_path) if origin.imzml_path else None
-                ibd_path = Path(origin.ibd_path) if origin.ibd_path else None
-                if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
-                    logger.warning("origin files missing file_id=%s", file_record.file_id)
-                    raise file_content_missing_exception
-            elif storage_type == "oss":
-                imzml_path = origin.imzml_path if origin.imzml_path else None
-                ibd_path = origin.ibd_path if origin.ibd_path else None
-                if (
-                    not imzml_path or not ibd_path or
-                    not await OssStorage.check_file_exist(imzml_path) or
-                    not await OssStorage.check_file_exist(ibd_path)
-                ):
-                    logger.warning("origin files missing file_id=%s", file_record.file_id)
-                    raise file_content_missing_exception
+            # 获取 origin 文件路径
+            imzml_path = Path(origin.imzml_path) if origin.imzml_path else None
+            ibd_path = Path(origin.ibd_path) if origin.ibd_path else None
+            if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
+                logger.warning("origin files missing file_id=%s", file_record.file_id)
+                raise file_content_missing_exception
 
-                # 校验oss中的 origin 文件夹是否存在
-                origin_path = f"{Path(imzml_path).parent}/"
-                if not await OssStorage.check_file_exist(origin_path):
-                    logger.warning("origin folder not found file_id=%s, origin_path=%s", file_record.file_id, origin_path)
-                    raise file_content_missing_exception
-            else:
-                raise download_not_implemented_exception
+            # 打包文件
+            # 创建 ZIP 包(存放在本地存储根目录下)
+            zip_filename = f"{file_record.filename}.{file_record.file_type }"
+            LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+            zip_path = LOCAL_STORAGE_ROOT / zip_filename
 
+            # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
+            assert isinstance(imzml_path, Path) and isinstance(ibd_path, Path)
+            files_to_zip = [
+                (str(imzml_path), imzml_path.name),
+                (str(ibd_path), ibd_path.name),
+            ]
 
-            # 根据不同存储类型打包文件
-            zip_path, zip_download_url = None, None
-            if storage_type == "local":
-                # 创建 ZIP 包(存放在本地存储根目录下)
-                zip_filename = f"{file_record.filename}.{file_record.file_type }"
-                LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-                zip_path = LOCAL_STORAGE_ROOT / zip_filename
-
-                # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
-                assert isinstance(imzml_path, Path) and isinstance(ibd_path, Path)
-                files_to_zip = [
-                    (str(imzml_path), imzml_path.name),
-                    (str(ibd_path), ibd_path.name),
-                ]
-
-                task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-                zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
-                if zip_size is None:
-                    raise file_content_missing_exception
-
-            elif storage_type == "oss":
-                zip_path, zip_download_url, fc_request_id = await packup_oss_file(
-                    packup_folder = origin_path, # type: ignore # 理论上origin_path存在，直接用即可
-                    zip_file_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
-                    timeout_seconds = FC_PACKUP_TIMEOUT_SECONDS,
-                )
-                if zip_path is None or zip_download_url is None:
-                    raise file_content_missing_exception
-                zip_size = await OssStorage.get_file_size(zip_path)
-                if zip_size is None:
-                    raise file_content_missing_exception
-                # 后台获取fc打包日志
-                if fc_request_id is not None:
-                    get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
-            else:
-                raise download_not_implemented_exception
+            task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
+            zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
+            if zip_size is None:
+                raise file_content_missing_exception
 
             # 更新文件记录
             file_record.path = str(zip_path)
@@ -355,9 +309,177 @@ async def prepare_download_file(
                 file_record.size,
             )
 
-            return (zip_path, zip_download_url)
+            return zip_path
 
         raise file_content_missing_exception
+
+    except HTTPException as e:
+        logger.error(f"prepare_download_file failed: {e}")
+        raise e
+    except Exception as e:
+        logger.error(f"prepare_download_file failed: {e}")
+        raise internal_server_error_exception from e
+
+async def prepare_download_file_oss(
+    session: AsyncSession,
+    file_record: FileInDB,
+) -> str:
+    """
+    准备下载文件,处理实验文件的ZIP打包
+
+    Returns:
+        文件下载URL，如果正在打包则返回 "<PACKING>"
+
+    Raises:
+        file_content_missing_exception: 文件内容缺失
+    """
+    zip_size = None
+    zip_path = None
+    zip_download_url = None
+    fc_request_id = None
+    should_pack = False
+
+    oss_packup_key = f"oss_packup-{file_record.filename}"
+    oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
+
+    try:
+        # 先检查redis是否存在正在进行或已完成打包流程
+        packup = await redis_client.hgetall(oss_packup_key) # type: ignore
+
+        # 没有打包流程
+        if not packup:
+            # 检查源ZIP文件是否存在，不存在则进入常规打包流程
+            if not await OssStorage.check_file_exist(file_record.path):
+                should_pack = True
+                # 检查是否有其他进程正在打包
+                lock = await redis_client.get(oss_packup_lock_key)
+                if lock:
+                    logger.warning("packup is in progress by other user, now wait for it to finish, filename=%s", file_record.filename)
+                    zip_download_url = "<PACKING>"
+                else:
+                    # 加锁，防止其他进程同时打包
+                    await redis_client.set(oss_packup_lock_key, "1", ex=10)
+            else:
+                # 源ZIP文件存在，直接返回下载URL
+                zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=DOWNLOAD_ZIP_TTL_MINUTES * 60)
+
+                # 写入redis，标记为已完成
+                await redis_client.hset(oss_packup_key, mapping={
+                    "status": PackupStatus.COMPLETED,
+                    "file_path": file_record.path,
+                    "download_url": zip_download_url}) # type: ignore
+
+        elif packup.get("status") == PackupStatus.PACKING: # 正在打包，等待打包完成
+            logger.info("packup is in progress, file_id=%s", file_record.file_id)
+            zip_download_url = "<PACKING>"
+
+        elif packup.get("status") == PackupStatus.COMPLETED:  # 打包完成，返回打包后的文件路径
+            zip_path = packup.get("file_path")
+            fc_request_id = packup.get("fc_request_id")
+            zip_download_url = packup.get("download_url")
+            if not zip_path:
+                logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename) # filename
+                should_pack = True
+            elif not await OssStorage.check_file_exist(zip_path):
+                logger.warning(f"packup completed but zip has been cleaned up, now start new packup, filename={file_record.filename}")
+                should_pack = True
+            elif zip_download_url is not None:
+                # 直接返回已生成的下载URL
+                logger.info("packup has completed and signed, return download_url directly, filename=%s", file_record.filename)
+            else:
+                zip_size = await OssStorage.get_file_size(zip_path)
+                if zip_size is None:
+                    raise file_content_missing_exception
+
+                # 生成下载URL
+                zip_download_url = await OssStorage.sign_download_url(zip_path, expires=DOWNLOAD_ZIP_TTL_MINUTES * 60)
+
+                # 将生成的URL写入redis
+                await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url}) # type: ignore
+
+                # 后台获取fc打包日志（只触发不等待）
+                if fc_request_id is not None:
+                    get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
+
+                # 更新文件记录
+                file_record.path = zip_path
+                file_record.size = zip_size# type: ignore
+
+                logger.info(
+                    "prepared download zip file_id=%s path=%s size=%s",
+                    file_record.file_id,
+                    zip_path,
+                    file_record.size,
+                )
+
+        elif packup.get("status") == PackupStatus.FAILED:  # 打包失败，返回错误信息
+            logger.error("packup failed, filename=%s", file_record.filename)
+            fc_request_id = packup.get("fc_request_id")
+            await redis_client.delete(oss_packup_key) # 删除失败的打包记录
+            # 后台获取fc打包日志（只触发不等待）
+            if fc_request_id is not None:
+                get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
+            raise file_content_missing_exception
+
+        else:
+            logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename) # filename
+            should_pack = True
+
+        # 常规打包流程
+        if should_pack:
+            # 处理 origin 文件(imzML) # TODO： 封装函数
+            if file_record.experiment_type == "imzML":
+                assert file_record.file_id is not None
+                origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
+
+                if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
+                    logger.warning(
+                        "origin not found or not completed file_id=%s", file_record.file_id
+                    )
+                    raise file_content_missing_exception
+
+                # 获取 origin 文件路径并校验是否存在
+                imzml_path = origin.imzml_path if origin.imzml_path else None
+                ibd_path = origin.ibd_path if origin.ibd_path else None
+                if (
+                    not imzml_path or not ibd_path or
+                    not await OssStorage.check_file_exist(imzml_path) or
+                    not await OssStorage.check_file_exist(ibd_path)
+                ):
+                    logger.warning("origin files missing file_id=%s", file_record.file_id)
+                    raise file_content_missing_exception
+
+                origin_path = f"{Path(imzml_path).parent}/"
+
+                # 异步触发FC文件打包（只触发不等待，返回函数调用ID，打包完成会由FC端调用回调通知）
+                fc_request_id = await packup_oss_file(
+                    filename=file_record.filename,
+                    packup_folder = origin_path, # type: ignore # 理论上origin_path存在，直接用即可
+                    zip_file_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
+                )
+
+                if fc_request_id is None:
+                    logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
+                    raise internal_server_error_exception
+
+                # Redis 标记正在打包状态
+                await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
+                await redis_client.expire(oss_packup_key, DOWNLOAD_ZIP_TTL_MINUTES * 60 or 360)
+
+                zip_download_url = "<PACKING>"
+            else:
+                logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
+                raise origin_type_not_supported_exception
+
+        if not zip_download_url:
+            logger.error("zip_download_url is None, filename=%s", file_record.filename)
+            raise file_content_missing_exception
+
+        # 只在不需要打包 / 打包已完成 / 打包失败时删锁，正在打包时保留单请求锁
+        if zip_download_url != "<PACKING>":
+            await redis_client.delete(oss_packup_lock_key)
+
+        return zip_download_url
 
     except HTTPException as e:
         logger.error(f"prepare_download_file failed: {e}")
