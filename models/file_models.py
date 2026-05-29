@@ -121,6 +121,7 @@ class FilePublic(FileBase):
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
     tic_path: str | None = Field(default=None, description="TIC图像在OSS上的路径")
+    is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
 
 
 class FileListResponse(SQLModel):

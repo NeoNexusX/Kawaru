@@ -105,8 +105,10 @@ async def preflight_create_file(
 
     reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
+    is_reuse = False
     if reused_file:
         file_record = reused_file
+        is_reuse = True
     else:
         file_record = FileInDB(
              **file_data.model_dump(),
@@ -127,7 +129,9 @@ async def preflight_create_file(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
         f"storage={file_data.storage_type} size={file_data.size} parts={file_data.total_parts} experiment_type={file_data.experiment_type}")
 
-    return file_record # type: ignore
+    result = FilePublic.model_validate(file_record)
+    result.is_reuse = is_reuse
+    return result # type: ignore
 
 
 async def upload_file_part(
