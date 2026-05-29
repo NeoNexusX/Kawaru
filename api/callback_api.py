@@ -13,6 +13,7 @@ from api.experiment_api_business import create_origin_record, mark_origin, delet
 from api.processing_api_business import get_process_run_by_id, mark_process_run
 from background.processing_background import trigger_fc_tic_task
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
+from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
@@ -332,11 +333,11 @@ async def oss_packup_callback(
         # 打包成功，存储URL，更新状态为COMPLETED
         if status == PackupStatus.COMPLETED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
         # 打包失败，更新状态为FAILED
         if status == PackupStatus.FAILED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
 
     except Exception as e:
         logger.error("oss packup callback error, filename=%s, error=%s", filename, e)
