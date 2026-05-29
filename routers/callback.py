@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi import status
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, OssPackupCallbackDep
+from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep, TicCallbackDep, OssPackupCallbackDep
 
 callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
 
@@ -24,6 +24,19 @@ async def get_config(config: GetConfigDep):
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
     """OSS上传完成回调"""
     return file_record
+
+
+@callback_router.post("/algorithm_callback", response_model=AlgorithmCallbackDep)
+async def algorithm_callback(run_record: AlgorithmCallbackDep):
+    """FC算法处理完成回调"""
+    return run_record
+
+
+@callback_router.post("/tic_callback", response_model=TicCallbackDep)
+async def tic_callback(file_record: TicCallbackDep):
+    """FC TIC图像生成回调"""
+    return file_record
+
 
 @callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)
 async def oss_packup_callback(packup_status: OssPackupCallbackDep): # pylint: disable=unused-argument

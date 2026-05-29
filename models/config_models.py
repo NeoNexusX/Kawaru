@@ -93,6 +93,7 @@ class StorageSettings(BaseModel):
     cleanup_failed_experiments_interval_minutes: int
     preflight_ttl_minutes: int
     download_zip_ttl_minutes: int
+    signed_url_ttl_seconds: int
     failed_experiment_ttl_minutes: int
 
 
@@ -105,12 +106,15 @@ class OSSSettings(BaseModel):
     oss_zip_storage_root: str | None = None
     oss_packup_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
+    oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     fc_logstore_name: str | None = Field(default=None, description="函数计算SLS日志存储名称")
     fc_log_project_name: str | None = Field(default=None, description="函数计算SLS日志项目名称")
     fc_unzip_timeout_seconds: int | None = Field(default=20, description="函数调用超时时间，单位秒")
     fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包公网地址")
     fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
+    fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
+    fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):
@@ -125,6 +129,7 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
+    max_processing_size_gb: int
 
 
 class SampleInfoSettings(BaseModel):

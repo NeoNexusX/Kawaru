@@ -14,6 +14,7 @@ from background.file_background_helper import (
     get_oss_packup_sts_token_task,
     tag_oss_file_task,
     sign_url_task,
+    get_oss_presigned_url_task
 )
 
 from models.auth import OssStsToken
@@ -221,7 +222,7 @@ class OssStorage:
         :return: 文件大小，单位字节
         """
         res: AsyncResult = get_oss_file_size_task.delay(file_path) # type: ignore
-        size: int = await wait_for_result(res, poll_interval=0.1, timeout=10)
+        size: int = await wait_for_result(res, poll_interval=0.1, timeout=10) # type: ignore
         if size is None:
             logger.error(f"failed to get oss file size due to server timeout: {file_path}")
             return 0
@@ -244,14 +245,14 @@ class OssStorage:
 
         # 2. 判断是否需要添加【临时打包文件】的删除任务
         if not file_path.endswith("/"):
-            potential_packup_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.rstrip('/')}/{Path(file_path).name}"
+            potential_packup_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.rstrip('/')}/{Path(file_path).name}" # type: ignore
             # 检查打包文件是否存在
             is_packup_file_exist = await OssStorage.check_file_exist(potential_packup_path)
             if is_packup_file_exist:
                 task_list.append(delete_oss_file_task.si(potential_packup_path)) # type: ignore
 
         # 3. 并发执行删除任务
-        delete_tasks: GroupResult = group(task_list).delay()
+        delete_tasks: GroupResult = group(task_list).delay() # type: ignore
 
         # 4. 异步等待结果（支持GroupResult，无阻塞）
         delete_results: Sequence[bool] | None = await wait_for_result(
@@ -304,3 +305,19 @@ class OssStorage:
             logger.error(f"failed to sign oss file due to server timeout: {file_path}")
             return None
         return sign_url
+
+    @staticmethod
+    async def get_presigned_download_url(file_path: str, expires: int = 300) -> str | None:
+        """
+        获取 OSS 文件预签名下载 URL。
+
+        :param file_path: OSS文件路径
+        :param expires: 过期时间（秒）
+        :return: 预签名 URL
+        """
+        res: AsyncResult = get_oss_presigned_url_task.delay(file_path, expires) # type: ignore
+        url: str | None = await wait_for_result(res, poll_interval=0.1, timeout=OSS_DEFAULT_TIMEOUT_SECONDS) # type: ignore
+        if url is None:
+            logger.error("failed to get presigned url due to server timeout: %s", file_path)
+            return None
+        return url

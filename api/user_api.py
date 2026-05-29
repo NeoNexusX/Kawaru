@@ -37,10 +37,11 @@ from database.redis_client import redis_client
 from celery_runtime.management import TaskManager
 from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
+from constants.file_constants import MAX_FILES_PER_USER
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
-from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic
+from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
 logger = get_logger("api.user_api")
@@ -443,6 +444,21 @@ async def get_user_list(
         raise internal_server_error_exception from e
 
 
+async def get_user_quota(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+) -> UserQuotaPublic:
+    """返回当前用户的配额信息"""
+    config = get_config()
+    return UserQuotaPublic(
+        max_file_size_gb=config.storage.max_file_size_gb,
+        total_uploaded_size_bytes=current_user.total_file_size,
+        file_count=current_user.file_count,
+        max_files_per_user=MAX_FILES_PER_USER,
+        max_processing_size_gb=config.user.max_processing_size_gb,
+        total_processed_size_bytes=current_user.processed_file_size,
+    )
+
+
 ##########################
 # 以下为依赖注入创建的类型别名
 ##########################
@@ -455,3 +471,4 @@ UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用�
 UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 根据用户 ID 删除指定用户
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
 ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖
+UserQuotaDep = Annotated[UserQuotaPublic, Depends(get_user_quota)]  # 获取用户配额

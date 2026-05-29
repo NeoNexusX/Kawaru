@@ -46,8 +46,8 @@ from .conftest import logger
 TEST_FILENAME = "test_oss_100MB_2"
 TEST_FILL_SIZE = 512 * 1024  # 512 KB，调整此值控制 zip 大小
 TEST_CHUNK_COUNT = 4          # 分片数量，调整此值控制分片数
-TEST_IMZML_SIZE = 100 * 1024 * 1024  # 512 MB，调整此值控制 imzML 大小
-TEST_IBD_SIZE =  100 * 1024 * 1024  # 512 MB，调整此值控制 ibd 大小
+TEST_IMZML_SIZE = 5 * 1024 * 1024  # 512 MB，调整此值控制 imzML 大小
+TEST_IBD_SIZE =  5 * 1024 * 1024  # 512 MB，调整此值控制 ibd 大小
 
 
 def _make_test_zip_to_local(imzml_size: int = TEST_IMZML_SIZE, ibd_size: int = TEST_IBD_SIZE) -> Path:
@@ -406,7 +406,7 @@ class TestFile:
 
         zip_path = _make_test_zip_to_local()
         file_verify_code, size = await compute_file_md5(zip_path) # type: ignore
-        logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
+        logger.info(f"test_upload_to_local: file_verify_code={file_verify_code}, size={size}")
 
         # 1. preflight
         start_time_seconds = time.perf_counter()
@@ -422,7 +422,7 @@ class TestFile:
         )
         assert rs.status_code == 200, rs.text
         pre_file_id = rs.json()["file_id"]
-        logger.info(f"test_upload_to_oss: preflight ok, pre_file_id={pre_file_id}")
+        logger.info(f"test_upload_to_local: preflight ok, pre_file_id={pre_file_id}")
 
         # 2. upload
         with open(zip_path, "rb") as f:

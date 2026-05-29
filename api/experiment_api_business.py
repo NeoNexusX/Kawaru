@@ -7,6 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from storage_backend.storage import OssStorage
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
+from models.processing_models import ExperimentProcessRunInDB
 from models.file_models import FileInDB
 from api.file_api_helper import get_file_record_by_id, delete_multiple_files_by_storage
 from tools.logger import get_logger
@@ -65,7 +66,16 @@ async def delete_origin_files(
         logger.debug("no origin found for file_id=%s", file_id)
         return
 
-    # 收集需要删除的文件
+    # 清理所有 process_run 的结果文件（DB 记录由 FK CASCADE 自动删除）
+    process_runs = (await session.exec(
+        select(ExperimentProcessRunInDB).where(ExperimentProcessRunInDB.experiment_id == origin.id))).all()
+
+    for run in process_runs:
+        if run.out_path:
+            from api.processing_api_business import cleanup_output_dir # type: ignore
+            await cleanup_output_dir(run.out_path, storage_type)
+
+    # 收集需要删除的 origin 文件
     files_to_delete = []
     if origin.imzml_path:
         files_to_delete.append(origin.imzml_path)

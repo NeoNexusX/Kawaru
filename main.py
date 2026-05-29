@@ -14,6 +14,7 @@ from routers.user import user_router
 from routers.file import file_router
 from routers.callback import callback_router
 from routers.experiment import originexperiment_router
+from routers.processing import processing_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
@@ -57,6 +58,7 @@ app.include_router(user_router)
 app.include_router(file_router)
 app.include_router(callback_router)
 app.include_router(originexperiment_router)
+app.include_router(processing_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":

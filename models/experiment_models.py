@@ -3,9 +3,14 @@
 """
 from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey, BigInteger
+from typing import TYPE_CHECKING
+
+from sqlmodel import Field, SQLModel, Relationship, Column, Integer, ForeignKey, BigInteger
 from tools import utc_time
 from boot.config import get_config
+
+if TYPE_CHECKING:
+    from models.processing_models import ExperimentProcessRunInDB
 
 config = get_config()
 storage_config = config.storage
@@ -82,6 +87,14 @@ class OriginImzMLInDB(ExperimentBase, table=True):
     status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)
     error_message: str = Field(default="", description="错误信息(失败时)", max_length=255)
 
+    # ORM 层级联删除：删除 origin 时自动级联删除关联的 process_run
+    process_runs: list["ExperimentProcessRunInDB"] = Relationship(
+        back_populates="experiment",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",  # ORM 层：删除父记录时级联标记子记录
+            "passive_deletes": True            # 告知 ORM：DB 已配置 CASCADE，无需逐行 DELETE
+        }
+    )
 
 class OriginImzMLPublic(ExperimentPublic):
     """ImzML 原始数据公开模型(继承公共字段，添加 imzML 特有字段)"""

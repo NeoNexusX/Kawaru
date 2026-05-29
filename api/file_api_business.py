@@ -38,8 +38,8 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
-    FC_PACKUP_TIMEOUT_SECONDS,
-    DOWNLOAD_ZIP_TTL_MINUTES,
+    SIGNED_URL_EXPIRE_SECONDS,
+    PACKUP_CACHE_TTL_SECONDS,
 )
 from exceptions import (
     duplicate_file_exception,
@@ -361,13 +361,14 @@ async def prepare_download_file_oss(
                     await redis_client.set(oss_packup_lock_key, "1", ex=10)
             else:
                 # 源ZIP文件存在，直接返回下载URL
-                zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=DOWNLOAD_ZIP_TTL_MINUTES * 60)
+                zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
 
                 # 写入redis，标记为已完成
                 await redis_client.hset(oss_packup_key, mapping={
                     "status": PackupStatus.COMPLETED,
                     "file_path": file_record.path,
                     "download_url": zip_download_url}) # type: ignore
+                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
         elif packup.get("status") == PackupStatus.PACKING: # 正在打包，等待打包完成
             logger.info("packup is in progress, file_id=%s", file_record.file_id)
@@ -392,10 +393,11 @@ async def prepare_download_file_oss(
                     raise file_content_missing_exception
 
                 # 生成下载URL
-                zip_download_url = await OssStorage.sign_download_url(zip_path, expires=DOWNLOAD_ZIP_TTL_MINUTES * 60)
+                zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
 
                 # 将生成的URL写入redis
                 await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url}) # type: ignore
+                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
                 # 后台获取fc打包日志（只触发不等待）
                 if fc_request_id is not None:
@@ -464,7 +466,7 @@ async def prepare_download_file_oss(
 
                 # Redis 标记正在打包状态
                 await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
-                await redis_client.expire(oss_packup_key, DOWNLOAD_ZIP_TTL_MINUTES * 60 or 360)
+                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
                 zip_download_url = "<PACKING>"
             else:

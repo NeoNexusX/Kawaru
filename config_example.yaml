@@ -21,7 +21,7 @@ cors:
     - "Content-Length"
 
 token:
-  token_expire_minutes: 1440
+  token_expire_minutes: 360
   login_expire_minutes: 120
   algorithm: HS256
 
@@ -93,6 +93,7 @@ storage:
   cleanup_failed_experiments_interval_minutes: 60
   preflight_ttl_minutes: 30
   download_zip_ttl_minutes: 30
+  signed_url_ttl_seconds: 5
   failed_experiment_ttl_minutes: 30
 
 oss:
@@ -103,12 +104,15 @@ oss:
   oss_zip_storage_root: data/
   oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
+  oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
   fc_logstore_name: default-logs
   fc_log_project_name: serverless-cn-hangzhou-aa660bbc-2121-50eb-8de1-2d1d263fecc2
   fc_unzip_timeout_seconds: 40
   fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
   fc_packup_timeout_seconds: 200
+  fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
+  fc_algorithm_timeout_seconds: 60
 
 admin_info:
   username: kawaru
@@ -141,6 +145,7 @@ user:
   max_region_length: 128
   max_orcid_length: 128
   max_homepage_length: 128
+  max_processing_size_gb: 200
 
 sample_info:
   max_experiment_name_length: 128

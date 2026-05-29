@@ -126,5 +126,16 @@ def check_oss_config(config: OSSSettings):
 
 
 def init_oss_summary(client: oss_aio.AsyncClient | None):
-    """同步包装异步验证"""
-    asyncio.run(oss_summary(client))
+    """同步包装异步验证，兼容已有事件循环的场景"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # 已有运行中的事件循环（如 uvicorn），提交任务但不阻塞等待
+        # 注意：无法同步等待结果，验证失败仅在日志中体现
+        asyncio.run_coroutine_threadsafe(oss_summary(client), loop)
+    else:
+        # 没有运行中的事件循环，直接 run 并同步等待结果
+        asyncio.run(oss_summary(client))

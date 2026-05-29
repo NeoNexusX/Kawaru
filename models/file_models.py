@@ -24,6 +24,12 @@ sample_config = config.sample_info
 user_config = config.user
 
 
+class FileStatus(str, Enum): # TODO
+    """文件处理状态枚举"""
+    UPLOADING = "uploading"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 class PackupStatus(str, Enum):
     """文件打包状态"""
     PACKING = "packing"
@@ -61,6 +67,8 @@ class FileBase(SQLModel):
                                           max_length=sample_config.max_maldi_matrix_application_length,)
     solvent: str = Field(default="",description="使用溶剂(选填)",max_length=sample_config.max_solvent_length,)
     is_public: bool = Field(default=False, description="是否公开文件")
+    spectrum_mode: str = Field(default="profile", max_length=32, description="谱图模式: profile | centroid")
+    storage_mode: str = Field(default="continuous", max_length=32, description="存储模式: continuous | processed")
 
     #质谱相关系数
     polarity: str = Field(default="",description="极性 (Polarity), 如 positive, negative",max_length=sample_config.max_polarity_length,)
@@ -103,6 +111,7 @@ class FilePublic(FileBase):
     """对外返回的文件信息"""
 
     file_id: int
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, processing, completed, failed")
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
@@ -111,6 +120,8 @@ class FilePublic(FileBase):
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
+    tic_path: str | None = Field(default=None, description="TIC图像在OSS上的路径")
+    is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
 
 
 class FileListResponse(SQLModel):
@@ -127,6 +138,7 @@ class FileInDB(FileBase, table=True):
     is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, processing, completed, failed")
     first_uploaded_by: str | None = Field(default=None, max_length=user_config.max_username_length, description="首次上传该文件的用户名")
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
@@ -134,6 +146,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
+    tic_path: str | None = Field(default=None, max_length=255, description="TIC 图像在 OSS 上的路径")
 
     # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(

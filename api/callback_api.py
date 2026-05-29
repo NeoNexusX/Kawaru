@@ -1,6 +1,8 @@
 from typing import Annotated
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from zipfile import BadZipFile
+
+from sqlmodel import select
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from database.redis_client import redis_client
@@ -8,18 +10,23 @@ from storage_backend.storage import OssStorage
 
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
+from api.processing_api_business import get_process_run_by_id, mark_process_run
+from background.processing_background import trigger_fc_tic_task
+from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
+from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 
-from models.file_models import FileInDB, FilePublic, PackupStatus
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
-from models.callback_models import OssUploadCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback
+from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
+from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
     oss_packup_callback_error_exception,
 )
-from exceptions.experiment_exceptions import invalid_zip_file_exception
+from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
 
 from boot.config import get_config
@@ -128,6 +135,7 @@ async def oss_upload_callback(
         # 更新文件路径和实验路径
         source_file.path = file_path
         source_file.uploaded_at = utc_time()
+        source_file.status = FileStatus.COMPLETED
         origin_record.status = ExperimentStatus.COMPLETED
         origin_record.imzml_path = imzml_path
         origin_record.ibd_path = ibd_path
@@ -150,10 +158,14 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
+        # 异步触发 FC 生成 TIC 图像
+        trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+
         return source_file
 
     except (BadZipFile, FileNotFoundError) as e:
-        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除
+        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除 # type: ignore
+        source_file.status = FileStatus.FAILED # type: ignore
         async_session.add(source_file)
         await mark_origin(
             async_session = async_session,
@@ -166,8 +178,12 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}")
+        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}") # type: ignore
         raise invalid_zip_file_exception from e
+
+    except HTTPException:
+        await async_session.rollback()
+        raise
 
     except Exception as e:
         # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
@@ -176,12 +192,133 @@ async def oss_upload_callback(
         # 删除原始zip，清理记录的file的path信息
         if source_file_id:
             async with AsyncSession(get_async_engine()) as async_session:
-                await delete_source_file_and_clear_path(async_session, source_file_id)
+                await delete_source_file_and_clear_path(async_session, source_file_id) # type: ignore
                 await async_session.commit()
 
         logger.error("oss upload callback error, filename=%s, error=%s", filename, e)
         raise internal_server_error_exception from e
 
+
+async def algorithm_callback(
+    callback_info: AlgorithmCallback,
+    async_session: AsyncSessionDep,
+) -> ExperimentProcessRunInDB:
+    """
+    FC 算法处理完成回调
+
+    根据处理结果更新 process_run 状态和用户配额。
+
+    :param callback_info: 算法回调信息
+    :param async_session: 异步会话依赖
+    :return: ExperimentProcessRunInDB
+    """
+    run_id = callback_info.run_id
+    is_success = callback_info.is_success
+    out_path = callback_info.out_path
+    output_size = callback_info.output_size
+    error_type = callback_info.error_type
+    error_message = callback_info.error_message
+
+    try:
+        run_record = await get_process_run_by_id(async_session, run_id)
+        if not run_record:
+            logger.error("process run not found for algorithm callback run_id=%s", run_id)
+            raise invalid_process_request_exception
+
+        # 处理失败
+        if not is_success:
+            await mark_process_run(
+                async_session, run_record,
+                status=ProcessingStatus.FAILED,
+                error_message=error_message or error_type or "FC algorithm processing failed",
+            )
+            await async_session.commit()
+            await async_session.refresh(run_record)
+            logger.info("algorithm callback failed run_id=%s error=%s", run_id, error_message)
+            return run_record
+
+        # 校验回调数据完整性
+        if not out_path or not output_size or output_size <= 0:
+            logger.error("algorithm callback data incomplete run_id=%s", run_id)
+            raise file_content_missing_exception
+
+        # 更新 run 状态
+        await mark_process_run(
+            async_session, run_record,
+            status=ProcessingStatus.COMPLETED,
+            out_path=out_path,
+            output_size=output_size,
+        )
+
+        # 累加用户处理配额
+        user = (await async_session.exec(
+            select(UserInDB).where(UserInDB.id == run_record.user_id)
+        )).first()
+        if user is not None:
+            user.processed_file_size += output_size
+            async_session.add(user)
+
+        await async_session.commit()
+        await async_session.refresh(run_record)
+
+        logger.info(
+            "algorithm callback success run_id=%s out_path=%s output_size=%s",
+            run_id, out_path, output_size,
+        )
+        return run_record
+
+    except HTTPException:
+        await async_session.rollback()
+        raise
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("algorithm callback error run_id=%s error=%s", run_id, e)
+        raise internal_server_error_exception from e
+
+
+async def tic_callback(
+    callback_info: TicCallback,
+    async_session: AsyncSessionDep,
+) -> FileInDB:
+    """
+    FC TIC 图像生成回调。
+
+    更新文件的 tic_path 字段。
+    """
+    file_id = callback_info.file_id
+    is_success = callback_info.is_success
+    tic_path = callback_info.tic_path
+
+    try:
+        file_record = (
+            await async_session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id)
+            )
+        ).first()
+        if not file_record:
+            logger.error("tic callback: file not found file_id=%s", file_id)
+            raise file_content_missing_exception
+
+        if not is_success:
+            logger.warning("tic generation failed file_id=%s error=%s",
+                           file_id, callback_info.error_message)
+            return file_record
+
+        file_record.tic_path = tic_path
+        async_session.add(file_record)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+
+        logger.info("tic callback success file_id=%s tic_path=%s", file_id, tic_path)
+        return file_record
+
+    except HTTPException:
+        await async_session.rollback()
+        raise
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("tic callback error file_id=%s error=%s", file_id, e)
+        raise internal_server_error_exception from e
 
 async def oss_packup_callback(
     filename: str,
@@ -196,11 +333,11 @@ async def oss_packup_callback(
         # 打包成功，存储URL，更新状态为COMPLETED
         if status == PackupStatus.COMPLETED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
         # 打包失败，更新状态为FAILED
         if status == PackupStatus.FAILED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", 60 * 5) # 5分钟过期
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
 
     except Exception as e:
         logger.error("oss packup callback error, filename=%s, error=%s", filename, e)
@@ -211,4 +348,6 @@ async def oss_packup_callback(
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
+AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
+TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
 OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

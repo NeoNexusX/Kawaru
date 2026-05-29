@@ -14,7 +14,7 @@ CELERY_MODULE_IMPORTS = [
     "background.file_background_helper",
     "background.experiment_background",
     "background.experiment_background_helper",
-    "background.compute_background",
+    "background.processing_background",
     "storage_backend.oss_log_helper",
 ]
 
@@ -55,7 +55,6 @@ def create_celery_app(
         "task_async_backend": "asyncio",
         "task_default_queue": "default",
         "task_routes": {
-            "background.compute_background.*": {"queue": "compute"},
         },
         "timezone": "UTC",
         "enable_utc": True,

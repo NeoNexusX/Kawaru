@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 from models.auth import Token
 from models.email_models import EmailConfirmRequest
-from models.user_models import UserPublic,UserDetailPublic
+from models.user_models import UserPublic,UserDetailPublic, UserQuotaPublic
 from models.filter_models import ListDataResponse
 from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
-                          AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep)
+                          AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep, UserQuotaDep)
 from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
 
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
@@ -113,3 +113,15 @@ async def list_users(list_user_response: ListUsersDep):
     Params:filter
     """
     return list_user_response
+
+
+@user_router.get("/users/quota", response_model=UserQuotaPublic)
+async def get_user_quota(quota: UserQuotaDep):
+    """
+    获取当前用户的配额信息
+
+    返回：
+    - 上传相关: 单文件大小限额、已上传总大小、文件数、最大文件数
+    - 处理相关: 处理累计限额、已处理总大小
+    """
+    return quota

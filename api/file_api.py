@@ -4,6 +4,7 @@
 import json
 from typing import Annotated, Any
 from fastapi import Depends, File, Form, UploadFile, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -30,6 +31,7 @@ from api.file_api_business import (
 )
 from api.file_api_helper import (
     get_file_record_by_id,
+    delete_file_by_storage,
     save_upload_file,
     prepare_part_temp_path,
 )
@@ -39,6 +41,7 @@ from api.user_api_helper import count_items
 from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
+    file_content_missing_exception,
     file_persist_failed_exception,
     invalid_part_data_exception,
     invalid_request_parameters_exception,
@@ -56,6 +59,7 @@ from models.file_models import (
     PartCreate,
     PartInDB,
     PartPublic,
+    FileStatus,
 )
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
@@ -101,8 +105,10 @@ async def preflight_create_file(
 
     reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
+    is_reuse = False
     if reused_file:
         file_record = reused_file
+        is_reuse = True
     else:
         file_record = FileInDB(
              **file_data.model_dump(),
@@ -123,7 +129,9 @@ async def preflight_create_file(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
         f"storage={file_data.storage_type} size={file_data.size} parts={file_data.total_parts} experiment_type={file_data.experiment_type}")
 
-    return file_record # type: ignore
+    result = FilePublic.model_validate(file_record)
+    result.is_reuse = is_reuse
+    return result # type: ignore
 
 
 async def upload_file_part(
@@ -184,12 +192,12 @@ async def upload_file_part(
         is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
         if is_merged:
             await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
-
-        await async_session.commit()
-        await async_session.refresh(current_user)
-        await async_session.refresh(file_record)
+            file_record.status = FileStatus.PROCESSING
         if not is_merged:
             await async_session.refresh(part_record)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+        await async_session.refresh(current_user)
         logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
 
     except Exception as exc:
@@ -216,6 +224,7 @@ async def validate_and_merge_parts(
     is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
     if is_merged:
         await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
+        file_record.status = FileStatus.PROCESSING
 
     await async_session.commit()
 
@@ -371,14 +380,21 @@ async def upload_simple_file(
             if not oss_sts_token or not oss_path:
                 raise internal_server_error_exception
 
+            # 标记文件进入上传中状态
+            pre_record.status = FileStatus.UPLOADING
+            async_session.add(pre_record)
+            await async_session.commit()
+            await async_session.refresh(pre_record)
+
     except Exception as exc:
-        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}")
+        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}") # type: ignore
         await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空
         raise file_persist_failed_exception from exc
 
     # 如果是本地存储，在此处触发实验文件提取任务
     if storage_type == "local":
         await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
+        pre_record.status = FileStatus.PROCESSING
 
     # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_path和oss_sts_token（仅供返回前端）
     if oss_path and oss_sts_token:
@@ -529,6 +545,10 @@ async def delete_user_file(
     # 删除 origin 相关文件(如果有)
     if file_record.experiment_type == "imzML":
         await delete_origin_files(session, file_id, file_record.storage_type)
+        # 同步删除对应的 TIC 图像
+        if file_record.tic_path:
+            await delete_file_by_storage(file_record.tic_path, file_record.storage_type)
+            logger.info("deleted tic image file_id=%s tic_path=%s", file_id, file_record.tic_path)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -722,6 +742,29 @@ async def oss_upload_file(
     )
 
 
+async def get_file_tic_url(
+    file_id: int,
+    session: AsyncSessionDep,
+) -> RedirectResponse:
+    """
+    获取文件的 TIC 图像 OSS 签名 URL，302 重定向。
+
+    用于前端直接 <img src="/files/{file_id}/tic"> 展示缩略图。
+    """
+    file_record = await get_file_record_by_id(file_id, session)
+    if not file_record.tic_path:
+        raise file_content_missing_exception
+
+    if file_record.storage_type != "oss":
+        raise file_content_missing_exception
+
+    url = await OssStorage.get_presigned_download_url(file_record.tic_path)
+    if not url:
+        raise file_content_missing_exception
+
+    return RedirectResponse(url=url, status_code=302)
+
+
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
@@ -733,3 +776,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
+TicRedirectDep = Annotated[Any, Depends(get_file_tic_url)] #TODO
