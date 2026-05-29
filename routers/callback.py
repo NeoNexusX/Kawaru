@@ -36,6 +36,8 @@ async def algorithm_callback(run_record: AlgorithmCallbackDep):
 async def tic_callback(file_record: TicCallbackDep):
     """FC TIC图像生成回调"""
     return file_record
+
+
 @callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)
 async def oss_packup_callback(packup_status: OssPackupCallbackDep): # pylint: disable=unused-argument
     """OSS打包完成回调"""

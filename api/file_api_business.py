@@ -38,7 +38,6 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     LOCAL_STORAGE_ROOT,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
-    FC_PACKUP_TIMEOUT_SECONDS,
     DOWNLOAD_ZIP_TTL_MINUTES,
 )
 from exceptions import (

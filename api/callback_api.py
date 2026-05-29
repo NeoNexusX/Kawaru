@@ -1,5 +1,5 @@
 from typing import Annotated
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from zipfile import BadZipFile
 
 from sqlmodel import select
@@ -180,6 +180,10 @@ async def oss_upload_callback(
         logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}") # type: ignore
         raise invalid_zip_file_exception from e
 
+    except HTTPException:
+        await async_session.rollback()
+        raise
+
     except Exception as e:
         # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
         await async_session.rollback()
@@ -262,6 +266,9 @@ async def algorithm_callback(
         )
         return run_record
 
+    except HTTPException:
+        await async_session.rollback()
+        raise
     except Exception as e:
         await async_session.rollback()
         logger.error("algorithm callback error run_id=%s error=%s", run_id, e)
@@ -304,6 +311,9 @@ async def tic_callback(
         logger.info("tic callback success file_id=%s tic_path=%s", file_id, tic_path)
         return file_record
 
+    except HTTPException:
+        await async_session.rollback()
+        raise
     except Exception as e:
         await async_session.rollback()
         logger.error("tic callback error file_id=%s error=%s", file_id, e)
