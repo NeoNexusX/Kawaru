@@ -13,7 +13,7 @@ APP_PATH = "celery_runtime.entrypoint:celery_app"
 
 async def _start_worker(*, queues: str, concurrency: int, log_level: str,
                         log_file: str, pool: str, env: dict) -> asyncio.subprocess.Process: # pylint: disable=no-member
-    """启动一个 Celery worker 子进程。新增函数将重复逻辑抽离出来，便于同时启动 default 和 compute 两个 worker。"""
+    """启动一个 Celery worker 子进程。"""
     worker_args = [
         "-A", APP_PATH, "worker",
         "--pool", pool,
@@ -33,9 +33,7 @@ async def _start_worker(*, queues: str, concurrency: int, log_level: str,
 async def start_embedded_celery():
     """由 API 进程托管 worker/beat 子进程。
 
-    启动两个 worker：
-      - default worker：消费 default 队列，沿用原有配置
-      - compute worker：消费 compute 队列，使用 compute_celery 配置
+    启动 default worker（消费 default 队列）和 celery beat。
     """
     await clean_up_stale_task()
     logger = get_logger("celery_runtime.launcher")
@@ -47,10 +45,10 @@ async def start_embedded_celery():
     beat_proc = None
 
     try:
-        # --- default worker（原 I/O 任务）---
+        # --- default worker ---
         celery_cfg = cfg.celery
         pool = celery_cfg.worker_pool
-        if pool not in ("prefork", "gevent", "eventlet"):
+        if pool not in ("prefork", "gevent", "eventlet", "solo"):
             logger.warning("Invalid worker pool %s, defaulting to prefork", pool)
             pool = "prefork"
 
@@ -63,28 +61,8 @@ async def start_embedded_celery():
             env=env,
         )
         workers["default"] = default_worker
-        logger.info("Started default celery worker (pid=%s, queues=default, concurrency=%s)",
-                    default_worker.pid, celery_cfg.worker_concurrency)
-
-        # --- compute worker（重计算任务）---
-        compute_cfg = cfg.compute_celery
-        if compute_cfg.enable_embedded_celery:
-            compute_pool = compute_cfg.worker_pool
-            if compute_pool not in ("prefork", "gevent", "eventlet"):
-                logger.warning("Invalid compute worker pool %s, defaulting to prefork", compute_pool)
-                compute_pool = "prefork"
-
-            compute_worker = await _start_worker(
-                queues="compute",
-                concurrency=compute_cfg.worker_concurrency,
-                log_level=compute_cfg.worker_log_level,
-                log_file=compute_cfg.worker_log_file,
-                pool=compute_pool,
-                env=env,
-            )
-            workers["compute"] = compute_worker
-            logger.info("Started compute celery worker (pid=%s, queues=compute, concurrency=%s)",
-                        compute_worker.pid, compute_cfg.worker_concurrency)
+        logger.info("Started default celery worker (pid=%s, queues=default, pool=%s, concurrency=%s)",
+                    default_worker.pid, pool, celery_cfg.worker_concurrency)
 
         # --- beat ---
         beat_args = [
