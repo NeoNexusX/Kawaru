@@ -77,7 +77,7 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
     if "position" in user_data and user_data["position"] not in ALLOWED_POSITION_TYPES:
         raise user_position_not_allowed_exception
 
-    # 校验 region
+    # 校验 region（ISO2代码）
     if "region" in user_data and user_data["region"] not in ALLOWED_REGIONS:
         raise user_region_not_exist_exception
 

@@ -69,7 +69,7 @@ async def validate_signup_info(user: UserCreate, async_session: AsyncSession):
     if user.position not in ALLOWED_POSITION_TYPES:
         raise user_position_not_allowed_exception
 
-    # 4. 验证用户地区是否存在
+    # 4. 验证用户地区是否存在（ISO2代码）
     if user.region not in ALLOWED_REGIONS:
         raise user_region_not_exist_exception
 
