@@ -24,7 +24,6 @@ from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
-    oss_packup_callback_error_exception,
 )
 from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception

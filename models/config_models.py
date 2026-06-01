@@ -67,7 +67,6 @@ class StorageSettings(BaseModel):
     """文件存储配置模型"""
     root: str
     local_root: str
-    max_file_size_gb: int
     chunk_buffer_size_mb: int
     max_chunks_per_upload: int
     allowed_storage_types: list[str]
@@ -76,8 +75,6 @@ class StorageSettings(BaseModel):
     max_path_length: int
     max_filename_length: int
     max_file_type_length: int
-    max_downloads_per_user: int
-    max_files_per_user: int
     cleanup_preflights_interval_minutes: int
     cleanup_download_zip_interval_minutes: int
     cleanup_failed_experiments_interval_minutes: int
@@ -119,7 +116,6 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
-    max_processing_size_gb: int
 
 
 class SampleInfoSettings(BaseModel):
@@ -152,6 +148,10 @@ class AdminInfo(BaseModel):
     orcid: str
     homepage: str
     email: str
+    max_total_file_size: int
+    max_file_count: int
+    max_processing_size: int
+    max_download_count: int
 
 
 class CORSSettings(BaseModel):

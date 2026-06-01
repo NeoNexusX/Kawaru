@@ -38,7 +38,7 @@ from api.file_api_helper import (
 from api.experiment_api_business import delete_origin_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items
-from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
+from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
 from database.db import AsyncSessionDep
 from exceptions.file_exceptions import (
     file_content_missing_exception,
@@ -584,7 +584,7 @@ async def get_download_file_metadata(
     
     下载限制:
     - 管理员:无限制
-    - 普通用户:受 MAX_DOWNLOADS_PER_USER 限制
+    - 普通用户:受用户下载配额限制
     
     注意:
     - 此接口只返回元数据,不返回文件流
@@ -602,7 +602,7 @@ async def get_download_file_metadata(
     # 下载次数限制检查
     if current_user.identity != "admin":
         used = current_user.download_used or 0
-        if used >= MAX_DOWNLOADS_PER_USER:
+        if used >= current_user.max_download_count:
             raise user_download_limit_exception
 
     # 准备下载文件(业务层处理)

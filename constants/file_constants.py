@@ -24,7 +24,6 @@ OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
 
 
 # 文件大小限制
-MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
 CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB
 
 # 单次上传最大允许分片数限制
@@ -37,16 +36,6 @@ ALLOWED_EXPERIMENT_TYPES = set(storage_config.allowed_experiment_types)
 
 # 文件名限制
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
-
-# 用户文件配额
-MAX_FILES_PER_USER = int(storage_config.max_files_per_user)
-MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
-
-# 用户处理配额
-MAX_PROCESSING_SIZE_PER_USER = int(config.user.max_processing_size_gb) * BYTES_IN_GB
-
-# 下载次数限制
-MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
 
 # 清理过期预检任务的间隔时间
 PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
@@ -82,16 +71,11 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "STORAGE_ROOT",
     "LOCAL_STORAGE_ROOT",
     "TEMP_PARTS_ROOT",
-    "MAX_FILE_SIZE",
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
     "ALLOWED_EXPERIMENT_TYPES",
     "MAX_FILENAME_LENGTH",
-    "MAX_FILES_PER_USER",
-    "MAX_TOTAL_STORAGE_PER_USER",
-    "MAX_PROCESSING_SIZE_PER_USER",
-    "MAX_DOWNLOADS_PER_USER",
     "PREFLIGHT_TTL_MINUTES",
     "CLEANUP_PREFLIGHTS_INTERVAL_MINUTES",
     "DOWNLOAD_ZIP_TTL_MINUTES",

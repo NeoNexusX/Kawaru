@@ -34,18 +34,17 @@ from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0
 from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from celery_runtime.management import TaskManager
 from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
-from constants.file_constants import MAX_FILES_PER_USER
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
-from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic
+from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
 logger = get_logger("api.user_api")
 
+config = get_config()
 
 #########################
 # 业务层，API 逻辑，不应该抛出任何异常
@@ -127,7 +126,7 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_sess
     """解析并校验 JWT Token 返回当前登录用户"""
     try:
         payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[get_config().token.algorithm]
+            token, SECRET_KEY, algorithms=[config.token.algorithm]
         )
         username = payload.get("sub")
         if username is None:
@@ -169,7 +168,7 @@ async def login(
         user = await get_authenticated_user(form_data.username, form_data.password, async_session)
 
         # Create JWT Token
-        access_token_expires = timedelta(minutes=get_config().token.token_expire_minutes)
+        access_token_expires = timedelta(minutes=config.token.token_expire_minutes)
         access_token = create_access_token(data={"sub": user.username},
                                            expires_delta=access_token_expires)
 
@@ -193,7 +192,7 @@ async def logout(token: Annotated[str, Depends(oauth2_scheme)], async_session: A
     """用户登出，返回登出的用户信息"""
     try:
         payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[get_config().token.algorithm]
+            token, SECRET_KEY, algorithms=[config.token.algorithm]
         )
         username = payload.get("sub")
         if username is None:
@@ -232,7 +231,7 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
 
-    if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
+    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
         user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
 
         if user_past is None:
@@ -263,7 +262,7 @@ async def create_admin_user_api(user: UserCreate,
     await validate_signup_info(user, async_session)
 
     #  TOTP验证
-    if TOTP.verify(user.verify_code, valid_window=get_config().email.totp_window):  # 有效期默认±30个时间片=±15分钟
+    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
         user_past = await get_user(user.username, async_session)
 
         if user_past is None:
@@ -299,7 +298,7 @@ async def update_user(
         if not (
             "verify_code" in user_data
             and user_data["verify_code"]
-            and TOTP.verify(user_data["verify_code"], valid_window=get_config().email.totp_window)):
+            and TOTP.verify(user_data["verify_code"], valid_window=config.email.totp_window)):
             raise user_verification_bad_exception
         # 移除验证码，不更新到数据库
         user_data.pop("verify_code", None)
@@ -346,7 +345,7 @@ async def del_user(
 
 async def create_admin_user():
     """应用启动时检查并创建初始管理员用户，异步函数"""
-    _config = get_config()
+    _config = config
     admin_info = _config.admin_info
     # admin_info 如果是 Pydantic/SQLModel 模型，通常有 model_dump()
     admin_data = admin_info.model_dump()  # 如果这里报错，再改用 vars(admin_info) 并过滤字段
@@ -447,15 +446,53 @@ async def get_user_list(
 async def get_user_quota(
     current_user: Annotated[UserInDB, Depends(token_authen)],
 ) -> UserQuotaPublic:
-    """返回当前用户的配额信息"""
-    config = get_config()
+    """返回当前用户的配额信息（从用户数据库记录读取）"""
+
     return UserQuotaPublic(
-        max_file_size_gb=config.storage.max_file_size_gb,
         total_uploaded_size_bytes=current_user.total_file_size,
         file_count=current_user.file_count,
-        max_files_per_user=MAX_FILES_PER_USER,
-        max_processing_size_gb=config.user.max_processing_size_gb,
+        max_files_per_user=current_user.max_file_count,
+        max_total_file_size=current_user.max_total_file_size,
+        max_processing_size_gb=current_user.max_processing_size,
         total_processed_size_bytes=current_user.processed_file_size,
+        download_used=current_user.download_used or 0,
+        max_download_count=current_user.max_download_count,
+    )
+
+
+async def update_user_quota(
+    user_id: int,
+    quota: UserQuotaLimits,
+    current_admin: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> UserQuotaLimits:
+    """管理员接口：按用户 ID 修改指定用户的配额信息"""
+    # 校验管理员身份
+    if current_admin.identity != "admin":
+        raise non_admin_operation_not_allowed_exception
+
+    # 查找目标用户
+    user = await get_user_by_id(user_id, async_session)
+    if user is None:
+        raise user_not_found_exception
+
+    # 只更新传入的非 None 字段
+    quota_data = quota.model_dump(exclude_unset=True)
+    for field, value in quota_data.items():
+        if value is not None:
+            setattr(user, field, value)
+
+    async_session.add(user)
+    await async_session.commit()
+    await async_session.refresh(user)
+
+    logger.info(f"Admin {current_admin.username} updated quota for user {user.username} (id={user_id}): {quota_data}")
+
+    return UserQuotaLimits(
+        max_total_file_size=user.max_total_file_size,
+        max_file_count=user.max_file_count,
+        max_processing_size=user.max_processing_size,
+        max_download_count=user.max_download_count,
     )
 
 
@@ -472,3 +509,4 @@ UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 根据用户 ID 删除
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
 ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖
 UserQuotaDep = Annotated[UserQuotaPublic, Depends(get_user_quota)]  # 获取用户配额
+UpdateUserQuotaDep = Annotated[UserQuotaLimits, Depends(update_user_quota)]  # 管理员修改用户配额

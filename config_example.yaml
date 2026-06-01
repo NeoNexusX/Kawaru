@@ -69,17 +69,14 @@ celery:
 storage:
   root: storage
   local_root: local
-  max_file_size_gb: 200
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
-  allowed_storage_types: ["local"]
+  allowed_storage_types: ["local","oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
   max_path_length: 255
   max_filename_length: 100
   max_file_type_length: 64
-  max_files_per_user: 20
-  max_downloads_per_user: 50
   cleanup_preflights_interval_minutes: 60
   cleanup_download_zip_interval_minutes: 60
   cleanup_failed_experiments_interval_minutes: 60
@@ -111,10 +108,14 @@ admin_info:
   institution: Xiamen University
   position: Researcher
   research_field: Massflow
-  region: China
+  region: CN
   orcid: admin
   homepage: admin
   email: examplr@example.com
+  max_total_file_size: 200  # 200 GB
+  max_file_count: 20
+  max_processing_size: 200  # 200 GB
+  max_download_count: 50
 
 user:
   allowed_position_types:
@@ -137,7 +138,6 @@ user:
   max_region_length: 128
   max_orcid_length: 128
   max_homepage_length: 128
-  max_processing_size_gb: 200
 
 sample_info:
   max_experiment_name_length: 128
