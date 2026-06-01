@@ -189,15 +189,21 @@ async def list_public_runs(
 async def list_public_runs_by_file_id(
     async_session: AsyncSession,
     file_id: int,
-) -> Sequence[ExperimentProcessRunInDB]:
-    """根据源文件 ID 查询所有公开且完成的 run"""
-    return (await async_session.exec(
-        select(ExperimentProcessRunInDB).where(
+) -> Sequence[dict]:
+    """根据源文件 ID 查询所有公开且完成的 run（含源文件名）"""
+    result = await async_session.exec(
+        select(ExperimentProcessRunInDB, FileInDB.filename)
+        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
+        .where(
             ExperimentProcessRunInDB.source_file_id == file_id,
             ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
             ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
         )
-    )).all()
+    )
+    return [
+        {**row[0].model_dump(), "filename": row[1]}
+        for row in result.all()
+    ]
 
 
 async def list_user_runs(
@@ -220,13 +226,19 @@ async def list_user_runs(
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,
-) -> Sequence[ExperimentProcessRunInDB]:
-    """查询当前用户的所有 run（无分页）"""
-    return (await async_session.exec(
-        select(ExperimentProcessRunInDB).where(
+) -> Sequence[dict]:
+    """查询当前用户的所有 run（无分页，含源文件名）"""
+    result = await async_session.exec(
+        select(ExperimentProcessRunInDB, FileInDB.filename)
+        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
+        .where(
             ExperimentProcessRunInDB.user_id == user_id,
         )
-    )).all()
+    )
+    return [
+        {**row[0].model_dump(), "filename": row[1]}
+        for row in result.all()
+    ]
 
 
 #########################

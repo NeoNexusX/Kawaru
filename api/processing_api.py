@@ -87,7 +87,7 @@ async def list_public_process_runs(
 ) -> list[ExperimentProcessRunPublic]:
     """根据文件ID查询公开的运行记录"""
     rows = await list_public_runs_by_file_id(async_session, file_id)
-    return [ExperimentProcessRunPublic(**row.model_dump()) for row in rows]
+    return [ExperimentProcessRunPublic(**row) for row in rows]
 
 
 async def list_my_process_runs(
@@ -97,7 +97,7 @@ async def list_my_process_runs(
     """查询当前用户的所有运行记录"""
     assert current_user.id is not None
     rows = await get_user_runs(async_session, current_user.id)
-    return [ExperimentProcessRunPublic(**row.model_dump()) for row in rows]
+    return [ExperimentProcessRunPublic(**row) for row in rows]
 
 
 async def delete_process_run_endpoint(

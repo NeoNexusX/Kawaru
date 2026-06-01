@@ -180,3 +180,4 @@ class ExperimentProcessRunPublic(ExperimentProcessRunBase):
     user_id: int
     created_at: datetime
     is_public: bool = False
+    filename: str = ""
