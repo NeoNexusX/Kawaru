@@ -45,9 +45,9 @@ CLEANUP_PREFLIGHTS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_prefl
 DOWNLOAD_ZIP_TTL_MINUTES = int(getattr(storage_config, "download_zip_ttl_minutes", 30))
 CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 60))
 
-# 签名URL过期时间 & Redis缓存过期时间（两者必须一致，避免返回过期URL）
-SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_seconds", 60))
-PACKUP_CACHE_TTL_SECONDS = int(getattr(storage_config, "signed_url_ttl_seconds", 60))
+# 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
+SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
+PACKUP_CACHE_TTL_SECONDS = SIGNED_URL_EXPIRE_SECONDS - 300
 
 
 # OSS相关常量

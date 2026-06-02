@@ -291,7 +291,7 @@ class OssStorage:
 
 
     @staticmethod
-    async def sign_download_url(file_path: str, expires: int = DOWNLOAD_ZIP_TTL_MINUTES * 60) -> str | None:
+    async def sign_download_url(file_path: str, expires: int = DOWNLOAD_ZIP_TTL_MINUTES) -> str | None:
         """
         签名OSS文件下载URL
 

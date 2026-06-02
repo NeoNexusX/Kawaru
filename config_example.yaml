@@ -82,7 +82,7 @@ storage:
   cleanup_failed_experiments_interval_minutes: 60
   preflight_ttl_minutes: 30
   download_zip_ttl_minutes: 30
-  signed_url_ttl_seconds: 5
+  signed_url_ttl_minutes: 60
   failed_experiment_ttl_minutes: 30
 
 oss:
