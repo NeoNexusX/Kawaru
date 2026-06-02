@@ -189,15 +189,19 @@ def check_user_quota(user: UserInDB, file_size: int) -> bool:  #TODO 风险，�
         True 表示所有配额检查通过,False 表示至少有一项超出限制
     """
     # 检查文件数量,单个文件大小,总存储空间（均从用户 DB 记录读取）
+    # 注意：max_total_file_size 以 GB 存储，需转换为字节后与 file_size / total_file_size 比较
+    _BYTES_IN_GB = 1024**3
+    max_total_bytes = user.max_total_file_size * _BYTES_IN_GB
+
     current_count = user.file_count
     projected_total_size = user.total_file_size + file_size
     if (current_count >= user.max_file_count
-        or file_size > user.max_total_file_size
-        or projected_total_size > user.max_total_file_size):
+        or file_size > max_total_bytes
+        or projected_total_size > max_total_bytes):
         logger.error(f"user quota exceeded user={user.id}:\n"
                        f"current_count={current_count}: limit={user.max_file_count}\n"
-                       f"file_size={file_size}: limit={user.max_total_file_size}\n"
-                       f"projected={projected_total_size}: limit={user.max_total_file_size}"
+                       f"file_size={file_size}: limit={max_total_bytes}\n"
+                       f"projected={projected_total_size}: limit={max_total_bytes}"
                        )
         return False
 

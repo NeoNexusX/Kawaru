@@ -28,7 +28,13 @@ from api.processing_api_helper import (
     create_run_output_dir,
     validate_algorithms_config,
 )
-from exceptions.experiment_exceptions import invalid_process_request_exception
+from exceptions.experiment_exceptions import (
+    invalid_process_request_exception,
+    process_run_not_found_exception,
+    process_run_permission_denied_exception,
+    process_run_not_completed_exception,
+    zarr_folder_not_found_exception,
+)
 from tools import utc_time
 from tools.logger import get_logger
 
@@ -271,9 +277,12 @@ async def get_origin_for_processing(
     async_session: AsyncSession,
     file_id: int,
     current_user: UserInDB,
-) -> OriginImzMLInDB:
+) -> tuple[OriginImzMLInDB, str]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
+
+    Returns:
+        (origin, filename)
 
     Raises:
         invalid_process_request_exception
@@ -298,7 +307,7 @@ async def get_origin_for_processing(
         logger.warning("origin not ready file_id=%s status=%s", file_id, origin.status)
         raise invalid_process_request_exception
 
-    return origin
+    return origin, file_record.filename
 
 
 async def get_storage_type_by_source_file_id(
@@ -350,3 +359,56 @@ async def rollback_process_run(
                 await cleanup_session.delete(record)
                 await cleanup_session.commit()
                 logger.info("rolled back process run run_id=%s", _run_id)
+
+
+#########################
+# zarr 文件夹访问
+#########################
+
+async def assert_zarr_folder_access(
+    async_session: AsyncSession,
+    run_id: int,
+    current_user: UserInDB,
+) -> ExperimentProcessRunInDB:
+    """
+    校验 zarr 文件夹访问权限。
+
+    校验链：
+    1. run 记录存在
+    2. 权限：管理员 / 公开记录 / 记录所有者
+    3. 状态必须为 COMPLETED
+    4. 输出路径不为空
+
+    Returns:
+        通过校验的 run_record
+
+    Raises:
+        process_run_not_found_exception
+        process_run_permission_denied_exception
+        process_run_not_completed_exception
+        zarr_folder_not_found_exception
+    """
+
+    # 1. 查询 run 记录
+    run_record = await get_process_run_by_id(async_session, run_id)
+    if not run_record:
+        raise process_run_not_found_exception
+
+    # 2. 权限校验
+    is_authorized = (
+        current_user.identity == "admin"
+        or run_record.is_public
+        or run_record.user_id == current_user.id
+    )
+    if not is_authorized:
+        raise process_run_permission_denied_exception
+
+    # 3. 状态校验
+    if run_record.status != ProcessingStatus.COMPLETED:
+        raise process_run_not_completed_exception
+
+    # 4. 输出路径校验
+    if not run_record.out_path:
+        raise zarr_folder_not_found_exception
+
+    return run_record

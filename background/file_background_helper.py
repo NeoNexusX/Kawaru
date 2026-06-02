@@ -340,7 +340,8 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
     return result
 
 
-def _get_oss_sts_token(policy: dict, role_session_name: str) -> dict:
+def _get_oss_sts_token(policy: dict, role_session_name: str,
+                        duration_seconds: int = 3600) -> dict:
     # 从环境变量获取OSS角色权限相关配置
     access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
     access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
@@ -372,7 +373,7 @@ def _get_oss_sts_token(policy: dict, role_session_name: str) -> dict:
         role_arn=role_arn,
         role_session_name=role_session_name,
         policy=json.dumps(policy),
-        duration_seconds=3600
+        duration_seconds=duration_seconds
     )
 
     # 发送请求并获取响应
@@ -512,3 +513,35 @@ def get_oss_presigned_url_task(file_path: str, expires: int = 300) -> str | None
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("failed to generate presigned url: %s", e)
         return None
+
+
+@celery_app.task()
+def get_zarr_read_sts_token_task(folder_path: str, expires: int) -> dict:
+    """
+    获取 zarr 文件夹的只读 STS Token。
+
+    :param folder_path: OSS 文件夹路径，如 "processed/run_42.zarr"
+    :param expires: Token 有效期（秒）
+    """
+    folder_path = folder_path.rstrip("/")
+
+    policy = {
+        "Version": "1",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["oss:GetObject"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{folder_path}/*"]
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["oss:ListObjects"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"]
+            }
+        ]
+    }
+
+    code = hashlib.md5(folder_path.encode()).hexdigest()[:8]
+    role_session_name = f"zarr-read-{code}-{datetime.now().timestamp()}"
+
+    return _get_oss_sts_token(policy, role_session_name, expires)

@@ -10,8 +10,10 @@ from api.processing_api import (
     list_public_process_runs,
     list_my_process_runs,
     delete_process_run_endpoint,
+    get_zarr_folder_access,
 )
 from models.processing_models import ExperimentProcessRunPublic
+from models.file_models import ZarrFolderAccess
 
 processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 
@@ -20,6 +22,7 @@ CreateProcessDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorith
 ListPublicDep = Annotated[list[ExperimentProcessRunPublic], Depends(list_public_process_runs)]
 ListMyDep = Annotated[list[ExperimentProcessRunPublic], Depends(list_my_process_runs)]
 DeleteProcessDep = Annotated[dict, Depends(delete_process_run_endpoint)]
+ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]
 
 
 @processing_router.post("", response_model=ExperimentProcessRunPublic)
@@ -37,6 +40,12 @@ async def list_public(result: ListPublicDep):
 @processing_router.get("/mine", response_model=list[ExperimentProcessRunPublic])
 async def list_mine(result: ListMyDep):
     """查询当前用户的运行记录"""
+    return result
+
+
+@processing_router.get("/{run_id}/zarr", response_model=ZarrFolderAccess)
+async def get_zarr_folder(result: ZarrFolderDep):
+    """获取 zarr 文件夹访问凭证（OSS STS Token）"""
     return result
 
 

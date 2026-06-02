@@ -313,3 +313,12 @@ class FileDownloadMeta(FileBase):
             download_count=record.download_count,
             last_downloaded_at=record.last_downloaded_at,
         )
+
+
+class ZarrFolderAccess(SQLModel):
+    """zarr 文件夹访问凭证 — 前端拿到后通过 OSS SDK 直连读取"""
+    folder_path: str = Field(description="OSS 上的 zarr 文件夹路径")
+    bucket: str = Field(description="OSS bucket 名称")
+    region: str = Field(description="OSS region")
+    sts_token: "OssStsToken" = Field(description="OSS 临时访问凭证")
+    expires_in: int = Field(description="STS Token 有效时间（秒）")

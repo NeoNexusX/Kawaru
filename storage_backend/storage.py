@@ -14,7 +14,8 @@ from background.file_background_helper import (
     get_oss_packup_sts_token_task,
     tag_oss_file_task,
     sign_url_task,
-    get_oss_presigned_url_task
+    get_oss_presigned_url_task,
+    get_zarr_read_sts_token_task
 )
 
 from models.auth import OssStsToken
@@ -321,3 +322,14 @@ class OssStorage:
             logger.error("failed to get presigned url due to server timeout: %s", file_path)
             return None
         return url
+
+    @staticmethod
+    async def get_zarr_read_sts_token(folder_path: str, expires: int = 3600) -> "OssStsToken | None":
+        """获取 zarr 文件夹只读 STS Token"""
+
+        res: AsyncResult = get_zarr_read_sts_token_task.delay(folder_path, expires)  # type: ignore
+        result: dict = await wait_for_result(res, poll_interval=0.1, timeout=10)  # type: ignore
+        if result is None:
+            logger.error("failed to get zarr read sts token due to server timeout: %s", folder_path)
+            return None
+        return OssStsToken(**result)
