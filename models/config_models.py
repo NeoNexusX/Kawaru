@@ -80,7 +80,7 @@ class StorageSettings(BaseModel):
     cleanup_failed_experiments_interval_minutes: int
     preflight_ttl_minutes: int
     download_zip_ttl_minutes: int
-    signed_url_ttl_seconds: int
+    signed_url_ttl_minutes: int
     failed_experiment_ttl_minutes: int
 
 

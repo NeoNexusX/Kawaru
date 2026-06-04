@@ -259,7 +259,7 @@ class OssStorage:
         delete_results: Sequence[bool] | None = await wait_for_result(
             result=delete_tasks,
             poll_interval=0.1,
-            timeout=10
+            timeout=20
         )
 
         # 5. 结果处理

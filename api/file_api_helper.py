@@ -190,8 +190,8 @@ def check_user_quota(user: UserInDB, file_size: int) -> bool:  #TODO 风险，�
     """
     # 检查文件数量,单个文件大小,总存储空间（均从用户 DB 记录读取）
     # 注意：max_total_file_size 以 GB 存储，需转换为字节后与 file_size / total_file_size 比较
-    _BYTES_IN_GB = 1024**3
-    max_total_bytes = user.max_total_file_size * _BYTES_IN_GB
+    BYTES_IN_GB = 1024**3 #type: ignore
+    max_total_bytes = user.max_total_file_size * BYTES_IN_GB
 
     current_count = user.file_count
     projected_total_size = user.total_file_size + file_size

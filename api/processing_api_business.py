@@ -20,7 +20,6 @@ from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
 from models.user_models import UserInDB
 from api.file_api_business import assert_file_owner
-from api.file_api_helper import delete_multiple_files_by_storage
 from api.experiment_api_business import get_origin_imzml_by_file_id
 from api.processing_api_helper import (
     assert_origin_ready,
@@ -28,6 +27,7 @@ from api.processing_api_helper import (
     create_run_output_dir,
     validate_algorithms_config,
 )
+from storage_backend.storage import OssStorage
 from exceptions.experiment_exceptions import (
     invalid_process_request_exception,
     process_run_not_found_exception,
@@ -120,7 +120,7 @@ async def cleanup_output_dir(out_path: str, storage_type: str) -> None:
             shutil.rmtree(abs_path)
             logger.debug("cleaned up run directory path=%s", abs_path)
         elif storage_type == "oss":
-            await delete_multiple_files_by_storage([out_path], storage_type)
+            await OssStorage.delete_file(out_path)
     except OSError as e:
         logger.warning("failed to cleanup output path=%s error=%s", out_path, e)
 

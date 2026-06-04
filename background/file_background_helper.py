@@ -21,7 +21,8 @@ from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_oss_v2 import Client as OssSyncClient
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
-                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest)
+                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest,
+                                  DeleteMultipleObjectsRequest, DeleteObject)
 
 from celery_runtime.state import get_celery_app
 
@@ -408,21 +409,50 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             is_folder = False
             if file_path.endswith('/'): # 针对文件夹进行处理
                 is_folder = True
-                req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
-                res = await oss_client.list_objects_v2(req)
-                 # 提取所有匹配对象的 key
-                keys = [obj.key for obj in res.contents] if res.contents else []
+                continuation_token = None
+                while True:
+                    req = ListObjectsV2Request(
+                        bucket=bucket_name,
+                        prefix=file_path,
+                        continuation_token=continuation_token,
+                    ) # type: ignore
+                    res = await oss_client.list_objects_v2(req)
+                    if res.contents:
+                        keys.extend(obj.key for obj in res.contents)
+                    if not res.is_truncated:
+                        break
+                    continuation_token = res.next_continuation_token
 
             if not keys:
                 keys = [file_path]
-            for key in keys:
-                req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
-                res = await oss_client.delete_object(req)
-                if res.status_code != status.HTTP_204_NO_CONTENT:
-                    logger.error(f"oss file {key} deleted failed")
-                    err_count += 1
-                    continue
-                logger.info(f"oss file {key} deleted")
+            if is_folder and len(keys) > 1:
+                # 批量删除：每批最多 1000 个对象，一次 HTTP 请求
+                _BATCH_SIZE = 1000
+                for i in range(0, len(keys), _BATCH_SIZE):
+                    batch = keys[i:i + _BATCH_SIZE]
+                    req = DeleteMultipleObjectsRequest(
+                        bucket=bucket_name,
+                        objects=[DeleteObject(key=k) for k in batch],
+                        quiet=True,
+                    ) # type: ignore
+                    res = await oss_client.delete_multiple_objects(req)
+                    if res.status_code != status.HTTP_200_OK:
+                        logger.error(
+                            "oss batch delete failed batch=%d-%d status=%s",
+                            i, i + len(batch), res.status_code,
+                        )
+                        err_count += 1
+                    else:
+                        logger.info("oss batch deleted %d objects", len(batch))
+            else:
+                for key in keys:
+                    req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
+                    res = await oss_client.delete_object(req)
+                    if res.status_code != status.HTTP_204_NO_CONTENT:
+                        logger.error(f"oss file {key} deleted failed")
+                        err_count += 1
+                        continue
+                    logger.info(f"oss file {key} deleted")
 
             if is_folder:
                 req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
