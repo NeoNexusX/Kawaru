@@ -333,151 +333,27 @@ async def prepare_download_file_oss(
     Raises:
         file_content_missing_exception: 文件内容缺失
     """
-    zip_size = None
-    zip_path = None
-    zip_download_url = None
-    fc_request_id = None
-    should_pack = False
-
     oss_packup_key = f"oss_packup-{file_record.filename}"
     oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
 
     try:
-        # 先检查redis是否存在正在进行或已完成打包流程
-        packup = await redis_client.hgetall(oss_packup_key) # type: ignore
+        packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
+        should_pack, zip_download_url, zip_path, fc_request_id = await _handle_packup_status_check(
+            file_record, packup, oss_packup_key, oss_packup_lock_key
+        )
 
-        # 没有打包流程
-        if not packup:
-            # 检查源ZIP文件是否存在，不存在则进入常规打包流程
-            if not await OssStorage.check_file_exist(file_record.path):
-                should_pack = True
-                # 检查是否有其他进程正在打包
-                lock = await redis_client.get(oss_packup_lock_key)
-                if lock:
-                    logger.warning("packup is in progress by other user, now wait for it to finish, filename=%s", file_record.filename)
-                    zip_download_url = "<PACKING>"
-                else:
-                    # 加锁，防止其他进程同时打包
-                    await redis_client.set(oss_packup_lock_key, "1", ex=10)
-            else:
-                # 源ZIP文件存在，直接返回下载URL
-                zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
+        if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
+            zip_download_url = await _prepare_download_url_for_completed_packup(
+                file_record, zip_path, fc_request_id, oss_packup_key
+            )
 
-                # 写入redis，标记为已完成
-                await redis_client.hset(oss_packup_key, mapping={
-                    "status": PackupStatus.COMPLETED,
-                    "file_path": file_record.path,
-                    "download_url": zip_download_url}) # type: ignore
-                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
-
-        elif packup.get("status") == PackupStatus.PACKING: # 正在打包，等待打包完成
-            logger.info("packup is in progress, file_id=%s", file_record.file_id)
-            zip_download_url = "<PACKING>"
-
-        elif packup.get("status") == PackupStatus.COMPLETED:  # 打包完成，返回打包后的文件路径
-            zip_path = packup.get("file_path")
-            fc_request_id = packup.get("fc_request_id")
-            zip_download_url = packup.get("download_url")
-            if not zip_path:
-                logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename) # filename
-                should_pack = True
-            elif not await OssStorage.check_file_exist(zip_path):
-                logger.warning(f"packup completed but zip has been cleaned up, now start new packup, filename={file_record.filename}")
-                should_pack = True
-            elif zip_download_url is not None:
-                # 直接返回已生成的下载URL
-                logger.info("packup has completed and signed, return download_url directly, filename=%s", file_record.filename)
-            else:
-                zip_size = await OssStorage.get_file_size(zip_path)
-                if zip_size is None:
-                    raise file_content_missing_exception
-
-                # 生成下载URL
-                zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
-
-                # 将生成的URL写入redis
-                await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url}) # type: ignore
-                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
-
-                # 后台获取fc打包日志（只触发不等待）
-                if fc_request_id is not None:
-                    get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
-
-                # 更新文件记录
-                file_record.path = zip_path
-                file_record.size = zip_size# type: ignore
-
-                logger.info(
-                    "prepared download zip file_id=%s path=%s size=%s",
-                    file_record.file_id,
-                    zip_path,
-                    file_record.size,
-                )
-
-        elif packup.get("status") == PackupStatus.FAILED:  # 打包失败，返回错误信息
-            logger.error("packup failed, filename=%s", file_record.filename)
-            fc_request_id = packup.get("fc_request_id")
-            await redis_client.delete(oss_packup_key) # 删除失败的打包记录
-            # 后台获取fc打包日志（只触发不等待）
-            if fc_request_id is not None:
-                get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id) # type: ignore
-            raise file_content_missing_exception
-
-        else:
-            logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename) # filename
-            should_pack = True
-
-        # 常规打包流程
         if should_pack:
-            # 处理 origin 文件(imzML) # TODO： 封装函数
-            if file_record.experiment_type == "imzML":
-                assert file_record.file_id is not None
-                origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
-
-                if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
-                    logger.warning(
-                        "origin not found or not completed file_id=%s", file_record.file_id
-                    )
-                    raise file_content_missing_exception
-
-                # 获取 origin 文件路径并校验是否存在
-                imzml_path = origin.imzml_path if origin.imzml_path else None
-                ibd_path = origin.ibd_path if origin.ibd_path else None
-                if (
-                    not imzml_path or not ibd_path or
-                    not await OssStorage.check_file_exist(imzml_path) or
-                    not await OssStorage.check_file_exist(ibd_path)
-                ):
-                    logger.warning("origin files missing file_id=%s", file_record.file_id)
-                    raise file_content_missing_exception
-
-                origin_path = f"{Path(imzml_path).parent}/"
-
-                # 异步触发FC文件打包（只触发不等待，返回函数调用ID，打包完成会由FC端调用回调通知）
-                fc_request_id = await packup_oss_file(
-                    filename=file_record.filename,
-                    packup_folder = origin_path, # type: ignore # 理论上origin_path存在，直接用即可
-                    zip_file_path = f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip", # type: ignore
-                )
-
-                if fc_request_id is None:
-                    logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
-                    raise internal_server_error_exception
-
-                # Redis 标记正在打包状态
-                await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
-                await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
-
-                zip_download_url = "<PACKING>"
-            else:
-                logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
-                raise origin_type_not_supported_exception
+            zip_download_url = await _execute_packup_flow(session, file_record, oss_packup_key)
 
         if not zip_download_url:
             logger.error("zip_download_url is None, filename=%s", file_record.filename)
             raise file_content_missing_exception
 
-        # 只在不需要打包 / 打包已完成 / 打包失败时删锁，正在打包时保留单请求锁
         if zip_download_url != "<PACKING>":
             await redis_client.delete(oss_packup_lock_key)
 
@@ -851,6 +727,206 @@ async def merge_parts_to_file(
 
     # 清理分片临时文件和记录
     await delete_parts_by_file_id(async_session, file_record.file_id)
+
+
+async def get_origin_path_for_packup(
+    session: AsyncSession,
+    file_record: FileInDB,
+) -> str:
+    """
+    获取用于打包的 origin 文件路径
+
+    根据文件记录的 experiment_type 获取对应的 origin 文件路径。
+    目前仅支持 imzML 类型。
+
+    Args:
+        session: 数据库会话
+        file_record: 文件记录
+
+    Returns:
+        origin 文件所在目录路径
+
+    Raises:
+        file_content_missing_exception: origin 文件不存在或未完成
+        origin_type_not_supported_exception: 不支持的实验类型
+    """
+    if file_record.experiment_type == "imzML":
+        assert file_record.file_id is not None
+        origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
+
+        if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
+            logger.warning(
+                "origin not found or not completed file_id=%s", file_record.file_id
+            )
+            raise file_content_missing_exception
+
+        imzml_path = origin.imzml_path if origin.imzml_path else None
+        ibd_path = origin.ibd_path if origin.ibd_path else None
+        if (
+            not imzml_path or not ibd_path or
+            not await OssStorage.check_file_exist(imzml_path) or
+            not await OssStorage.check_file_exist(ibd_path)
+        ):
+            logger.warning("origin files missing file_id=%s", file_record.file_id)
+            raise file_content_missing_exception
+
+        return f"{Path(imzml_path).parent}/"
+    else:
+        logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
+        raise origin_type_not_supported_exception
+
+
+async def _handle_packup_status_check(
+    file_record: FileInDB,
+    packup: dict | None = None,
+    oss_packup_key: str | None = None,
+    oss_packup_lock_key: str | None = None,
+) -> tuple[bool, str | None, str | None, str | None]:
+    """
+    检查Redis中的打包状态并处理相应逻辑
+
+    Args:
+        file_record: 文件记录
+        packup: Redis中的打包信息
+        oss_packup_key: Redis打包状态键
+        oss_packup_lock_key: Redis打包锁键
+
+    Returns:
+        tuple: (should_pack, zip_download_url, zip_path, fc_request_id)
+    """
+    should_pack = False
+    zip_download_url = None
+    zip_path = None
+    fc_request_id = None
+
+    if not packup:
+        if not await OssStorage.check_file_exist(file_record.path):
+            should_pack = True
+            lock = await redis_client.get(oss_packup_lock_key)
+            if lock:
+                logger.warning("packup is in progress by other user, now wait for it to finish, filename=%s", file_record.filename)
+                zip_download_url = "<PACKING>"
+            else:
+                await redis_client.set(oss_packup_lock_key, "1", ex=10)
+        else:
+            zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
+            await redis_client.hset(oss_packup_key, mapping={
+                "status": PackupStatus.COMPLETED,
+                "file_path": file_record.path,
+                "download_url": zip_download_url})  # type: ignore
+            await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
+
+    elif packup.get("status") == PackupStatus.PACKING:
+        logger.info("packup is in progress, file_id=%s", file_record.file_id)
+        zip_download_url = "<PACKING>"
+
+    elif packup.get("status") == PackupStatus.COMPLETED:
+        zip_path = packup.get("file_path")
+        fc_request_id = packup.get("fc_request_id")
+        zip_download_url = packup.get("download_url")
+        if not zip_path:
+            logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
+            should_pack = True
+        elif not await OssStorage.check_file_exist(zip_path):
+            logger.warning(f"packup completed but zip has been cleaned up, now start new packup, filename={file_record.filename}")
+            should_pack = True
+
+    elif packup.get("status") == PackupStatus.FAILED:
+        logger.error("packup failed, filename=%s", file_record.filename)
+        fc_request_id = packup.get("fc_request_id")
+        await redis_client.delete(oss_packup_key)
+        if fc_request_id is not None:
+            get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore
+        raise file_content_missing_exception
+
+    else:
+        logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
+        should_pack = True
+
+    return should_pack, zip_download_url, zip_path, fc_request_id
+
+
+async def _prepare_download_url_for_completed_packup(
+    file_record: FileInDB,
+    zip_path: str,
+    fc_request_id: str | None,
+    oss_packup_key: str | None,
+) -> str | None:
+    """
+    为已完成的打包生成下载URL
+
+    Args:
+        file_record: 文件记录
+        zip_path: ZIP文件路径
+        fc_request_id: FC请求ID
+        oss_packup_key: Redis打包状态键
+
+    Returns:
+        下载URL
+
+    Raises:
+        file_content_missing_exception: 文件内容缺失
+    """
+    zip_size = await OssStorage.get_file_size(zip_path)
+    if zip_size is None:
+        raise file_content_missing_exception
+
+    zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
+
+    await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
+    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
+
+    if fc_request_id is not None:
+        get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore
+
+    file_record.path = zip_path
+    file_record.size = zip_size  # type: ignore
+
+    logger.info(
+        "prepared download zip file_id=%s path=%s size=%s",
+        file_record.file_id,
+        zip_path,
+        file_record.size,
+    )
+
+    return zip_download_url
+
+
+async def _execute_packup_flow(
+    session: AsyncSession,
+    file_record: FileInDB,
+    oss_packup_key: str,
+) -> str:
+    """
+    执行常规打包流程
+
+    Args:
+        session: 数据库会话
+        file_record: 文件记录
+        oss_packup_key: Redis打包状态键
+
+    Returns:
+        "<PACKING>" 表示正在打包
+
+    Raises:
+        internal_server_error_exception: 内部服务器错误
+    """
+    origin_path = await get_origin_path_for_packup(session, file_record)
+
+    fc_request_id = await packup_oss_file(
+        filename=file_record.filename,
+        packup_folder=origin_path,  # type: ignore
+        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip",  # type: ignore
+    )
+
+    if fc_request_id is None:
+        logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
+        raise internal_server_error_exception
+
+    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
+    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
+
+    return "<PACKING>"
 
 
 #########################
