@@ -1,6 +1,7 @@
 """
 Processing API — API 入口层
 """
+import json
 from typing import Annotated
 
 from fastapi import Depends
@@ -20,6 +21,7 @@ from api.processing_api_business import (
 from api.processing_api_helper import assert_run_ownership
 from api.user_api import token_authen
 from database.db import AsyncSessionDep
+from database.redis_client import redis_client
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
 from models.processing_models import (
@@ -28,7 +30,7 @@ from models.processing_models import (
 )
 from api.processing_api_business import assert_zarr_folder_access
 from storage_backend.storage import OssStorage
-from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID
+from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from models.user_models import UserInDB
 from models.file_models import ZarrFolderAccess
 from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
@@ -137,18 +139,28 @@ async def get_zarr_folder_access(
 
     run_record = await assert_zarr_folder_access(async_session, run_id, current_user)
 
-    expires = 3600  # STS Token 1 小时有效
+    # Redis 缓存：同一 run_id 1 小时内复用同一个 STS Token
+    cache_key = f"zarr_sts:{run_id}"
+    cached = await redis_client.get(cache_key)  # type: ignore
+    if cached:
+        return ZarrFolderAccess(**json.loads(cached))
+
+    expires = SIGNED_URL_EXPIRE_SECONDS
     sts_token = await OssStorage.get_zarr_read_sts_token(run_record.out_path, expires)  # type: ignore
     if sts_token is None:
         raise internal_server_error_exception
 
-    return ZarrFolderAccess(
+    access = ZarrFolderAccess(
         folder_path=run_record.out_path,  # type: ignore
         bucket=OSS_BUCKET_NAME,           # type: ignore
         region=OSS_REGION_ID,             # type: ignore
         sts_token=sts_token,
         expires_in=expires,
     )
+
+    await redis_client.set(cache_key, access.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)  # type: ignore
+
+    return access
 
 
 # 依赖注入类型别名
