@@ -4,7 +4,6 @@
 import json
 from typing import Annotated, Any
 from fastapi import Depends, File, Form, UploadFile, HTTPException
-from fastapi.responses import RedirectResponse
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -38,8 +37,9 @@ from api.file_api_helper import (
 from api.experiment_api_business import delete_origin_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items
-from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
+from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from database.db import AsyncSessionDep
+from database.redis_client import redis_client
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     file_persist_failed_exception,
@@ -745,24 +745,31 @@ async def oss_upload_file(
 async def get_file_tic_url(
     file_id: int,
     session: AsyncSessionDep,
-) -> RedirectResponse:
+) -> dict:
     """
-    获取文件的 TIC 图像 OSS 签名 URL，302 重定向。
-
-    用于前端直接 <img src="/files/{file_id}/tic"> 展示缩略图。
+    获取文件 TIC 图像 OSS 下载 URL（公开接口，无需鉴权）。
+    Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
-    if not file_record.tic_path:
+
+    if not file_record.tic_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    if file_record.storage_type != "oss":
-        raise file_content_missing_exception
+    cache_key = f"tic_url:{file_id}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return {"url": cached}
 
-    url = await OssStorage.get_presigned_download_url(file_record.tic_path)
+    real_path = file_record.tic_path + "tic_image.png"
+    url = await OssStorage.get_presigned_download_url(
+        real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
+    )
     if not url:
         raise file_content_missing_exception
 
-    return RedirectResponse(url=url, status_code=302)
+    await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
+
+    return {"url": url}
 
 
 # 依赖注入类型别名
@@ -776,4 +783,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
-TicRedirectDep = Annotated[Any, Depends(get_file_tic_url)] #TODO
+TicUrlDep = Annotated[dict[str, str], Depends(get_file_tic_url)]
