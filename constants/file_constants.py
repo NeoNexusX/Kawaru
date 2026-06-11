@@ -47,7 +47,7 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_dow
 
 # 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
 SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
-PACKUP_CACHE_TTL_SECONDS = SIGNED_URL_EXPIRE_SECONDS - 300
+PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
 
 
 # OSS相关常量
@@ -61,6 +61,10 @@ FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
 FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
 FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
 FC_ALGORITHM_TIMEOUT_SECONDS = config.oss.fc_algorithm_timeout_seconds
+FC_TIC_ENDPOINT = config.oss.fc_tic_endpoint
+FC_TIC_TIMEOUT_SECONDS = config.oss.fc_tic_timeout_seconds
+FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
+FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
 
 
 __all__ = [
@@ -89,6 +93,10 @@ __all__ = [
     "FC_PACKUP_TIMEOUT_SECONDS",
     "FC_ALGORITHM_ENDPOINT",
     "FC_ALGORITHM_TIMEOUT_SECONDS",
+    "FC_TIC_ENDPOINT",
+    "FC_TIC_TIMEOUT_SECONDS",
+    "FC_FEATURE_ENDPOINT",
+    "FC_FEATURE_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "FC_LOGSTORE_NAME",
     "FC_LOG_PROJECT_NAME",

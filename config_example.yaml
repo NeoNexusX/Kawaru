@@ -102,6 +102,10 @@ oss:
   fc_packup_timeout_seconds: 200
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
   fc_algorithm_timeout_seconds: 60
+  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou.fcapp.run
+  fc_tic_timeout_seconds: 60
+  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
+  fc_feature_timeout_seconds: 60
 
 admin_info:
   username: kawaru

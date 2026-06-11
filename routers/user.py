@@ -136,9 +136,9 @@ async def update_user_quota(result: UpdateUserQuotaDep):
     Params:
     - user_id: 目标用户 ID（路径参数）
     - Body: UserQuotaLimits（所有字段可选，只更新传入的非 None 字段）
-      - max_total_file_size: 用户最大上传文件总大小（字节）
+      - max_total_file_size: 用户最大上传文件总大小（GB）
       - max_file_count: 用户最大上传总文件数
-      - max_processing_size: 用户最大可算法处理文件总大小（字节）
+      - max_processing_size: 用户最大可算法处理文件总大小（GB）
       - max_download_count: 用户最大可下载文件次数
     返回：更新后四个限额值（UserQuotaLimits）
     """

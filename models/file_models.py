@@ -147,6 +147,7 @@ class FileInDB(FileBase, table=True):
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
     tic_path: str | None = Field(default=None, max_length=255, description="TIC 图像在 OSS 上的路径")
+    feature_path: str | None = Field(default=None, max_length=512, description="UMAP/KMeans 特征分析结果路径")
 
     # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(

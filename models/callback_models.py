@@ -30,3 +30,12 @@ class TicCallback(BaseModel):
     tic_path: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+
+
+class FeatureCallback(BaseModel):
+    """FC UMAP/KMeans 特征分析完成回调模型"""
+    file_id: int
+    is_success: bool
+    out_path: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None

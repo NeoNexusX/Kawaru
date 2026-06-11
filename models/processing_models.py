@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Column, Integer, ForeignKey, BigInteger, Field, Relationship
@@ -52,11 +52,13 @@ class NormalizationParams(BaseModel):
 
 class PeakAlignParams(BaseModel):
     """峰对齐参数"""
+    reference: Any | None = Field(default=None, description="参考质谱 np.ndarray，None 时自动计算")
     tolerance: float | None = Field(default=None, description="m/z 容差，None 时按 binratio 自动估计")
     units: str = Field(default="ppm", description="容差单位: ppm/relative 或 Da/absolute")
-    binfun: str = Field(default="median", description="聚合函数: median/min/max/mean")
+    binfun: str = Field(default="min", description="聚合函数: min/median/max/mean")
     binratio: float = Field(default=2.0, gt=0, description="容差/分辨率比例，正数")
-    backend: str = Field(default="python", description="后端: python/cardinal")
+    min_count: int | None = Field(default=None, description="最小离子计数，python 后端用")
+    min_frequency: float | None = Field(default=0.01, description="最小出现频率，python 后端用")
 
 
 class NoiseReductionParams(BaseModel):

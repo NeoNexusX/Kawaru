@@ -802,19 +802,19 @@ async def _handle_packup_status_check(
     if not packup:
         if not await OssStorage.check_file_exist(file_record.path):
             should_pack = True
-            lock = await redis_client.get(oss_packup_lock_key)
+            lock = await redis_client.get(oss_packup_lock_key) # type: ignore
             if lock:
                 logger.warning("packup is in progress by other user, now wait for it to finish, filename=%s", file_record.filename)
                 zip_download_url = "<PACKING>"
             else:
-                await redis_client.set(oss_packup_lock_key, "1", ex=10)
+                await redis_client.set(oss_packup_lock_key, "1", ex=10) # type: ignore 设置10秒锁，防止短时间内重复触发打包
         else:
             zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
-            await redis_client.hset(oss_packup_key, mapping={
+            await redis_client.hset(oss_packup_key, mapping={ # type: ignore
                 "status": PackupStatus.COMPLETED,
                 "file_path": file_record.path,
                 "download_url": zip_download_url})  # type: ignore
-            await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
+            await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
 
     elif packup.get("status") == PackupStatus.PACKING:
         logger.info("packup is in progress, file_id=%s", file_record.file_id)
@@ -834,7 +834,7 @@ async def _handle_packup_status_check(
     elif packup.get("status") == PackupStatus.FAILED:
         logger.error("packup failed, filename=%s", file_record.filename)
         fc_request_id = packup.get("fc_request_id")
-        await redis_client.delete(oss_packup_key)
+        await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
         if fc_request_id is not None:
             get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore
         raise file_content_missing_exception
@@ -874,7 +874,7 @@ async def _prepare_download_url_for_completed_packup(
     zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
 
     await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
-    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
 
     if fc_request_id is not None:
         get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore

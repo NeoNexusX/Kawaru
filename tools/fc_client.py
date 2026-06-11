@@ -57,7 +57,10 @@ async def invoke_fc(
         if res.status_code != status.HTTP_202_ACCEPTED:
             logger.error("fc async invoke failed: status=%s content=%s", res.status_code, res.text)
             return None
-        request_id = res.headers.get("X-FC-Request-ID", "")
+        request_id = res.headers.get("X-FC-Request-ID")
+        if not request_id:
+            logger.error("fc async invoke missing X-FC-Request-ID header")
+            return None
         logger.info("fc async invoked, request_id=%s", request_id)
         return request_id
     else:

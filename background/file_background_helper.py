@@ -320,7 +320,12 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
                 # 针对Bucket的文件列举权限
                 "Effect": "Allow",
                 "Action": ["oss:ListObjects"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"]
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
+                "Condition": {
+                    "StringLike": {
+                        "oss:Prefix": [f"{packup_folder.strip('/')}/*"]
+                    }
+                }
             },
             {
                 # 针对zip文件写入权限
@@ -566,7 +571,12 @@ def get_zarr_read_sts_token_task(folder_path: str, expires: int) -> dict:
             {
                 "Effect": "Allow",
                 "Action": ["oss:ListObjects"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"]
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
+                "Condition": {
+                    "StringLike": {
+                        "oss:Prefix": [f"{folder_path}/*"]
+                    }
+                }
             }
         ]
     }

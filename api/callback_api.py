@@ -11,13 +11,13 @@ from storage_backend.storage import OssStorage
 from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from api.processing_api_business import get_process_run_by_id, mark_process_run
-from background.processing_background import trigger_fc_tic_task
+from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 
 from models.experiment_models import ExperimentStatus
 from models.config_models import Config
-from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
@@ -157,8 +157,13 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        # 异步触发 FC 生成 TIC 图像
-        trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+        # 根据 spectrum_mode 分发到不同的 FC 函数
+        # profile   → fc-feature (UMAP/KMeans 特征分析，大内存)
+        # centroid  → fc-tic (TIC 图像生成，轻量)
+        if source_file.spectrum_mode == "profile":
+            trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+        else:
+            trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
 
         return source_file
 
@@ -343,10 +348,53 @@ async def oss_packup_callback(
         raise internal_server_error_exception from e
 
 
+async def feature_callback(
+    callback_info: FeatureCallback,
+    async_session: AsyncSessionDep,
+) -> FileInDB:
+    """
+    FC UMAP/KMeans 特征分析完成回调。
+
+    更新文件的 feature_path 字段。
+    """
+    file_id = callback_info.file_id
+    is_success = callback_info.is_success
+    out_path = callback_info.out_path
+
+    try:
+        file_record = (
+            await async_session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id))).first()
+        if not file_record:
+            logger.error("feature callback: file not found file_id=%s", file_id)
+            raise file_content_missing_exception
+
+        if not is_success:
+            logger.warning("feature analysis failed file_id=%s error=%s",
+                           file_id, callback_info.error_message)
+            return file_record
+
+        file_record.feature_path = out_path
+        async_session.add(file_record)
+        await async_session.commit()
+        await async_session.refresh(file_record)
+
+        logger.info("feature callback success file_id=%s out_path=%s", file_id, out_path)
+        return file_record
+
+    except HTTPException:
+        await async_session.rollback()
+        raise
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("feature callback error file_id=%s error=%s", file_id, e)
+        raise internal_server_error_exception from e
+
 
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
 AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
+FeatureCallbackDep = Annotated[FileInDB, Depends(feature_callback)]
 OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

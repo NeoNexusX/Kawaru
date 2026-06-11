@@ -55,7 +55,7 @@ class UserInDB(UserBase, table=True):
     max_total_file_size: int = Field(
         default=admin_info.max_total_file_size,
         sa_column=Column(BigInteger, nullable=False, default=0),
-        description="用户最大上传文件总大小（字节）"
+        description="用户最大上传文件总大小（GB）"
     )
     max_file_count: int = Field(
         default=admin_info.max_file_count,
@@ -64,7 +64,7 @@ class UserInDB(UserBase, table=True):
     max_processing_size: int = Field(
         default=admin_info.max_processing_size,
         sa_column=Column(BigInteger, nullable=False, default=0),
-        description="用户最大可算法处理文件总大小（字节）"
+        description="用户最大可算法处理文件总大小（GB）"
     )
     max_download_count: int = Field(
         default=admin_info.max_download_count,
@@ -118,7 +118,7 @@ class UserQuotaPublic(SQLModel):
     total_uploaded_size_bytes: int = Field(description="用户已上传文件总大小（字节）")
     file_count: int = Field(description="用户文件数量")
     max_files_per_user: int = Field(description="用户最大文件数量")
-    max_total_file_size: int = Field(description="用户上传文件总大小限额（字节）")
+    max_total_file_size: int = Field(description="用户上传文件总大小限额（GB）")
 
     # 处理相关
     max_processing_size_gb: int = Field(description="用户处理累计限额（GB）")
@@ -131,7 +131,7 @@ class UserQuotaPublic(SQLModel):
 
 class UserQuotaLimits(SQLModel):
     """用户配额限额模型（请求和响应共用，请求时字段可选，响应时返回当前值）"""
-    max_total_file_size: int | None = Field(default=None, description="用户最大上传文件总大小（字节）")
+    max_total_file_size: int | None = Field(default=None, description="用户最大上传文件总大小（GB）")
     max_file_count: int | None = Field(default=None, description="用户最大上传总文件数")
-    max_processing_size: int | None = Field(default=None, description="用户最大可算法处理文件总大小（字节）")
+    max_processing_size: int | None = Field(default=None, description="用户最大可算法处理文件总大小（GB）")
     max_download_count: int | None = Field(default=None, description="用户最大可下载文件次数")

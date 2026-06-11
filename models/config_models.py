@@ -102,6 +102,10 @@ class OSSSettings(BaseModel):
     fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
     fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
+    fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
+    fc_tic_timeout_seconds: int | None = Field(default=60, description="FC TIC 处理调用超时时间，单位秒")
+    fc_feature_endpoint: str | None = Field(default=None, description="FC 特征分析函数HTTP触发地址")
+    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC 特征分析调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):
