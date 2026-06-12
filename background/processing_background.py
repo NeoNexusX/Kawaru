@@ -73,7 +73,7 @@ async def trigger_fc_tic_task(
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
-        "tic_dest": f"tic/file_{file_id}/",
+        "image_dest": f"images/file_{file_id}/",
     }
     logger.info("trigger fc tic file_id=%s imzml_path=%s", file_id, imzml_path)
     request_id = await invoke_fc(FC_TIC_URL, FC_TIC_TOKEN, event, FC_TIC_TIMEOUT)
@@ -92,7 +92,7 @@ async def trigger_fc_feature_task(
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
-        "feature_dest": f"feature/file_{file_id}/",
+        "image_dest": f"images/file_{file_id}/",
     }
     logger.info("trigger fc feature file_id=%s imzml_path=%s", file_id, imzml_path)
     request_id = await invoke_fc(FC_FEATURE_URL, FC_FEATURE_TOKEN, event, FC_FEATURE_TIMEOUT)

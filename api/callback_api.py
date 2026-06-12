@@ -287,11 +287,11 @@ async def tic_callback(
     """
     FC TIC 图像生成回调。
 
-    更新文件的 tic_path 字段。
+    更新文件的 image_path 字段。
     """
     file_id = callback_info.file_id
     is_success = callback_info.is_success
-    tic_path = callback_info.tic_path
+    image_path = callback_info.image_path
 
     try:
         file_record = (
@@ -308,12 +308,12 @@ async def tic_callback(
                            file_id, callback_info.error_message)
             return file_record
 
-        file_record.tic_path = tic_path
+        file_record.image_path = image_path
         async_session.add(file_record)
         await async_session.commit()
         await async_session.refresh(file_record)
 
-        logger.info("tic callback success file_id=%s tic_path=%s", file_id, tic_path)
+        logger.info("tic callback success file_id=%s image_path=%s", file_id, image_path)
         return file_record
 
     except HTTPException:
@@ -355,11 +355,11 @@ async def feature_callback(
     """
     FC UMAP/KMeans 特征分析完成回调。
 
-    更新文件的 feature_path 字段。
+    更新文件的 image_path 字段。
     """
     file_id = callback_info.file_id
     is_success = callback_info.is_success
-    out_path = callback_info.out_path
+    image_path = callback_info.image_path
 
     try:
         file_record = (
@@ -374,12 +374,12 @@ async def feature_callback(
                            file_id, callback_info.error_message)
             return file_record
 
-        file_record.feature_path = out_path
+        file_record.image_path = image_path
         async_session.add(file_record)
         await async_session.commit()
         await async_session.refresh(file_record)
 
-        logger.info("feature callback success file_id=%s out_path=%s", file_id, out_path)
+        logger.info("feature callback success file_id=%s image_path=%s", file_id, image_path)
         return file_record
 
     except HTTPException:

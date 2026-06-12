@@ -545,10 +545,10 @@ async def delete_user_file(
     # 删除 origin 相关文件(如果有)
     if file_record.experiment_type == "imzML":
         await delete_origin_files(session, file_id, file_record.storage_type)
-        # 同步删除对应的 TIC 图像
-        if file_record.tic_path:
-            await delete_file_by_storage(file_record.tic_path, file_record.storage_type)
-            logger.info("deleted tic image file_id=%s tic_path=%s", file_id, file_record.tic_path)
+        # 同步删除对应的图像目录
+        if file_record.image_path:
+            await delete_file_by_storage(file_record.image_path, file_record.storage_type)
+            logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -742,34 +742,44 @@ async def oss_upload_file(
     )
 
 
-async def get_file_tic_url(
+async def get_file_image_url(
     file_id: int,
     session: AsyncSessionDep,
 ) -> dict:
     """
-    获取文件 TIC 图像 OSS 下载 URL（公开接口，无需鉴权）。
+    获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
+    根据 spectrum_mode 返回不同的 URL 集合：
+    - centroid: 返回 {"urls": {"tic_image.png": "..."}, "spectrum_mode": "centroid"}
+    - profile:  返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "spectrum_mode": "profile"}
     Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
 
-    if not file_record.tic_path or file_record.storage_type != "oss":
+    if not file_record.image_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    cache_key = f"tic_url:{file_id}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        return {"url": cached}
+    if file_record.spectrum_mode == "profile":
+        file_names = ["umap_image.jpg", "kmeans_image.jpg"]
+    else:
+        file_names = ["tic_image.png"]
 
-    real_path = file_record.tic_path + "tic_image.png"
-    url = await OssStorage.get_presigned_download_url(
-        real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
-    )
-    if not url:
-        raise file_content_missing_exception
+    urls = {}
+    for name in file_names:
+        cache_key = f"image_url:{file_id}:{name}"
+        cached = await redis_client.get(cache_key)
+        if cached:
+            urls[name] = cached
+        else:
+            real_path = file_record.image_path + name
+            url = await OssStorage.get_presigned_download_url(
+                real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
+            )
+            if not url:
+                raise file_content_missing_exception
+            await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
+            urls[name] = url
 
-    await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
-
-    return {"url": url}
+    return {"urls": urls, "spectrum_mode": file_record.spectrum_mode}
 
 
 # 依赖注入类型别名
@@ -783,4 +793,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
-TicUrlDep = Annotated[dict[str, str], Depends(get_file_tic_url)]
+ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
