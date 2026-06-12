@@ -21,7 +21,8 @@ from alibabacloud_sts20150401.models import AssumeRoleRequest
 from alibabacloud_oss_v2 import Client as OssSyncClient
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
-                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest)
+                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest,
+                                  DeleteMultipleObjectsRequest, DeleteObject)
 
 from celery_runtime.state import get_celery_app
 
@@ -319,7 +320,12 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
                 # 针对Bucket的文件列举权限
                 "Effect": "Allow",
                 "Action": ["oss:ListObjects"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"]
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
+                "Condition": {
+                    "StringLike": {
+                        "oss:Prefix": [f"{packup_folder.strip('/')}/*"]
+                    }
+                }
             },
             {
                 # 针对zip文件写入权限
@@ -340,7 +346,8 @@ def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dic
     return result
 
 
-def _get_oss_sts_token(policy: dict, role_session_name: str) -> dict:
+def _get_oss_sts_token(policy: dict, role_session_name: str,
+                        duration_seconds: int = 3600) -> dict:
     # 从环境变量获取OSS角色权限相关配置
     access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
     access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
@@ -372,7 +379,7 @@ def _get_oss_sts_token(policy: dict, role_session_name: str) -> dict:
         role_arn=role_arn,
         role_session_name=role_session_name,
         policy=json.dumps(policy),
-        duration_seconds=3600
+        duration_seconds=duration_seconds
     )
 
     # 发送请求并获取响应
@@ -407,21 +414,50 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             is_folder = False
             if file_path.endswith('/'): # 针对文件夹进行处理
                 is_folder = True
-                req = ListObjectsV2Request(bucket=bucket_name, prefix=file_path) # type: ignore
-                res = await oss_client.list_objects_v2(req)
-                 # 提取所有匹配对象的 key
-                keys = [obj.key for obj in res.contents] if res.contents else []
+                continuation_token = None
+                while True:
+                    req = ListObjectsV2Request(
+                        bucket=bucket_name,
+                        prefix=file_path,
+                        continuation_token=continuation_token,
+                    ) # type: ignore
+                    res = await oss_client.list_objects_v2(req)
+                    if res.contents:
+                        keys.extend(obj.key for obj in res.contents)
+                    if not res.is_truncated:
+                        break
+                    continuation_token = res.next_continuation_token
 
             if not keys:
                 keys = [file_path]
-            for key in keys:
-                req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
-                res = await oss_client.delete_object(req)
-                if res.status_code != status.HTTP_204_NO_CONTENT:
-                    logger.error(f"oss file {key} deleted failed")
-                    err_count += 1
-                    continue
-                logger.info(f"oss file {key} deleted")
+            if is_folder and len(keys) > 1:
+                # 批量删除：每批最多 1000 个对象，一次 HTTP 请求
+                _BATCH_SIZE = 1000
+                for i in range(0, len(keys), _BATCH_SIZE):
+                    batch = keys[i:i + _BATCH_SIZE]
+                    req = DeleteMultipleObjectsRequest(
+                        bucket=bucket_name,
+                        objects=[DeleteObject(key=k) for k in batch],
+                        quiet=True,
+                    ) # type: ignore
+                    res = await oss_client.delete_multiple_objects(req)
+                    if res.status_code != status.HTTP_200_OK:
+                        logger.error(
+                            "oss batch delete failed batch=%d-%d status=%s",
+                            i, i + len(batch), res.status_code,
+                        )
+                        err_count += 1
+                    else:
+                        logger.info("oss batch deleted %d objects", len(batch))
+            else:
+                for key in keys:
+                    req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
+                    res = await oss_client.delete_object(req)
+                    if res.status_code != status.HTTP_204_NO_CONTENT:
+                        logger.error(f"oss file {key} deleted failed")
+                        err_count += 1
+                        continue
+                    logger.info(f"oss file {key} deleted")
 
             if is_folder:
                 req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
@@ -512,3 +548,40 @@ def get_oss_presigned_url_task(file_path: str, expires: int = 300) -> str | None
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("failed to generate presigned url: %s", e)
         return None
+
+
+@celery_app.task()
+def get_zarr_read_sts_token_task(folder_path: str, expires: int) -> dict:
+    """
+    获取 zarr 文件夹的只读 STS Token。
+
+    :param folder_path: OSS 文件夹路径，如 "processed/run_42.zarr"
+    :param expires: Token 有效期（秒）
+    """
+    folder_path = folder_path.rstrip("/")
+
+    policy = {
+        "Version": "1",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["oss:GetObject"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{folder_path}/*"]
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["oss:ListObjects"],
+                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
+                "Condition": {
+                    "StringLike": {
+                        "oss:Prefix": [f"{folder_path}/*"]
+                    }
+                }
+            }
+        ]
+    }
+
+    code = hashlib.md5(folder_path.encode()).hexdigest()[:8]
+    role_session_name = f"zarr-read-{code}-{datetime.now().timestamp()}"
+
+    return _get_oss_sts_token(policy, role_session_name, expires)

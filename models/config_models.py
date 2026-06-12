@@ -51,16 +51,6 @@ class CelerySettings(BaseModel):
     large_file_poll_time: int
 
 
-class ComputeCelerySettings(BaseModel):
-    """重计算 Celery Worker 配置模型"""
-    enable_embedded_celery: bool = True
-    worker_concurrency: int
-    worker_log_level: str
-    worker_log_file: str
-    worker_disable_rate_limits: bool
-    worker_pool: str
-
-
 class EmailSettings(BaseModel):
     """邮件配置模型"""
     # Support for MailGun
@@ -77,7 +67,6 @@ class StorageSettings(BaseModel):
     """文件存储配置模型"""
     root: str
     local_root: str
-    max_file_size_gb: int
     chunk_buffer_size_mb: int
     max_chunks_per_upload: int
     allowed_storage_types: list[str]
@@ -86,14 +75,12 @@ class StorageSettings(BaseModel):
     max_path_length: int
     max_filename_length: int
     max_file_type_length: int
-    max_downloads_per_user: int
-    max_files_per_user: int
     cleanup_preflights_interval_minutes: int
     cleanup_download_zip_interval_minutes: int
     cleanup_failed_experiments_interval_minutes: int
     preflight_ttl_minutes: int
     download_zip_ttl_minutes: int
-    signed_url_ttl_seconds: int
+    signed_url_ttl_minutes: int
     failed_experiment_ttl_minutes: int
 
 
@@ -115,6 +102,10 @@ class OSSSettings(BaseModel):
     fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
     fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
+    fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
+    fc_tic_timeout_seconds: int | None = Field(default=60, description="FC TIC 处理调用超时时间，单位秒")
+    fc_feature_endpoint: str | None = Field(default=None, description="FC 特征分析函数HTTP触发地址")
+    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC 特征分析调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):
@@ -129,7 +120,6 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
-    max_processing_size_gb: int
 
 
 class SampleInfoSettings(BaseModel):
@@ -162,6 +152,10 @@ class AdminInfo(BaseModel):
     orcid: str
     homepage: str
     email: str
+    max_total_file_size: int
+    max_file_count: int
+    max_processing_size: int
+    max_download_count: int
 
 
 class CORSSettings(BaseModel):
@@ -180,7 +174,6 @@ class Config(BaseModel):
     database: DatabaseSettings
     redis: RedisSettings
     celery: CelerySettings
-    compute_celery: ComputeCelerySettings
     storage: StorageSettings
     oss: OSSSettings
     user: UserSettings

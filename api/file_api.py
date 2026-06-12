@@ -4,7 +4,6 @@
 import json
 from typing import Annotated, Any
 from fastapi import Depends, File, Form, UploadFile, HTTPException
-from fastapi.responses import RedirectResponse
 from sqlmodel import select, and_, or_, col
 
 from background.experiment_background import trigger_experiment_extraction
@@ -38,8 +37,9 @@ from api.file_api_helper import (
 from api.experiment_api_business import delete_origin_files, valid_file_uploaded
 from api.user_api import token_authen
 from api.user_api_helper import count_items
-from constants.file_constants import MAX_DOWNLOADS_PER_USER, ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID
+from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from database.db import AsyncSessionDep
+from database.redis_client import redis_client
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     file_persist_failed_exception,
@@ -545,10 +545,10 @@ async def delete_user_file(
     # 删除 origin 相关文件(如果有)
     if file_record.experiment_type == "imzML":
         await delete_origin_files(session, file_id, file_record.storage_type)
-        # 同步删除对应的 TIC 图像
-        if file_record.tic_path:
-            await delete_file_by_storage(file_record.tic_path, file_record.storage_type)
-            logger.info("deleted tic image file_id=%s tic_path=%s", file_id, file_record.tic_path)
+        # 同步删除对应的图像目录
+        if file_record.image_path:
+            await delete_file_by_storage(file_record.image_path, file_record.storage_type)
+            logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
 
     # 删除文件、分片和数据库记录
     await delete_file_and_parts(session, file_id, current_user)
@@ -584,7 +584,7 @@ async def get_download_file_metadata(
     
     下载限制:
     - 管理员:无限制
-    - 普通用户:受 MAX_DOWNLOADS_PER_USER 限制
+    - 普通用户:受用户下载配额限制
     
     注意:
     - 此接口只返回元数据,不返回文件流
@@ -602,7 +602,7 @@ async def get_download_file_metadata(
     # 下载次数限制检查
     if current_user.identity != "admin":
         used = current_user.download_used or 0
-        if used >= MAX_DOWNLOADS_PER_USER:
+        if used >= current_user.max_download_count:
             raise user_download_limit_exception
 
     # 准备下载文件(业务层处理)
@@ -742,27 +742,44 @@ async def oss_upload_file(
     )
 
 
-async def get_file_tic_url(
+async def get_file_image_url(
     file_id: int,
     session: AsyncSessionDep,
-) -> RedirectResponse:
+) -> dict:
     """
-    获取文件的 TIC 图像 OSS 签名 URL，302 重定向。
-
-    用于前端直接 <img src="/files/{file_id}/tic"> 展示缩略图。
+    获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
+    根据 spectrum_mode 返回不同的 URL 集合：
+    - centroid: 返回 {"urls": {"tic_image.png": "..."}, "spectrum_mode": "centroid"}
+    - profile:  返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "spectrum_mode": "profile"}
+    Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
-    if not file_record.tic_path:
+
+    if not file_record.image_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    if file_record.storage_type != "oss":
-        raise file_content_missing_exception
+    if file_record.spectrum_mode == "profile":
+        file_names = ["umap_image.jpg", "kmeans_image.jpg"]
+    else:
+        file_names = ["tic_image.png"]
 
-    url = await OssStorage.get_presigned_download_url(file_record.tic_path)
-    if not url:
-        raise file_content_missing_exception
+    urls = {}
+    for name in file_names:
+        cache_key = f"image_url:{file_id}:{name}"
+        cached = await redis_client.get(cache_key)
+        if cached:
+            urls[name] = cached
+        else:
+            real_path = file_record.image_path + name
+            url = await OssStorage.get_presigned_download_url(
+                real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
+            )
+            if not url:
+                raise file_content_missing_exception
+            await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
+            urls[name] = url
 
-    return RedirectResponse(url=url, status_code=302)
+    return {"urls": urls, "spectrum_mode": file_record.spectrum_mode}
 
 
 # 依赖注入类型别名
@@ -776,4 +793,4 @@ PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
-TicRedirectDep = Annotated[Any, Depends(get_file_tic_url)] #TODO
+ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]

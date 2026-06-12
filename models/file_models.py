@@ -120,7 +120,6 @@ class FilePublic(FileBase):
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
-    tic_path: str | None = Field(default=None, description="TIC图像在OSS上的路径")
     is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
 
 
@@ -146,7 +145,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
-    tic_path: str | None = Field(default=None, max_length=255, description="TIC 图像在 OSS 上的路径")
+    image_path: str | None = Field(default=None, max_length=255, description="图像输出目录在 OSS 上的路径")
 
     # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(
@@ -313,3 +312,12 @@ class FileDownloadMeta(FileBase):
             download_count=record.download_count,
             last_downloaded_at=record.last_downloaded_at,
         )
+
+
+class ZarrFolderAccess(SQLModel):
+    """zarr 文件夹访问凭证 — 前端拿到后通过 OSS SDK 直连读取"""
+    folder_path: str = Field(description="OSS 上的 zarr 文件夹路径")
+    bucket: str = Field(description="OSS bucket 名称")
+    region: str = Field(description="OSS region")
+    sts_token: "OssStsToken" = Field(description="OSS 临时访问凭证")
+    expires_in: int = Field(description="STS Token 有效时间（秒）")

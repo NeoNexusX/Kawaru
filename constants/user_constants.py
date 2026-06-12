@@ -8,9 +8,9 @@ user_config = config.user
 # 允许的用户职位列表
 ALLOWED_POSITION_TYPES = set(user_config.allowed_position_types)
 
-# 允许的国家/地区列表
+# 允许的国家/地区列表（ISO 3166-1 alpha-2代码，如CN、US）
 ALLOWED_REGIONS = {
-    item['name'] for item in
+    item['iso2'] for item in
     json.loads(REGION_PATH.read_text(encoding="utf-8"))
 }
 

@@ -6,7 +6,7 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
-    OssUploadDep, TicRedirectDep
+    OssUploadDep, ImageUrlDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 
@@ -78,10 +78,10 @@ async def upload_file(file_record: OssUploadDep):
     return file_record
 
 
-@file_router.get("/{file_id}/tic")
-async def get_file_tic(redirect: TicRedirectDep):
-    """获取文件 TIC 图像（302 重定向到 OSS 签名 URL）"""
-    return redirect
+@file_router.get("/{file_id}/images")
+async def get_file_images(image_urls: ImageUrlDep):
+    """获取文件图像 OSS 下载 URL（公开接口，根据 spectrum_mode 返回不同数量的 URL）"""
+    return image_urls
 
 
 # @file_router.post("/test_api")

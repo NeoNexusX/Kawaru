@@ -11,7 +11,6 @@ from models.processing_models import ProcessingAlgorithmsConfig
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.user_models import UserInDB
 from constants.experiment_constants import PROCESSED_STORAGE_ROOT
-from constants.file_constants import MAX_PROCESSING_SIZE_PER_USER
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api_helper")
@@ -73,10 +72,13 @@ def check_processing_quota(user: UserInDB) -> bool:
     Returns:
         True 表示配额充足，False 表示已超限
     """
-    if user.processed_file_size >= MAX_PROCESSING_SIZE_PER_USER:
+    # 注意：max_processing_size 以 GB 存储，需转换为字节后与 processed_file_size（字节）比较
+    _BYTES_IN_GB = 1024**3
+    max_proc_bytes = user.max_processing_size * _BYTES_IN_GB
+    if user.processed_file_size >= max_proc_bytes:
         logger.error(
             "processing quota exceeded user=%s used=%s limit=%s",
-            user.id, user.processed_file_size, MAX_PROCESSING_SIZE_PER_USER,
+            user.id, user.processed_file_size, max_proc_bytes,
         )
         return False
     return True

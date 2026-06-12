@@ -105,6 +105,18 @@ origin_file_not_found_on_disk_exception = HTTPException(
     detail=format_exception_detail("origin imzML/ibd file not found on disk")
 )
 
+# 算法处理尚未完成，无法返回 zarr 文件夹
+process_run_not_completed_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail=format_exception_detail("processing not completed, zarr folder not available yet")
+)
+
+# zarr 文件夹为空或不存在于 OSS
+zarr_folder_not_found_exception = HTTPException(
+    status_code=status.HTTP_404_NOT_FOUND,
+    detail=format_exception_detail("zarr folder is empty or not found on OSS")
+)
+
 
 __all__ = [
     "origin_not_found_exception",
@@ -124,4 +136,6 @@ __all__ = [
     "origin_file_not_found_on_disk_exception",
     "oss_fc_request_id_empty_exception",
     "origin_type_not_supported_exception",
+    "process_run_not_completed_exception",
+    "zarr_folder_not_found_exception",
 ]

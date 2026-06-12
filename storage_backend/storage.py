@@ -14,13 +14,14 @@ from background.file_background_helper import (
     get_oss_packup_sts_token_task,
     tag_oss_file_task,
     sign_url_task,
-    get_oss_presigned_url_task
+    get_oss_presigned_url_task,
+    get_zarr_read_sts_token_task
 )
 
 from models.auth import OssStsToken
 from constants.file_constants import (LOCAL_STORAGE_ROOT, STORAGE_ROOT, TEMP_PARTS_ROOT,
                                       OSS_ZIP_STORAGE_ROOT, OSS_DEFAULT_TIMEOUT_SECONDS,
-                                      OSS_PACKUP_ZIP_STORAGE_ROOT, DOWNLOAD_ZIP_TTL_MINUTES
+                                      OSS_PACKUP_ZIP_STORAGE_ROOT
                                      )
 from constants.experiment_constants import ORIGIN_STORAGE_ROOT, OSS_ORIGIN_STORAGE_ROOT
 
@@ -258,7 +259,7 @@ class OssStorage:
         delete_results: Sequence[bool] | None = await wait_for_result(
             result=delete_tasks,
             poll_interval=0.1,
-            timeout=10
+            timeout=20
         )
 
         # 5. 结果处理
@@ -290,12 +291,12 @@ class OssStorage:
 
 
     @staticmethod
-    async def sign_download_url(file_path: str, expires: int = DOWNLOAD_ZIP_TTL_MINUTES * 60) -> str | None:
+    async def sign_download_url(file_path: str, expires: int) -> str | None:
         """
         签名OSS文件下载URL
 
         :param file_path: OSS文件路径（如"folder/file.zip")
-        :param expires: 过期时间（秒），默认值为DOWNLOAD_ZIP_TTL_MINUTES * 60
+        :param expires: 过期时间（秒）
 
         :return: str 签名后的URL
         """
@@ -321,3 +322,14 @@ class OssStorage:
             logger.error("failed to get presigned url due to server timeout: %s", file_path)
             return None
         return url
+
+    @staticmethod
+    async def get_zarr_read_sts_token(folder_path: str, expires: int = 3600) -> "OssStsToken | None":
+        """获取 zarr 文件夹只读 STS Token"""
+
+        res: AsyncResult = get_zarr_read_sts_token_task.delay(folder_path, expires)  # type: ignore
+        result: dict = await wait_for_result(res, poll_interval=0.1, timeout=10)  # type: ignore
+        if result is None:
+            logger.error("failed to get zarr read sts token due to server timeout: %s", folder_path)
+            return None
+        return OssStsToken(**result)

@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi import status
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep, TicCallbackDep, OssPackupCallbackDep
+from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep, TicCallbackDep, FeatureCallbackDep, OssPackupCallbackDep
 
 callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
 
@@ -35,6 +35,12 @@ async def algorithm_callback(run_record: AlgorithmCallbackDep):
 @callback_router.post("/tic_callback", response_model=TicCallbackDep)
 async def tic_callback(file_record: TicCallbackDep):
     """FC TIC图像生成回调"""
+    return file_record
+
+
+@callback_router.post("/feature_callback", response_model=FeatureCallbackDep)
+async def feature_callback(file_record: FeatureCallbackDep):
+    """FC UMAP/KMeans 特征分析回调"""
     return file_record
 
 
