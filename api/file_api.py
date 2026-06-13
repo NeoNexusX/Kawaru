@@ -748,9 +748,9 @@ async def get_file_image_url(
 ) -> dict:
     """
     获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
-    根据 spectrum_mode 返回不同的 URL 集合：
-    - centroid: 返回 {"urls": {"tic_image.png": "..."}, "spectrum_mode": "centroid"}
-    - profile:  返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "spectrum_mode": "profile"}
+    根据 storage_mode 返回不同的 URL 集合：
+    - continuous: 返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "storage_mode": "continuous"}
+    - processed:  返回 {"urls": {"tic_image.png": "..."}, "storage_mode": "processed"}
     Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
@@ -758,7 +758,7 @@ async def get_file_image_url(
     if not file_record.image_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    if file_record.spectrum_mode == "profile":
+    if file_record.storage_mode == "continuous":
         file_names = ["umap_image.jpg", "kmeans_image.jpg"]
     else:
         file_names = ["tic_image.png"]
@@ -779,7 +779,7 @@ async def get_file_image_url(
             await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
             urls[name] = url
 
-    return {"urls": urls, "spectrum_mode": file_record.spectrum_mode}
+    return {"urls": urls, "storage_mode": file_record.storage_mode}
 
 
 # 依赖注入类型别名

@@ -157,10 +157,10 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        # 根据 spectrum_mode 分发到不同的 FC 函数
-        # profile   → fc-feature (UMAP/KMeans 特征分析，大内存)
-        # centroid  → fc-tic (TIC 图像生成，轻量)
-        if source_file.spectrum_mode == "profile":
+        # 根据 storage_mode 分发到不同的 FC 函数
+        # continuous → fc-feature (UMAP/KMeans 特征分析，大内存)
+        # processed  → fc-tic (TIC 图像生成，轻量)
+        if source_file.storage_mode == "continuous":
             trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
         else:
             trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
