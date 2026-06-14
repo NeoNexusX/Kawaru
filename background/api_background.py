@@ -34,45 +34,6 @@ async def validate_orcid_task(orcid: str) -> bool:
 
 
 @celery_app.task()  # type: ignore
-async def send_mailgun_message_task(email_payload: dict) -> dict:
-    """
-    发送 Mailgun 邮件的 Celery 任务。
-    任务只负责发送邮件，不包含业务验证。
-    """
-
-    mailgun_api_key = email_payload.get("mailgun_api_key")
-    mailgun_api_url = email_payload.get("mailgun_api_url") #TODO 是否考虑直接从env获取？
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                mailgun_api_url, # type: ignore
-                auth=("api", mailgun_api_key), # type: ignore
-                data={
-                    "from": email_payload.get("from_"),
-                    "to": email_payload.get("to"),
-                    "subject": email_payload.get("subject"),
-                    "text": email_payload.get("text"),
-                },
-            )
-            response.raise_for_status()
-            return {
-                "success": True,
-                "data": {
-                    "email": email_payload.get("email") or email_payload.get("to"),
-                    "send_time": email_payload.get("send_time"),
-                    "purpose": email_payload.get("purpose"),
-                },
-            }
-    except httpx.HTTPStatusError as exc:
-        logger.error("Mailgun HTTP error: %s", exc)
-        return {"success": False, "error": f"HTTP {exc.response.status_code}: {exc.response.text}"}
-    except Exception as exc: # pylint: disable=broad-exception-caught
-        logger.error("Mailgun send failed: %s", exc)
-        return {"success": False, "error": str(exc)}
-
-
-@celery_app.task()  # type: ignore
 async def send_smtp_email_task(email_payload: dict) -> dict:
     """
     发送 SMTP 邮件的 Celery 任务。

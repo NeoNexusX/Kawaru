@@ -9,6 +9,28 @@ Kawaru 是一个基于 FastAPI 的后端服务器项目,为 Massflow 提供后�
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) 包管理器
 
+### macOS 额外依赖
+
+项目依赖 `m2crypto`，它需要在 macOS 上从源码编译 C 扩展，因此需要额外安装以下工具：
+
+```bash
+# 安装 SWIG 和 OpenSSL
+brew install swig openssl@3
+```
+
+安装完成后，编译 `m2crypto` 时需要设置以下环境变量（Apple Silicon 必需）：
+
+```bash
+export LDFLAGS="-L$(brew --prefix openssl@3)/lib"
+export CFLAGS="-I$(brew --prefix openssl@3)/include -D__aarch64__"
+export SWIG_FEATURES="-I$(brew --prefix openssl@3)/include -cpperraswarn"
+```
+
+> **说明：**
+> - `-cpperraswarn` — 让 SWIG 将系统头文件中的 `#error "Unsupported architecture"` 降级为警告。SWIG 内置的 C 预处理器不识别 Apple Silicon 的 `__aarch64__` 宏，而 macOS SDK 头文件依赖该宏判断架构，此选项可安全跳过该检测。
+> - 以上变量仅需在运行 `uv sync` 时临时设置，无需写入 shell 配置文件。
+> - Intel Mac 用户无需 `-D__aarch64__`。
+
 ## 快速开始开发
 
 ### 1. 克隆项目
@@ -97,14 +119,6 @@ LAST_SMTP_SERVER=smtp.example.com
   LAST_SMTP_PASSWORD=your_authorization_code
   ```
   > 注意: QQ 邮箱需要在设置中获取授权码
-
-#### Mailgun 服务配置 (可选)
-
-```env
-# Mailgun 配置
-MAILGUN_API_KEY=your_mailgun_api_key
-MAILGUN_DOMAIN=your_mailgun_domain
-```
 
 ### 4. 配置服务器参数
 

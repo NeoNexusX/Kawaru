@@ -33,7 +33,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 import alibabacloud_oss_v2 as oss
 from alibabacloud_oss_v2 import PutObjectRequest
 
-from api.file_api_helper import get_file_record_by_id
+from api_services.file_service import get_file_record_by_id
 from background.file_background import cleanup_old_download_zips
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import get_async_engine

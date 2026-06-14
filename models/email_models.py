@@ -23,13 +23,6 @@ class EmailConfirmResponseBase(BaseModel):
 
 
 # EmailRequest model
-class EmailConfirmRequest(EmailConfirmResponseBase):
-    """邮件确认请求模型，包含邮件内容"""
-    subject: str = "Account Confirmation By Server"
-    text_content: str
-
-
-# EmailRequest model
 class EmailSMTPRequest(EmailConfirmResponseBase):
     """SMTP邮件请求模型，包含SMTP相关字段"""
     subject: str = "Account Confirmation By Server"
@@ -39,16 +32,6 @@ class EmailSMTPRequest(EmailConfirmResponseBase):
     smtp_passwd: str
     smtp_from_email: str
     smtp_server: str
-
-
-class MailgunEmailPayload(EmailConfirmResponseBase):
-    """Mailgun邮件发送负载模型，包含基础邮件确认字段和 Mailgun API 相关字段"""
-    from_: str
-    to: str
-    subject: str
-    text: str
-    mailgun_api_key: str
-    mailgun_api_url: str
 
 
 class EmailVerificationCodeTotp:

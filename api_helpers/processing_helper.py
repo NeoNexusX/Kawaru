@@ -1,8 +1,7 @@
-"""
-算法处理运行 — 工具/辅助函数
-
-纯函数，不依赖数据库，不依赖 HTTP 异常。
-"""
+#########################
+# Processing Helper - 算法处理工具/辅助函数
+# 纯函数，不依赖数据库，不依赖 HTTP 异常。
+#########################
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,7 +12,7 @@ from models.user_models import UserInDB
 from constants.experiment_constants import PROCESSED_STORAGE_ROOT
 from tools.logger import get_logger
 
-logger = get_logger("api.processing_api_helper")
+logger = get_logger("api_helpers.processing_helper")
 
 
 def validate_algorithms_config(config: ProcessingAlgorithmsConfig) -> ProcessingAlgorithmsConfig | None:

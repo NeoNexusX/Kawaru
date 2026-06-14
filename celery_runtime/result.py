@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Any, Sequence
 import asyncio
 
 from celery.result import AsyncResult, GroupResult
@@ -6,7 +6,7 @@ from celery.result import AsyncResult, GroupResult
 from tools.logger import get_logger
 
 
-async def wait_for_result(result: AsyncResult | GroupResult, poll_interval: float, timeout: float | None = 20):
+async def wait_for_result(result: AsyncResult | GroupResult, poll_interval: float, timeout: float | None = 20) -> Any:
     """异步轮询等待 Celery 结果。"""
 
     async def _poll_until_ready():

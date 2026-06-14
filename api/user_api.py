@@ -11,22 +11,23 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from api.auth_api import (
+from exceptions.user_exceptions import (
     credentials_exception,
-    create_access_token,
-    hashed_password,
     login_expired_exception,
     token_invalid_exception,
     token_expired_exception,
 )
-from api.file_api_business import get_user_file_ids
-from api.user_api_business import authenticate_user, validate_orcid, validate_update_user_data
-from api.user_api_helper import (
-    validate_url,
+from api_helpers.auth_helper import create_access_token, hashed_password
+from api_helpers.user_helper import validate_url
+from api_services.file_service import get_user_file_ids
+from api_services.user_service import (
+    authenticate_user,
+    validate_orcid,
+    validate_update_user_data,
     get_user,
     get_user_by_id,
     get_user_by_email,
-    count_items
+    count_items,
 )
 
 from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614

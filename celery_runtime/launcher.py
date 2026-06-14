@@ -9,6 +9,7 @@ from celery_runtime.runtime import clean_up_stale_task
 from database.redis_client import clean_up_stale_packup_data
 
 APP_PATH = "celery_runtime.entrypoint:celery_app"
+BEAT_APP_PATH = "celery_runtime.beat_entrypoint:beat_app"
 
 
 async def _start_worker(*, queues: str, concurrency: int, log_level: str,
@@ -65,8 +66,9 @@ async def start_embedded_celery():
                     default_worker.pid, pool, celery_cfg.worker_concurrency)
 
         # --- beat ---
+        # beat 使用独立轻量入口（不加载 task 模块），显著降低内存占用
         beat_args = [
-            "-A", APP_PATH, "beat",
+            "-A", BEAT_APP_PATH, "beat",
             "--loglevel", "info",
             "--logfile", celery_cfg.worker_log_file,
         ]
