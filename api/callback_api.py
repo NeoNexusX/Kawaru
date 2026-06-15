@@ -1,6 +1,7 @@
-from typing import Annotated
-from fastapi import Depends, HTTPException
 from zipfile import BadZipFile
+from typing import Annotated
+
+from fastapi import Depends, HTTPException
 
 from sqlmodel import select
 
@@ -12,12 +13,11 @@ from api.file_api_helper import get_file_by_filename
 from api.experiment_api_business import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from api.processing_api_business import get_process_run_by_id, mark_process_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
-from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
-
-from models.experiment_models import ExperimentStatus
-from models.config_models import Config
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback
+from models.config_models import Config
+from models.experiment_models import ExperimentStatus
+from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
@@ -106,9 +106,8 @@ async def oss_upload_callback(
             if error_type == "FileNotFoundError":
                 logger.error("oss upload not complete, filename = %s ZIP file must contain both .imzML and .ibd files", filename)
                 raise FileNotFoundError("ZIP file must contain both .imzML and .ibd files")
-            else:
-                logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
-                raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=W0719
+            logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
+            raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=broad-exception-raised
 
         # 验证路径是否为空
         if not file_path or not imzml_path or not ibd_path:

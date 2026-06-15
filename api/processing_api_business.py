@@ -195,21 +195,27 @@ async def list_public_runs(
 async def list_public_runs_by_file_id(
     async_session: AsyncSession,
     file_id: int,
-) -> Sequence[dict]:
-    """根据源文件 ID 查询所有公开且完成的 run（含源文件名）"""
-    result = await async_session.exec(
+    page: int = 1,
+    size: int = 10,
+) -> tuple[Sequence[dict], int]:
+    """根据源文件 ID 分页查询所有公开且完成的 run（含源文件名）"""
+    base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
-        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
+        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(
             ExperimentProcessRunInDB.source_file_id == file_id,
             ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
             ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
         )
     )
+    total = (await async_session.exec(
+        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
+    offset = (page - 1) * size
+    rows = (await async_session.exec(base_query.offset(offset).limit(size))).all()
     return [
         {**row[0].model_dump(), "filename": row[1]}
-        for row in result.all()
-    ]
+        for row in rows
+    ], total
 
 
 async def list_user_runs(
@@ -232,19 +238,23 @@ async def list_user_runs(
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,
-) -> Sequence[dict]:
-    """查询当前用户的所有 run（无分页，含源文件名）"""
-    result = await async_session.exec(
+    page: int = 1,
+    size: int = 10,
+) -> tuple[Sequence[dict], int]:
+    """分页查询当前用户的所有 run（含源文件名）"""
+    base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
-        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
-        .where(
-            ExperimentProcessRunInDB.user_id == user_id,
-        )
+        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
+        .where(ExperimentProcessRunInDB.user_id == user_id)
     )
+    total = (await async_session.exec(
+        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
+    offset = (page - 1) * size
+    rows = (await async_session.exec(base_query.offset(offset).limit(size))).all()
     return [
         {**row[0].model_dump(), "filename": row[1]}
-        for row in result.all()
-    ]
+        for row in rows
+    ], total
 
 
 #########################

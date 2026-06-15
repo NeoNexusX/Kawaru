@@ -8,6 +8,7 @@ from fastapi import Depends
 from fastapi.exceptions import HTTPException
 
 from api.processing_api_business import (
+    assert_zarr_folder_access,
     create_process_run,
     delete_process_run,
     get_origin_for_processing,
@@ -24,16 +25,16 @@ from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
+from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
+from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
+from models.file_models import ZarrFolderAccess
+from models.filter_models import ListDataResponse, PaginationMeta
 from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
 )
-from api.processing_api_business import assert_zarr_folder_access
-from storage_backend.storage import OssStorage
-from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from models.user_models import UserInDB
-from models.file_models import ZarrFolderAccess
-from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
+from storage_backend.storage import OssStorage
 from background.processing_background import trigger_fc_algorithm_task
 from tools.logger import get_logger
 
@@ -89,20 +90,58 @@ async def create_algorithm_task(
 async def list_public_process_runs(
     file_id: int,
     async_session: AsyncSessionDep,
-) -> list[ExperimentProcessRunPublic]:
-    """根据文件ID查询公开的运行记录"""
-    rows = await list_public_runs_by_file_id(async_session, file_id)
-    return [ExperimentProcessRunPublic(**row) for row in rows]
+    page: int = 1,
+    size: int = 10,
+) -> ListDataResponse:
+    """根据文件ID分页查询公开的运行记录"""
+    try:
+        runs, total_records = await list_public_runs_by_file_id(async_session, file_id, page, size)
+
+        total_pages = (total_records + size - 1) // size if total_records > 0 else 0
+        pagination_meta = PaginationMeta(
+            current_page=page,
+            current_records=len(runs),
+            total_pages=total_pages,
+            total_records=total_records,
+        )
+        return ListDataResponse(
+            meta=pagination_meta,
+            data=[ExperimentProcessRunPublic(**row) for row in runs],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("failed to list_public_process_runs: %s", e)
+        raise internal_server_error_exception from e
 
 
 async def list_my_process_runs(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> list[ExperimentProcessRunPublic]:
-    """查询当前用户的所有运行记录"""
-    assert current_user.id is not None
-    rows = await get_user_runs(async_session, current_user.id)
-    return [ExperimentProcessRunPublic(**row) for row in rows]
+    page: int = 1,
+    size: int = 10,
+) -> ListDataResponse:
+    """分页查询当前用户的所有运行记录"""
+    try:
+        assert current_user.id is not None
+        runs, total_records = await get_user_runs(async_session, current_user.id, page, size)
+
+        total_pages = (total_records + size - 1) // size if total_records > 0 else 0
+        pagination_meta = PaginationMeta(
+            current_page=page,
+            current_records=len(runs),
+            total_pages=total_pages,
+            total_records=total_records,
+        )
+        return ListDataResponse(
+            meta=pagination_meta,
+            data=[ExperimentProcessRunPublic(**row) for row in runs],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("failed to list_my_process_runs: %s", e)
+        raise internal_server_error_exception from e
 
 
 async def delete_process_run_endpoint(
@@ -164,4 +203,8 @@ async def get_zarr_folder_access(
 
 
 # 依赖注入类型别名
+CreateAlgorithmTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorithm_task)]
+ListPublicRunsDep = Annotated[ListDataResponse, Depends(list_public_process_runs)]
+ListMyRunsDep = Annotated[ListDataResponse, Depends(list_my_process_runs)]
+DeleteProcessRunDep = Annotated[dict[str, int | str], Depends(delete_process_run_endpoint)]
 ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]
