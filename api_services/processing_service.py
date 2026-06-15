@@ -183,19 +183,22 @@ async def list_public_runs(
 
 async def list_public_runs_by_file_id(
     async_session: AsyncSession,
-    file_id: int,
+    file_id: int | None = None,
     page: int = 1,
     size: int = 10,
 ) -> tuple[Sequence[dict], int]:
-    """根据源文件 ID 分页查询所有公开且完成的 run（含源文件名）"""
+    """分页查询公开且完成的 run（可按源文件 ID 筛选，含源文件名）"""
+    conditions = [
+        ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
+        ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
+    ]
+    if file_id is not None:
+        conditions.append(ExperimentProcessRunInDB.source_file_id == file_id)
+
     base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
-        .where(
-            ExperimentProcessRunInDB.source_file_id == file_id,
-            ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
-            ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
-        )
+        .where(*conditions)
     )
     total = (await async_session.exec(
         select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable

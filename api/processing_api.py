@@ -8,6 +8,7 @@ from fastapi import Depends
 from fastapi.exceptions import HTTPException
 
 from api_services.processing_service import (
+    assert_zarr_folder_access,
     create_process_run,
     delete_process_run,
     get_origin_for_processing,
@@ -27,16 +28,14 @@ from exceptions.common_exceptions import internal_server_error_exception
 from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
+from models.user_models import UserInDB
 from models.filter_models import ListDataResponse, PaginationMeta
 from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
 )
-from api_services.processing_service import assert_zarr_folder_access
 from storage_backend.storage import OssStorage
-from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
-from models.user_models import UserInDB
-from storage_backend.storage import OssStorage
+
 from background.processing_background import trigger_fc_algorithm_task
 from tools.logger import get_logger
 
@@ -90,12 +89,12 @@ async def create_algorithm_task(
 
 
 async def list_public_process_runs(
-    file_id: int,
     async_session: AsyncSessionDep,
+    file_id: int | None = None,
     page: int = 1,
     size: int = 10,
 ) -> ListDataResponse:
-    """根据文件ID分页查询公开的运行记录"""
+    """查询公开的运行记录（可按文件ID筛选）"""
     try:
         runs, total_records = await list_public_runs_by_file_id(async_session, file_id, page, size)
 

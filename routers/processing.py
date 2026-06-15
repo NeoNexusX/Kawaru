@@ -23,9 +23,9 @@ async def create_process(record: CreateAlgorithmTaskDep):
     return record
 
 
-@processing_router.get("/public/{file_id}", response_model=ListDataResponse)
+@processing_router.get("/public", response_model=ListDataResponse)
 async def list_public(result: ListPublicRunsDep):
-    """根据文件ID分页查询公开的运行记录"""
+    """查询公开的运行记录（可按文件ID筛选）"""
     return result
 
 
