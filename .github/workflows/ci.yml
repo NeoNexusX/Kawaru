@@ -42,7 +42,6 @@ jobs:
           --health-retries=10
 
     env:
-      MAILGUN_API_KEY: ci-mailgun-key
       SMTP_PASSWORD: ci-smtp-password
       DATABASE_PASSWORD: kawaru-ci-db-pass
       REDIS_PASSWORD: ""
@@ -81,7 +80,6 @@ jobs:
             algorithm: HS256
 
           email:
-            mailgun_domain: ci.example.com
             smtp_port: 465
             smtp_username: ci@example.com
             smtp_from_email: ci@example.com

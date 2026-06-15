@@ -1,3 +1,7 @@
+#########################
+# Experiment Service - 业务逻辑层
+# 职责：origin 实验记录的增删改查与物理文件清理。无 FastAPI 依赖。
+#########################
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,13 +10,14 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from storage_backend.storage import OssStorage
+from api_helpers.file_helper import delete_multiple_files_by_storage
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB
 from models.file_models import FileInDB
-from api.file_api_helper import get_file_record_by_id, delete_multiple_files_by_storage
 from tools.logger import get_logger
 
-logger = get_logger("api.experiment_api_business")
+logger = get_logger("api_services.experiment_service")
+
 
 #########################
 # origin  - 增
@@ -72,7 +77,7 @@ async def delete_origin_files(
 
     for run in process_runs:
         if run.out_path:
-            from api.processing_api_business import cleanup_output_dir # type: ignore
+            from api_services.processing_service import cleanup_output_dir # type: ignore # pylint: disable=import-outside-toplevel
             await cleanup_output_dir(run.out_path, storage_type)
 
     # 收集需要删除的 origin 文件
@@ -98,6 +103,7 @@ async def delete_origin_files(
         if await OssStorage.delete_file(origin_dir):
             logger.debug("cleaned up origin directory path=%s", origin_dir)
 
+
 async def delete_source_file_and_clear_path(
         async_session: AsyncSession,
         source: int | FileInDB,
@@ -106,9 +112,11 @@ async def delete_source_file_and_clear_path(
     删除源文件并清空数据库中的 path 字段，只用于实验处理失败时的清理
     Args:
         async_session: 数据库会话
-        source_file: 文件记录对象，必须具有 path 属性
+        source: 文件记录对象或文件 ID
     """
-    source_file = await get_file_record_by_id(source,async_session) if isinstance(source, int) else source
+    # 延迟导入避免与 file_service 的循环依赖
+    from api_services.file_service import get_file_record_by_id # pylint: disable=import-outside-toplevel
+    source_file = await get_file_record_by_id(source, async_session) if isinstance(source, int) else source
 
     if source_file and source_file.path:
         # 删除物理文件，根据存储类型选择不同的删除方式
@@ -145,7 +153,6 @@ async def mark_origin(
     """
     标记 origin 为完成状态，并更新其路径和大小信息
     注意:final_imzml_path 和 final_ibd_path 必须存在且有效，才能标记为完成状态
-
     """
     origin_record = await find_origin_by_id(async_session, origin) if isinstance(origin, int) else origin
 
@@ -167,7 +174,7 @@ async def mark_origin(
             # 确保路径是 str 类型
             final_imzml_path = str(final_imzml_path)
             final_ibd_path = str(final_ibd_path)
-            # 如果是 OSS 存储，路径应该是 OSS 文件路径，需要需要通过 OSS API 获取文件大小
+            # 如果是 OSS 存储，路径应该是 OSS 文件路径，需要通过 OSS API 获取文件大小
             imzml_size = await OssStorage.get_file_size(final_imzml_path)
             ibd_size = await OssStorage.get_file_size(final_ibd_path)
             if not imzml_size or not ibd_size:

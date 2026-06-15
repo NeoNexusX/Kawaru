@@ -26,8 +26,6 @@ token:
   algorithm: HS256
 
 email:
-  # Support for MailGun
-  mailgun_domain: YOUR_MAILGUN_DOMAIN
   # Support for SMTP
   smtp_port: 465 # or 587
   smtp_username: 1513401658@qq.com

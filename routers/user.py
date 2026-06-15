@@ -1,12 +1,11 @@
 from fastapi import APIRouter
 from models.auth import Token
-from models.email_models import EmailConfirmRequest
 from models.user_models import UserPublic,UserDetailPublic, UserQuotaPublic, UserQuotaLimits
 from models.filter_models import ListDataResponse
 from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
                           AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
                           UpdateUserQuotaDep)
-from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
+from api.email_api import EmailConfirmSMTPDep
 
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
 #########################
@@ -84,16 +83,6 @@ async def del_user(user: UserDeleDep):
     Params:path user_id
     """
     return user
-
-
-@user_router.post("/emailrequest", response_model=EmailConfirmRequest)#MAILGUN邮箱服务
-async def create_user_email_server(email: EmailConfirmDep):
-    """
-    Use MailGun to send verification code:
-    Method:Post
-    Params(Body):"email", "send_time"
-    """
-    return email
 
 
 @user_router.post("/emailsmtprequest", response_model=EmailConfirmSMTPDep)#SMTP邮箱服务

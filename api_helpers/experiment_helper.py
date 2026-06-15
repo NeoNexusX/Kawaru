@@ -1,7 +1,7 @@
 #########################
-# Experiment API Helper - 底层工具函数
+# Experiment Helper - 底层工具函数
 # 职责：纯工具函数，无业务逻辑，无数据库依赖
-# 包含：目录管理、文件验证、ZIP解压
+# 包含：目录管理、文件验证、ZIP解压、OSS 打包任务派发
 #########################
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from constants.file_constants import ALLOWED_EXPERIMENT_TYPES
 from tools.logger import get_logger
 
 
-logger = get_logger("api.experiment_api_helper")
+logger = get_logger("api_helpers.experiment_helper")
 
 
 async def packup_oss_file(filename: str, packup_folder: str, zip_file_path: str) -> str | None:
@@ -112,14 +112,14 @@ def validate_experiment_type(experiment_type: str) -> bool:
 def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool: # pylint: disable=unused-argument
     """
     验证 imzML 和 ibd 文件是否为有效可读的 MSI 实验数据
-    
+
     Args:
         imzml_path: imzML 文件路径
         ibd_path: ibd 文件路径
-    
+
     Returns:
         True 表示验证通过，False 表示验证失败
-    
+
     TODO: 后续扩展验证逻辑
     - 检查文件格式是否正确
     - 验证文件完整性

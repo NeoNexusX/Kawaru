@@ -1,5 +1,5 @@
 #########################
-# File API Business - 业务逻辑层
+# File Service - 业务逻辑层
 # 职责:业务逻辑处理,数据库操作,但不直接暴露API
 # 包含:用户文件关联管理、文件记录查询、权限校验、清理逻辑、分片合并
 #########################
@@ -9,24 +9,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
+from sqlalchemy.orm import selectinload
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from celery.result import AsyncResult
 
 from database.db import get_async_engine
 from database.redis_client import redis_client
-from api.user_api_helper import get_user_by_id
-from api.experiment_api_business import get_origin_imzml_by_file_id
-from api.experiment_api_helper import validate_experiment_type, packup_oss_file
-from api.file_api_helper import (
+from api_services.user_service import get_user_by_id
+from api_services.experiment_service import get_origin_imzml_by_file_id
+from api_helpers.experiment_helper import validate_experiment_type, packup_oss_file
+from api_helpers.file_helper import (
     check_user_quota,
-    get_file_record_by_id,
-    valid_duplicate_filename,
-    valid_user_duplicate_file_hash,
     validate_file_metadata,
     validate_total_parts,
     merge_files_and_get_hash,
-    save_upload_file,
     delete_file_by_storage,
 )
 from storage_backend.storage import OssStorage, LocalStorage
@@ -65,13 +62,134 @@ from models.experiment_models import ExperimentStatus
 from boot.config import get_config
 
 if TYPE_CHECKING:
-    from fastapi import UploadFile
     from models.file_models import PartCreate
 
-logger = get_logger("api.file_api_business")
+logger = get_logger("api_services.file_service")
 
 celery_worker_config = get_config().celery
 large_file_poll_time = celery_worker_config.large_file_poll_time
+
+
+#########################
+# File 查 - 基础记录查询（DB）
+#########################
+async def valid_duplicate_filename(
+    async_session: AsyncSession, user: UserInDB, filename: str
+) -> bool:
+    """
+    检查用户是否已有同名文件
+
+    Returns:
+        True 表示存在重复文件名,False 表示不重复
+    """
+    # 通过 SQL 的 exists() 直接判断数据库是否存在重复文件名文件
+    stmt = select(
+        exists().where(
+            and_(
+                UserFileLink.user_id == user.id,
+                FileInDB.file_id == UserFileLink.file_id,
+                FileInDB.filename == filename,
+            )
+        )
+    )
+
+    has_duplicate_file = (await async_session.exec(stmt)).one()
+
+    if has_duplicate_file:
+        logger.warning(
+            "duplicate filename found user=%s filename=%s",
+            user.id,
+            filename,
+        )
+        return True
+
+    return False
+
+
+async def valid_user_duplicate_file_hash(
+    session: AsyncSession, user: UserInDB, hash_md5: str
+) -> bool:
+    """
+    检查用户是否已拥有该哈希的文件(只针对本用户)
+
+    Returns:
+        True 表示用户已拥有该文件,False 表示未拥有
+    """
+    has_same_hash_file = (await session.exec(
+        select(
+            exists().where(
+                and_(
+                    (UserFileLink.user_id == user.id),
+                    (UserFileLink.file_id == FileInDB.file_id),
+                    (FileInDB.file_verify_code == hash_md5)
+                )
+            )
+        )
+    )).one()
+
+    if has_same_hash_file:
+        logger.warning(
+            "duplicate file hash found user=%s hash=%s",
+            user.id,
+            hash_md5,
+        )
+        return True
+
+    return False
+
+
+async def get_file_record_by_id(
+    file_id: int,
+    async_session: AsyncSession,
+    load_parts: bool = False
+) -> FileInDB:
+    """
+    根据文件ID查询文件记录
+
+    Returns:
+        文件记录对象
+    Raises:
+        file_not_found_exception: 文件记录不存在
+    """
+    statement = select(FileInDB).where(FileInDB.file_id == file_id)
+
+    if load_parts:
+        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found file_id=%s", file_id)
+        raise file_not_found_exception
+
+    return file_record
+
+
+async def get_file_by_filename(
+    filename: str,
+    async_session: AsyncSession,
+    load_parts: bool = False,
+) -> FileInDB:
+    """
+    根据文件名查询文件记录
+
+    Returns:
+        文件记录对象
+    Raises:
+        file_not_found_exception: 文件记录不存在
+    """
+    statement = select(FileInDB).where(FileInDB.filename == filename)
+
+    if load_parts:
+        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found filename=%s", filename)
+        raise file_not_found_exception
+
+    return file_record
+
+
 #########################
 # File  - 增
 #########################
@@ -115,12 +233,6 @@ async def link_file_to_user(
     """
     将文件关联到用户,并更新用户的文件统计信息
 
-    完整的文件关联流程:
-    1. 添加文件和用户的 UserFileLinker 关联
-    2. 增加用户的文件计数
-    3. 增加用户的总存储空间
-    4. 将用户对象添加到会话(准备提交)
-
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
         user_file_limit_exception: 超过用户文件数量限制
@@ -151,7 +263,6 @@ async def get_file_record_by_hash(
         文件记录对象
     Raises:
         file_not_found_exception: 文件记录不存在
-        2026.3.3 Neo checked
     """
     file_record = (
         await async_session.exec(
@@ -177,16 +288,10 @@ async def get_reuse_file_by_hash(
 ) -> FileInDB | None:
     """
     查询是否存在可复用的相同哈希文件(不建立关联)
-    注意:调用此函数前,应先完成上传预检校验(配额/参数/去重)
-
-    处理逻辑:
-    1. 查询相同哈希的文件记录
-    2. 跳过用户已拥有的文件
 
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
     """
-
     # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件
     same_hash_file = (
         await async_session.exec(
@@ -211,15 +316,6 @@ async def get_reuse_file_by_hash(
 async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, current_user: UserInDB) -> bool:
     """
     校验用户是否有权限操作该文件
-
-    权限判断逻辑:
-    1. 管理员拥有所有文件的权限
-    2. 普通用户需要满足:
-       - UserFileLink 含有该用户与该文件的链接
-
-    Args:
-        file_record: 文件记录对象(FileInDB)
-        current_user: 当前用户对象(UserInDB)
 
     Returns:
         True 表示有权限,False 表示无权限
@@ -320,6 +416,7 @@ async def prepare_download_file_local(
         logger.error(f"prepare_download_file failed: {e}")
         raise internal_server_error_exception from e
 
+
 async def prepare_download_file_oss(
     session: AsyncSession,
     file_record: FileInDB,
@@ -374,15 +471,11 @@ async def validate_simple_upload(
     storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：
-    包含：名字、存储类型
-    确保上传的文件信息与预检记录一致
+    验证简单上传的所有条件：包含名字、存储类型
 
     Raises:
         HTTPException: 验证失败时抛出异常
-    2026.3.3 Neo checked
     """
-
     # 存储类型检查
     if storage_type != pre_record.storage_type:
         logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
@@ -402,17 +495,9 @@ async def validate_hash_and_size(
 ) -> tuple[str, int]:
     """
     验证哈希和大小是否匹配，适用于文件或分片的验证
-    调用时机：文件落盘后
-    ### Args:
-        - expected_hash: 预期的哈希值
-        - expected_size: 预期的文件大小
-        - file_path: 文件路径(本地或oss路径)
-        - storage_type: 存储类型(local/oss)
-    ### Returns:
-        - act_hash: 实际的哈希值
-        - act_size: 实际的文件大小
-    ### Raises:
-        - file_validation_failed_exception: 验证失败时抛出异常
+
+    Raises:
+        hash_size_validation_failed_exception: 验证失败时抛出异常
     """
     act_hash, act_size = "", 0
     # 读取文件内容
@@ -442,10 +527,7 @@ async def update_download_stats(
     file_record: FileInDB,
     current_user: UserInDB,
 ) -> None:
-    """
-    更新下载统计
-
-    """
+    """更新下载统计"""
     now = utc_time()
     file_record.download_count += 1
     file_record.last_downloaded_at = now
@@ -465,19 +547,10 @@ async def delete_file_and_parts(
     """
     根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
 
-    删除流程:
-    1. 查询文件记录,同时预加载对应的分片记录
-    2. 删除分片物理文件(数据库记录会在删除文件时自动级联删除)
-    3. 删除文件的物理文件
-    4. 从所有关联用户的 file_ids 中移除该文件ID
-    5. 更新所有关联用户的统计信息(file_count、total_file_size)
-    6. 删除文件数据库记录(数据库会自动级联删除分片记录)
     Raises:
         ValueError: 文件不存在
         PermissionError: 用户无权限删除该文件
         OSError: 物理文件删除失败时
-
-        2026.3.3 Neo checked
     """
     # 1. 查询文件记录,同时预加载对应的分片记录
     file_record = await get_file_record_by_id(file_id, async_session, load_parts=True)
@@ -533,7 +606,6 @@ async def unlink_user_from_file( #TODO 风险，后面加锁
     Returns:
         True 表示文件还有其他用户持有(只解除关联)
         False 表示文件没有其他用户持有(需要完全删除)
-        2026.3.3 Neo checked
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None
@@ -561,12 +633,6 @@ async def safe_cleanup_preflight_record(
 ) -> None:
     """
     安全清理预检记录
-
-    处理逻辑:
-    - 使用 unlink_user_from_file 解除用户关联并更新统计信息
-    - 如果文件属于多个用户:只移除当前用户的关联,保留记录
-    - 如果文件只属于当前用户:删除整条记录
-        2026.3.3 Neo checked
     """
     # 解除用户与文件的关联,并更新用户统计信息
     has_other_owners = await unlink_user_from_file(async_session, current_user, pre_record)
@@ -589,14 +655,6 @@ async def rollback_simple_upload(
 ) -> None:
     """
     简单上传失败时的统一回滚清理
-
-    处理逻辑:
-    1. 回滚事务,撤销数据库中的预检记录和关联关系
-    2. 删除已写入的物理文件(如果有)
-    3. 开启新事务，安全清理预检记录和用户关联
-    4. 提交事务,使清理生效
-
-        2026.3.3 Neo checked
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
     if pre_record is None:
@@ -633,50 +691,9 @@ async def rollback_part_upload(async_session: AsyncSession,
     await async_session.rollback()
 
 
-
 #########################
 # Part  - 增
 #########################
-
-
-async def save_and_persist_part(
-    async_session: AsyncSession,
-    file_record: FileInDB,
-    current_user: UserInDB,
-    part_data: PartCreate,
-    part: UploadFile,
-    temp_path: Path,
-) -> PartInDB:
-    """
-    保存分片临时文件并创建数据库记录
-
-    流程:
-    1. 保存分片到临时目录
-    2. 创建 PartInDB 记录
-    3. flush + refresh
-
-    Returns:
-        持久化后的 PartInDB 记录
-
-    Raises:
-        file_persist_failed_exception: 文件保存失败
-    """
-    await save_upload_file(part, temp_path)
-
-    part_record = PartInDB(
-        **part_data.model_dump(),
-        temp_path=str(temp_path),
-        owner_id=current_user.id, #type:ignore 使用的时候需要提前判断
-        file_id=file_record.file_id, #type:ignore 使用的时候需要提前判断
-        total_file_size=file_record.size,
-        total_parts=file_record.total_parts, #type:ignore 使用的时候需要提前判断
-    )
-    async_session.add(part_record)
-    await async_session.flush()
-
-    return part_record
-
-
 async def merge_parts_to_file(
     async_session: AsyncSession,
     file_record: FileInDB,
@@ -685,9 +702,6 @@ async def merge_parts_to_file(
 ) -> None:
     """
     执行分片合并,将所有分片写入最终文件
-
-    使用 helper 层的 merge_files_with_hash 函数进行合并和哈希验证 
-    如果哈希不匹配,删除错误文件和所有相关记录
 
     事务管理:不 commit,由调用方(API 层)统一管理
     """
@@ -709,8 +723,6 @@ async def merge_parts_to_file(
     except FileNotFoundError as exc:
         # 分片文件丢失
         logger.error(f"part file missing file_id={file_record.file_id} error={exc}")
-        # if final_path:
-            # LocalStorage.delete_file(final_path)
         await delete_file_and_parts(async_session, file_record.file_id, current_user)
         raise part_file_missing_exception from exc
 
@@ -735,16 +747,6 @@ async def get_origin_path_for_packup(
 ) -> str:
     """
     获取用于打包的 origin 文件路径
-
-    根据文件记录的 experiment_type 获取对应的 origin 文件路径。
-    目前仅支持 imzML 类型。
-
-    Args:
-        session: 数据库会话
-        file_record: 文件记录
-
-    Returns:
-        origin 文件所在目录路径
 
     Raises:
         file_content_missing_exception: origin 文件不存在或未完成
@@ -784,12 +786,6 @@ async def _handle_packup_status_check(
 ) -> tuple[bool, str | None, str | None, str | None]:
     """
     检查Redis中的打包状态并处理相应逻辑
-
-    Args:
-        file_record: 文件记录
-        packup: Redis中的打包信息
-        oss_packup_key: Redis打包状态键
-        oss_packup_lock_key: Redis打包锁键
 
     Returns:
         tuple: (should_pack, zip_download_url, zip_path, fc_request_id)
@@ -852,21 +848,7 @@ async def _prepare_download_url_for_completed_packup(
     fc_request_id: str | None,
     oss_packup_key: str | None,
 ) -> str | None:
-    """
-    为已完成的打包生成下载URL
-
-    Args:
-        file_record: 文件记录
-        zip_path: ZIP文件路径
-        fc_request_id: FC请求ID
-        oss_packup_key: Redis打包状态键
-
-    Returns:
-        下载URL
-
-    Raises:
-        file_content_missing_exception: 文件内容缺失
-    """
+    """为已完成的打包生成下载URL"""
     zip_size = await OssStorage.get_file_size(zip_path)
     if zip_size is None:
         raise file_content_missing_exception
@@ -899,11 +881,6 @@ async def _execute_packup_flow(
 ) -> str:
     """
     执行常规打包流程
-
-    Args:
-        session: 数据库会话
-        file_record: 文件记录
-        oss_packup_key: Redis打包状态键
 
     Returns:
         "<PACKING>" 表示正在打包
@@ -944,8 +921,6 @@ async def validate_part_upload(
     Raises:
         part_number_out_of_range_exception: 分片编号越界
         part_already_exists_exception: 分片已上传
-
-    2026.3.3 Neo checked
     """
     # 1. 分片编号范围校验
     if not part_data.part_number or not file_record.total_parts:
@@ -991,16 +966,6 @@ async def validate_and_merge_parts_business(
 ) -> bool:
     """
     验证分片完整性并尝试合并
-
-    每次上传分片后调用,检查是否所有分片都已上传完成
-    如果完成则执行合并操作
-
-    合并流程:
-    1. 查询该文件的所有分片记录
-    2. 检查分片完整性(数量和序列)
-    3. 如果分片不完整,返回 False 等待更多分片
-    4. 如果所有分片已上传,执行分片合并
-    5. 合并成功后清理分片临时文件
 
     Raises:
         part_file_missing_exception: 分片文件丢失
@@ -1065,11 +1030,6 @@ async def delete_parts_by_file_id(
     """
     根据 file_id 删除分片记录(物理文件 + 数据库记录)
 
-    删除流程:
-    1. 查询该文件的所有分片记录
-    2. 删除每个分片的物理文件(调用 LocalStorage.delete_file)
-    3. 删除数据库中的分片记录
-
     Returns:
         删除的分片数量
 
@@ -1125,15 +1085,8 @@ async def validate_upload_request(
     """
     统一验证上传请求参数
 
-    Args:
-        session: 数据库会话
-        current_user: 当前用户
-        file_data: 上传预检请求模型
-
     Returns:
         True 表示验证通过,False 表示验证失败
-
-        2026.3.3 Neo checked
     """
     # 1. 存储类型验证
     if file_data.storage_type not in ALLOWED_STORAGE_TYPES:

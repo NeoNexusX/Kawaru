@@ -53,8 +53,6 @@ class CelerySettings(BaseModel):
 
 class EmailSettings(BaseModel):
     """邮件配置模型"""
-    # Support for MailGun
-    mailgun_domain: str
     # Support for SMTP
     smtp_port: int
     smtp_username: str

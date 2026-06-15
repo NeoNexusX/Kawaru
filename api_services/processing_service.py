@@ -1,6 +1,7 @@
-"""
-算法处理运行 — 业务逻辑层
-"""
+#########################
+# Processing Service - 业务逻辑层
+# 职责：算法处理运行记录的增删改查与磁盘结果清理。无 FastAPI 依赖。
+#########################
 from __future__ import annotations
 
 import shutil
@@ -19,9 +20,9 @@ from models.processing_models import (
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
 from models.user_models import UserInDB
-from api.file_api_business import assert_file_owner
-from api.experiment_api_business import get_origin_imzml_by_file_id
-from api.processing_api_helper import (
+from api_services.file_service import assert_file_owner
+from api_services.experiment_service import get_origin_imzml_by_file_id
+from api_helpers.processing_helper import (
     assert_origin_ready,
     check_processing_quota,
     create_run_output_dir,
@@ -38,7 +39,7 @@ from exceptions.experiment_exceptions import (
 from tools import utc_time
 from tools.logger import get_logger
 
-logger = get_logger("api.processing_api_business")
+logger = get_logger("api_services.processing_service")
 
 
 #########################
@@ -54,13 +55,6 @@ async def create_process_run(
 ) -> ExperimentProcessRunInDB:
     """
     创建算法处理运行记录
-
-    Args:
-        async_session: 数据库会话
-        experiment: origin 实验记录
-        algorithms_config: 算法配置
-        user_id: 提交用户 ID
-        is_public: 是否公开运行结果
 
     Returns:
         新创建的 ExperimentProcessRunInDB 记录
@@ -90,11 +84,6 @@ async def delete_process_run(
 ) -> None:
     """
     删除算法处理运行记录及磁盘结果文件
-
-    Args:
-        async_session: 数据库会话
-        run_record: 要删除的运行记录
-        storage_type: 存储类型（local/oss）
     """
     if run_record.out_path:
         await cleanup_output_dir(run_record.out_path, storage_type)
