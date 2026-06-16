@@ -13,13 +13,17 @@ from api_services.stats_service import (
 )
 from constants.stats_constants import ALLOWED_FILE_CLASSIFY_FIELDS, ALLOWED_USER_CLASSIFY_FIELDS
 from database.db import AsyncSessionDep
+from database.visit_stats import get_visit_stats
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.stats_exceptions import invalid_file_classify_field_exception, invalid_user_classify_field_exception
-
 from tools.logger import get_logger
 
 logger = get_logger("api.stats_api")
 
+
+#########################
+# 处理任务统计
+#########################
 
 async def get_processing_stats(
     async_session: AsyncSessionDep,
@@ -32,6 +36,10 @@ async def get_processing_stats(
         raise internal_server_error_exception from e
 
 
+#########################
+# 下载统计
+#########################
+
 async def get_download_stats(
     async_session: AsyncSessionDep,
 ) -> dict[str, int]:
@@ -42,6 +50,10 @@ async def get_download_stats(
         logger.error("failed to get_download_stats: %s", e)
         raise internal_server_error_exception from e
 
+
+#########################
+# 文件分类统计
+#########################
 
 async def get_classification_stats(
     async_session: AsyncSessionDep,
@@ -57,6 +69,10 @@ async def get_classification_stats(
         raise internal_server_error_exception from e
 
 
+#########################
+# 用户分类统计
+#########################
+
 async def get_user_classification_stats(
     async_session: AsyncSessionDep,
     field: str = Query(..., description="分类字段名，可选值: " + ", ".join(sorted(ALLOWED_USER_CLASSIFY_FIELDS))),
@@ -71,8 +87,25 @@ async def get_user_classification_stats(
         raise internal_server_error_exception from e
 
 
+#########################
+# 访问统计
+#########################
+
+async def get_visit_stats_endpoint() -> dict[str, int]:
+    """获取全站访问统计（当日/当月/总计）"""
+    try:
+        return await get_visit_stats()
+    except Exception as e:
+        logger.error("failed to get_visit_stats: %s", e)
+        raise internal_server_error_exception from e
+
+
+#########################
 # 依赖注入类型别名
+#########################
+
 ProcessingStatsDep = Annotated[dict[str, int], Depends(get_processing_stats)]
 DownloadStatsDep = Annotated[dict[str, int], Depends(get_download_stats)]
 ClassificationStatsDep = Annotated[dict, Depends(get_classification_stats)]
 UserClassificationStatsDep = Annotated[dict, Depends(get_user_classification_stats)]
+VisitStatsDep = Annotated[dict[str, int], Depends(get_visit_stats_endpoint)]

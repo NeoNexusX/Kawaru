@@ -1,6 +1,8 @@
 """
 算法处理运行管理路由
 """
+import asyncio
+
 from fastapi import APIRouter
 
 from api.processing_api import (
@@ -13,6 +15,7 @@ from api.processing_api import (
 from models.processing_models import ExperimentProcessRunPublic
 from models.file_models import ZarrFolderAccess
 from models.filter_models import ListDataResponse
+from database.visit_stats import incr_visit
 
 processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 
@@ -20,6 +23,7 @@ processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 @processing_router.post("", response_model=ExperimentProcessRunPublic)
 async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
+    asyncio.create_task(incr_visit())
     return record
 
 

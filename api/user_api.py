@@ -11,12 +11,6 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from exceptions.user_exceptions import (
-    credentials_exception,
-    login_expired_exception,
-    token_invalid_exception,
-    token_expired_exception,
-)
 from api_helpers.auth_helper import create_access_token, hashed_password
 from api_helpers.user_helper import validate_url
 from api_services.file_service import get_user_file_ids
@@ -487,7 +481,7 @@ async def update_user_quota(
     await async_session.commit()
     await async_session.refresh(user)
 
-    logger.info(f"Admin {current_admin.username} updated quota for user {user.username} (id={user_id}): {quota_data}")
+    logger.info(f"Admin updated quota for user {user.username} (id={user_id}): {quota_data}")
 
     return UserQuotaLimits(
         max_total_file_size=user.max_total_file_size,

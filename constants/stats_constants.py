@@ -25,3 +25,10 @@ ALLOWED_USER_CLASSIFY_FIELDS = {
     "region",
     "identity",
 }
+
+# 访问统计 Redis Key 前缀
+VISIT_STATS_KEY_PREFIX = "stats"
+
+# 访问统计 TTL（秒）
+VISIT_DAILY_TTL = 90 * 86400       # 90 天
+VISIT_MONTHLY_TTL = 365 * 86400    # 365 天
