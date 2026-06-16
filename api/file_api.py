@@ -590,8 +590,6 @@ async def get_download_file_metadata(
 
     file_record = await get_file_record_by_id(file_id, session)
     storage_type = file_record.storage_type
-    if not await assert_file_owner(session, file_record, current_user):
-        raise permission_denied_exception
 
     logger.debug(f"download request user={current_user.id} file_id={file_id}")
 
