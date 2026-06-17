@@ -1,7 +1,8 @@
 from zipfile import BadZipFile
+import os
 from typing import Annotated
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from sqlmodel import select
 
@@ -27,12 +28,16 @@ from exceptions.file_exceptions import (
 )
 from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
+from exceptions.callback_exceptions import invalid_fc_callback_token_exception
 
 from boot.config import get_config
 from tools.time_tools import utc_time
 from tools.logger import get_logger
 
 logger = get_logger("api.callback_api")
+
+# FC 回调验证 Token（从环境变量读取，与 FC 控制台配置一致）
+FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
 
 # TODO: 针对此处每个api，需要验证签名
 
@@ -389,6 +394,19 @@ async def feature_callback(
         await async_session.rollback()
         logger.error("feature callback error file_id=%s error=%s", file_id, e)
         raise internal_server_error_exception from e
+
+
+async def verify_fc_callback_token(
+    x_fc_token: str = Header(..., alias="X-FC-Token"),
+) -> None:
+    """
+    验证 FC 回调请求的 Token。
+
+    从请求头 X-FC-Token 中读取 Token，与环境变量 FC_CALLBACK_TOKEN 比对。
+    如果 Token 缺失或不匹配，抛出 401 异常。
+    """
+    if x_fc_token != FC_CALLBACK_TOKEN:
+        raise invalid_fc_callback_token_exception
 
 
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
