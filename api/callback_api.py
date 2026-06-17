@@ -8,6 +8,7 @@ from sqlmodel import select
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from database.redis_client import redis_client
+from database.atomic_ops import atomic_increment
 from storage_backend.storage import OssStorage
 
 from api_services.file_service import get_file_by_filename
@@ -258,13 +259,15 @@ async def algorithm_callback(
             output_size=output_size,
         )
 
-        # 累加用户处理配额
-        user = (await async_session.exec(
-            select(UserInDB).where(UserInDB.id == run_record.user_id)
-        )).first()
-        if user is not None:
-            user.processed_file_size += output_size
-            async_session.add(user)
+        # 累加用户处理配额（原子操作，防止并发丢失更新）
+        # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
+        # 改用 UPDATE SET processed_file_size = processed_file_size + N
+        # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+        if run_record.user_id is not None:
+            await atomic_increment(
+                async_session, UserInDB, run_record.user_id,
+                "processed_file_size", output_size,
+            )
 
         await async_session.commit()
         await async_session.refresh(run_record)

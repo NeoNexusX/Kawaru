@@ -16,6 +16,7 @@ from celery.result import AsyncResult
 
 from database.db import get_async_engine
 from database.redis_client import redis_client
+from database.atomic_ops import atomic_increment, atomic_decrement, atomic_set
 from api_services.user_service import get_user_by_id
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_helpers.experiment_helper import validate_experiment_type, packup_oss_file
@@ -233,6 +234,9 @@ async def link_file_to_user(
     """
     将文件关联到用户,并更新用户的文件统计信息
 
+    并发安全：使用原子 SQL UPDATE 更新统计字段，避免 read-modify-write
+    在并发场景（同一用户并行上传/秒传）下的丢失更新问题。
+
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
         user_file_limit_exception: 超过用户文件数量限制
@@ -240,14 +244,17 @@ async def link_file_to_user(
     # 1. 将文件添加到用户的文件列表
     new_linker = await append_file_link(async_session, user, file)
 
-    # 2. 更新用户的文件统计信息
+    # 2. 更新用户的文件统计信息（仅在新建关联时才更新；原子操作防止并发丢失更新）
     if new_linker:
-        user.file_count = (user.file_count or 0) + 1
-        user.total_file_size = (user.total_file_size or 0) + file_size
+        assert user.id is not None
+        await atomic_increment(async_session, UserInDB, user.id, "file_count")
+        await atomic_increment(async_session, UserInDB, user.id, "total_file_size", file_size)
 
-    # 3. 将用户对象和链接器对象添加到会话
-    async_session.add(new_linker)
-    async_session.add(user)
+    # 3. 将链接器对象添加到会话
+    #    无需再 async_session.add(user)：统计信息已通过原子 SQL 直接写入数据库，
+    #    调用方上层会执行 session.refresh(current_user) 拉取最新值。
+    if new_linker:
+        async_session.add(new_linker)
 
 #########################
 # File  - 查
@@ -527,13 +534,30 @@ async def update_download_stats(
     file_record: FileInDB,
     current_user: UserInDB,
 ) -> None:
-    """更新下载统计"""
+    """
+    更新下载统计（原子操作，防止并发丢失更新）
+
+    使用数据库级别的 UPDATE SET field = field + 1，
+    避免 ORM read-modify-write 模式在高并发下的竞态条件。
+    """
     now = utc_time()
-    file_record.download_count += 1
-    file_record.last_downloaded_at = now
-    current_user.download_used = (current_user.download_used or 0) + 1
-    session.add(current_user)
-    session.add(file_record)
+    assert file_record.file_id is not None and current_user.id is not None
+
+    # 原子递增文件下载次数 + 更新最近下载时间
+    await atomic_increment(
+        session, FileInDB, file_record.file_id,
+        "download_count", pk_column="file_id",
+    )
+    await atomic_set(
+        session, FileInDB, file_record.file_id,
+        "last_downloaded_at", now, pk_column="file_id",
+    )
+
+    # 原子递增用户已用下载次数
+    await atomic_increment(
+        session, UserInDB, current_user.id,
+        "download_used",
+    )
 
 
 #########################
@@ -595,7 +619,7 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     async_session.expire(file, ["owners"])
 
 
-async def unlink_user_from_file( #TODO 风险，后面加锁
+async def unlink_user_from_file(
     session: AsyncSession,
     user: UserInDB,
     file_record: FileInDB,
@@ -603,24 +627,30 @@ async def unlink_user_from_file( #TODO 风险，后面加锁
     """
     解除用户与文件的关联
 
+    并发安全：使用原子 SQL UPDATE 递减用户统计字段，避免 read-modify-write
+    在并发场景（同一用户并行删除多个文件）下的丢失更新问题。
+    `atomic_decrement` 内部使用 GREATEST(field - amount, 0) 保证字段不低于 0。
+
     Returns:
         True 表示文件还有其他用户持有(只解除关联)
         False 表示文件没有其他用户持有(需要完全删除)
     """
     # 1. 更新当前用户的文件关联和统计信息
-    assert file_record.file_id is not None
+    assert file_record.file_id is not None and user.id is not None
     await remove_file_link(session, user, file_record)
     session.add(file_record)
 
-    # 2. 更新统计信息
-    user.file_count = max(0, (user.file_count or 0) - 1)
-    user.total_file_size = max(0, (user.total_file_size or 0) - file_record.size)
-    session.add(user)
+    # 2. 更新用户统计信息（原子操作，防止并发丢失更新）
+    await atomic_decrement(session, UserInDB, user.id, "file_count")
+    await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
 
     # 3. 刷新事务
     await session.flush()
     await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
+    #    注意：此处的 owner_counts 检查与 remove_file_link 之间仍然存在 TOCTOU 竞态
+    #    （并发删除最后两个 owner 时可能都判定 count=0 而触发双重物理删除），
+    #    该问题超出原子计数器范畴，需要后续通过分布式锁或 SELECT FOR UPDATE 解决。
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
     )).one()
@@ -797,13 +827,20 @@ async def _handle_packup_status_check(
 
     if not packup:
         if not await OssStorage.check_file_exist(file_record.path):
-            should_pack = True
-            lock = await redis_client.get(oss_packup_lock_key) # type: ignore
-            if lock:
-                logger.warning("packup is in progress by other user, now wait for it to finish, filename=%s", file_record.filename)
+            # 原子加锁（SET NX EX），防止多个并发请求同时触发打包。
+            # SET key value NX EX seconds 是 Redis 单条原子命令：
+            #   - NX：仅当 key 不存在时才设置成功
+            #   - EX：设置 10 秒过期，防止持锁进程崩溃导致死锁
+            # 替代原来的 GET-then-SET 反模式，彻底消除 check-then-act 竞态窗口。
+            lock_acquired = await redis_client.set(oss_packup_lock_key, "1", nx=True, ex=10)  # type: ignore
+            if not lock_acquired:
+                logger.warning(
+                    "packup is in progress by other user, now wait for it to finish, filename=%s",
+                    file_record.filename,
+                )
                 zip_download_url = "<PACKING>"
             else:
-                await redis_client.set(oss_packup_lock_key, "1", ex=10) # type: ignore 设置10秒锁，防止短时间内重复触发打包
+                should_pack = True
         else:
             zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
             await redis_client.hset(oss_packup_key, mapping={ # type: ignore

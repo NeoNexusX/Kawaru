@@ -12,6 +12,7 @@ from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
+from database.atomic_ops import atomic_decrement
 from models.processing_models import (
     ExperimentProcessRunInDB,
     ProcessingAlgorithmsConfig,
@@ -84,18 +85,19 @@ async def delete_process_run(
 ) -> None:
     """
     删除算法处理运行记录及磁盘结果文件
+
+    并发安全：使用原子 SQL UPDATE 递减用户已处理配额，避免 read-modify-write
+    在并发场景（同一用户并行删除多条 run 记录）下的丢失更新问题。
     """
     if run_record.out_path:
         await cleanup_output_dir(run_record.out_path, storage_type)
 
-    # 扣除用户已处理配额
-    if run_record.output_size and run_record.output_size > 0:
-        user = (
-            await async_session.exec(
-                select(UserInDB).where(UserInDB.id == run_record.user_id))).first()
-        if user is not None:
-            user.processed_file_size = max(0, user.processed_file_size - run_record.output_size)
-            async_session.add(user)
+    # 扣除用户已处理配额（原子操作，防止并发丢失更新；GREATEST 保证不低于 0）
+    if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:
+        await atomic_decrement(
+            async_session, UserInDB, run_record.user_id,
+            "processed_file_size", run_record.output_size,
+        )
 
     await async_session.delete(run_record)
     logger.info("deleted process run id=%s", run_record.id)
