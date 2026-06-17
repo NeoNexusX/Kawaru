@@ -7,9 +7,9 @@ from fastapi import Depends, Query
 
 from api_services.stats_service import (
     get_processing_status_counts,
-    get_total_download_count,
     get_file_classification_counts,
     get_user_classification_counts,
+    get_overview_stats,
 )
 from constants.stats_constants import ALLOWED_FILE_CLASSIFY_FIELDS, ALLOWED_USER_CLASSIFY_FIELDS
 from database.db import AsyncSessionDep
@@ -33,21 +33,6 @@ async def get_processing_stats(
         return await get_processing_status_counts(async_session)
     except Exception as e:
         logger.error("failed to get_processing_stats: %s", e)
-        raise internal_server_error_exception from e
-
-
-#########################
-# 下载统计
-#########################
-
-async def get_download_stats(
-    async_session: AsyncSessionDep,
-) -> dict[str, int]:
-    """获取所有文件的总下载次数"""
-    try:
-        return await get_total_download_count(async_session)
-    except Exception as e:
-        logger.error("failed to get_download_stats: %s", e)
         raise internal_server_error_exception from e
 
 
@@ -101,11 +86,26 @@ async def get_visit_stats_endpoint() -> dict[str, int]:
 
 
 #########################
+# 概览统计
+#########################
+
+async def get_overview_stats_endpoint(
+    async_session: AsyncSessionDep,
+) -> dict[str, int]:
+    """获取平台概览统计（用户总数、文件总数、下载总次数）"""
+    try:
+        return await get_overview_stats(async_session)
+    except Exception as e:
+        logger.error("failed to get_overview_stats: %s", e)
+        raise internal_server_error_exception from e
+
+
+#########################
 # 依赖注入类型别名
 #########################
 
 ProcessingStatsDep = Annotated[dict[str, int], Depends(get_processing_stats)]
-DownloadStatsDep = Annotated[dict[str, int], Depends(get_download_stats)]
 ClassificationStatsDep = Annotated[dict, Depends(get_classification_stats)]
 UserClassificationStatsDep = Annotated[dict, Depends(get_user_classification_stats)]
 VisitStatsDep = Annotated[dict[str, int], Depends(get_visit_stats_endpoint)]
+OverviewStatsDep = Annotated[dict[str, int], Depends(get_overview_stats_endpoint)]

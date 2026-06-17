@@ -3,12 +3,12 @@
 """
 from database.redis_client import redis_client
 from constants.stats_constants import VISIT_STATS_KEY_PREFIX, VISIT_DAILY_TTL, VISIT_MONTHLY_TTL
-from tools.time_tools import cst_time
+from tools.time_tools import utc_time
 
 
 async def incr_visit() -> None:
     """原子递增全站访问计数（当日 + 当月 + 总计，共 3 次 INCR）"""
-    now = cst_time()
+    now = utc_time()
     daily_key = f"{VISIT_STATS_KEY_PREFIX}:all:daily:{now.strftime('%Y-%m-%d')}"
     monthly_key = f"{VISIT_STATS_KEY_PREFIX}:all:monthly:{now.strftime('%Y-%m')}"
     total_key = f"{VISIT_STATS_KEY_PREFIX}:all:total"
@@ -24,7 +24,7 @@ async def incr_visit() -> None:
 
 async def get_visit_stats() -> dict[str, int]:
     """获取全站访问统计（当日、当月、总计）"""
-    now = cst_time()
+    now = utc_time()
     daily_key = f"{VISIT_STATS_KEY_PREFIX}:all:daily:{now.strftime('%Y-%m-%d')}"
     monthly_key = f"{VISIT_STATS_KEY_PREFIX}:all:monthly:{now.strftime('%Y-%m')}"
     total_key = f"{VISIT_STATS_KEY_PREFIX}:all:total"
