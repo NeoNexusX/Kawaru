@@ -166,52 +166,6 @@ async def get_process_runs_by_experiment_id(
             .where(ExperimentProcessRunInDB.experiment_id == experiment_id))).all()
 
 
-async def list_public_runs(
-    async_session: AsyncSession,
-    page: int = 1,
-    size: int = 10,
-) -> tuple[Sequence[ExperimentProcessRunInDB], int]:
-    """分页查询所有 is_public=True 且 status=COMPLETED 的 run"""
-    base_query = select(ExperimentProcessRunInDB).where(
-        ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
-        ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
-    )
-    total = (await async_session.exec(
-        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
-    rows = (await async_session.exec(
-        base_query.offset((page - 1) * size).limit(size))).all()
-    return rows, total
-
-
-async def list_public_runs_by_file_id(
-    async_session: AsyncSession,
-    file_id: int | None = None,
-    page: int = 1,
-    size: int = 10,
-) -> tuple[Sequence[dict], int]:
-    """分页查询公开且完成的 run（可按源文件 ID 筛选，含源文件名）"""
-    conditions = [
-        ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
-        ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
-    ]
-    if file_id is not None:
-        conditions.append(ExperimentProcessRunInDB.source_file_id == file_id)
-
-    base_query = (
-        select(ExperimentProcessRunInDB, FileInDB.filename)
-        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
-        .where(*conditions)
-    )
-    total = (await async_session.exec(
-        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
-    offset = (page - 1) * size
-    rows = (await async_session.exec(base_query.offset(offset).limit(size))).all()
-    return [
-        {**row[0].model_dump(), "filename": row[1]}
-        for row in rows
-    ], total
-
-
 async def list_user_runs(
     async_session: AsyncSession,
     user_id: int,

@@ -21,12 +21,15 @@ logger = get_logger("api_services.stats_service")
 
 async def get_processing_status_counts(
     async_session: AsyncSession,
+    user_id: int | None = None,
 ) -> dict[str, int]:
-    """统计各状态的处理任务数量"""
+    """统计各状态的处理任务数量，可选按用户过滤"""
     result = {}
     for status in ProcessingStatus:
-        count = (await async_session.exec(
-            select(func.count()).where(ExperimentProcessRunInDB.status == status))).one() # pylint: disable=not-callable
+        query = select(func.count()).where(ExperimentProcessRunInDB.status == status) # pylint: disable=not-callable
+        if user_id is not None:
+            query = query.where(ExperimentProcessRunInDB.user_id == user_id)
+        count = (await async_session.exec(query)).one()  # pylint: disable=not-callable
         result[status.value] = count
     return result
 

@@ -22,7 +22,7 @@ async def get_overview_stats(result: OverviewStatsDep):
 
 @stats_router.get("/processing", response_model=dict[str, int])
 async def get_processing_stats(result: ProcessingStatsDep):
-    """获取处理任务各状态的数量统计（processing/completed/failed）"""
+    """获取当前用户处理任务各状态的数量统计（processing/completed/failed）"""
     return result
 
 

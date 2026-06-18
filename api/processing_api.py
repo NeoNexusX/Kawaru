@@ -14,7 +14,6 @@ from api_services.processing_service import (
     get_origin_for_processing,
     get_process_run_by_id,
     get_user_runs,
-    list_public_runs_by_file_id,
     rollback_process_run,
     validate_process_request,
     get_storage_type_by_source_file_id,
@@ -85,34 +84,6 @@ async def create_algorithm_task(
     except Exception as e:
         logger.exception("create algorithm task failed user=%s file_id=%s", current_user.id, body.file_id)
         await rollback_process_run(async_session, run_record)
-        raise internal_server_error_exception from e
-
-
-async def list_public_process_runs(
-    async_session: AsyncSessionDep,
-    file_id: int | None = None,
-    page: int = 1,
-    size: int = 10,
-) -> ListDataResponse:
-    """查询公开的运行记录（可按文件ID筛选）"""
-    try:
-        runs, total_records = await list_public_runs_by_file_id(async_session, file_id, page, size)
-
-        total_pages = (total_records + size - 1) // size if total_records > 0 else 0
-        pagination_meta = PaginationMeta(
-            current_page=page,
-            current_records=len(runs),
-            total_pages=total_pages,
-            total_records=total_records,
-        )
-        return ListDataResponse(
-            meta=pagination_meta,
-            data=[ExperimentProcessRunPublic(**row) for row in runs],
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("failed to list_public_process_runs: %s", e)
         raise internal_server_error_exception from e
 
 
@@ -205,7 +176,6 @@ async def get_zarr_folder_access(
 
 # 依赖注入类型别名
 CreateAlgorithmTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorithm_task)]
-ListPublicRunsDep = Annotated[ListDataResponse, Depends(list_public_process_runs)]
 ListMyRunsDep = Annotated[ListDataResponse, Depends(list_my_process_runs)]
 DeleteProcessRunDep = Annotated[dict[str, int | str], Depends(delete_process_run_endpoint)]
 ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]

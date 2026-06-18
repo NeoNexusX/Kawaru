@@ -11,11 +11,13 @@ from api_services.stats_service import (
     get_user_classification_counts,
     get_overview_stats,
 )
+from api.user_api import token_authen
 from constants.stats_constants import ALLOWED_FILE_CLASSIFY_FIELDS, ALLOWED_USER_CLASSIFY_FIELDS
 from database.db import AsyncSessionDep
 from database.visit_stats import get_visit_stats
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.stats_exceptions import invalid_file_classify_field_exception, invalid_user_classify_field_exception
+from models.user_models import UserInDB
 from tools.logger import get_logger
 
 logger = get_logger("api.stats_api")
@@ -26,11 +28,13 @@ logger = get_logger("api.stats_api")
 #########################
 
 async def get_processing_stats(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> dict[str, int]:
-    """获取处理任务各状态的数量统计"""
+    """获取当前用户处理任务各状态的数量统计"""
     try:
-        return await get_processing_status_counts(async_session)
+        assert current_user.id is not None
+        return await get_processing_status_counts(async_session, user_id=current_user.id)
     except Exception as e:
         logger.error("failed to get_processing_stats: %s", e)
         raise internal_server_error_exception from e

@@ -9,7 +9,6 @@ from api.processing_api import (
     CreateAlgorithmTaskDep,
     DeleteProcessRunDep,
     ListMyRunsDep,
-    ListPublicRunsDep,
     ZarrFolderDep,
 )
 from models.processing_models import ExperimentProcessRunPublic
@@ -25,12 +24,6 @@ async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
     asyncio.create_task(incr_visit())
     return record
-
-
-@processing_router.get("/public", response_model=ListDataResponse)
-async def list_public(result: ListPublicRunsDep):
-    """查询公开的运行记录（可按文件ID筛选）"""
-    return result
 
 
 @processing_router.get("/mine", response_model=ListDataResponse)
