@@ -19,6 +19,7 @@ from api_services.file_service import (
     link_file_to_user,
     prepare_download_file_oss,
     prepare_download_file_local,
+    prepare_download_raw_oss,
     rollback_simple_upload,
     get_reuse_file_by_hash,
     unlink_user_from_file,
@@ -52,10 +53,12 @@ from models.file_models import (
     FileDownloadMeta,
     FileInDB,
     FilePublic,
+    FileOssUploadResponse,
     PartCreate,
     PartInDB,
     PartPublic,
     FileStatus,
+    RawDownloadResponse,
 )
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
 from models.link_models import UserFileLink
@@ -290,7 +293,7 @@ async def upload_simple_file(
     pre_file_id: int = Form(...),
     file: UploadFile | None = File(None),
     filename: str | None = Form(None),
-) -> FilePublic:
+) -> FileOssUploadResponse:
     """
     【简单上传接口】
     
@@ -368,7 +371,7 @@ async def upload_simple_file(
             # 统一验证(业务层)
             await validate_simple_upload(current_user, filename, pre_record, storage_type)
 
-            # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FilePublic模型，前端需要根据URL上传文件到oss
+            # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FileOssUploadResponse模型，前端需要根据URL上传文件到oss
             # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
             oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
             oss_bucket = OSS_BUCKET_NAME
@@ -393,9 +396,9 @@ async def upload_simple_file(
         await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
         pre_record.status = FileStatus.PROCESSING
 
-    # 如果是oss存储，在此处将pre_record显式转换为FilePublic模型，并设置oss_path和oss_sts_token（仅供返回前端）
+    # 如果是oss存储，在此处将pre_record显式转换为FileOssUploadResponse模型，并设置oss_path和oss_sts_token（仅供返回前端）
     if oss_path and oss_sts_token:
-        pre_record = FilePublic.model_validate(pre_record)
+        pre_record = FileOssUploadResponse.model_validate(pre_record)
         pre_record.oss_path = oss_path
         pre_record.oss_sts_token = oss_sts_token
         pre_record.oss_bucket = oss_bucket
@@ -630,6 +633,89 @@ async def get_download_file_metadata(
     return file_download_meta
 
 
+async def get_raw_download_metadata(
+    file_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    session: AsyncSessionDep,
+) -> RawDownloadResponse:
+    """
+    【RAW 直链下载元数据接口】
+
+    功能：不打包，直接为 origin 的 imzML/ibd 各签一个预签名 URL 返回。
+    时机：前端请求 RAW 直链下载时调用。
+
+    与旧下载接口的区别：
+    - 旧接口 GET /files/{id}/download：走 FC ZIP 打包，可能返回 <PACKING>
+    - 新接口 GET /files/{id}/download_raw：跳过打包，毫秒级返回两个直链 URL
+
+    流程：
+    1. 下载次数限制检查（非管理员用户）
+    2. 校验文件类型（仅支持 OSS + imzML）
+    3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
+    4. 更新下载统计
+
+    Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
+
+    下载限制：
+    - 管理员：无限制
+    - 普通用户：受用户下载配额限制
+
+    注意：
+    - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
+    - 不写 file_record.path，不会误删永久 origin 文件
+    """
+    file_record = await get_file_record_by_id(file_id, session)
+
+    logger.debug(f"raw download request user={current_user.id} file_id={file_id}")
+
+    # 下载次数限制检查
+    if current_user.identity != "admin":
+        used = current_user.download_used or 0
+        if used >= current_user.max_download_count:
+            raise user_download_limit_exception
+
+    # 只支持 OSS + imzML
+    if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
+        raise download_not_implemented_exception
+
+    # Redis 缓存检查
+    cache_key = f"raw_dl:{file_id}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        response = RawDownloadResponse.model_validate_json(cached)
+
+        # 缓存命中仍然计一次下载
+        await update_download_stats(session, file_record, current_user)
+        await session.commit()
+        await session.refresh(current_user)
+        await session.refresh(file_record)
+
+        logger.info(
+            f"raw download (cached) user={current_user.id} file_id={file_id} filename={file_record.filename}"
+        )
+        return response
+
+    # 缓存未命中 → 签名
+    files = await prepare_download_raw_oss(session, file_record)
+    response = RawDownloadResponse(files=files)
+
+    # 写入缓存
+    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+
+    # 更新下载统计
+    await update_download_stats(session, file_record, current_user)
+
+    await session.commit()
+    await session.refresh(current_user)
+    await session.refresh(file_record)
+
+    logger.info(
+        f"raw download success user={current_user.id} file_id={file_id} filename={file_record.filename}"
+    )
+
+    return response
+
+
 async def get_file_list(
     filters: FileFilter,
     async_session: AsyncSessionDep,
@@ -726,12 +812,37 @@ async def get_file_list(
         raise internal_server_error_exception from e
 
 
+async def get_file_metadata(
+    file_id: int,
+    async_session: AsyncSessionDep,
+) -> FilePublic:
+    """
+    【文件元数据查询接口】
+
+    功能:根据文件ID查询文件的元数据信息
+    时机:在前端需要查看单个文件详情时调用
+
+    流程:
+    1. 根据 file_id 查询文件记录
+    2. 返回文件元数据
+    """
+    try:
+        file_record = await get_file_record_by_id(file_id, async_session)
+        return FilePublic(**file_record.model_dump())
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"failed to get_file_metadata: {e}")
+        raise internal_server_error_exception from e
+
+
 async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
     pre_file_id: int = Form(...),
     filename: str = Form(...),
-) -> FilePublic:
+) -> FileOssUploadResponse:
     """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
     storage_type = "oss"
     return await upload_simple_file(
@@ -785,13 +896,15 @@ async def get_file_image_url(
 
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
-SimpleUploadDep = Annotated[FilePublic, Depends(upload_simple_file)]
+SimpleUploadDep = Annotated[FileOssUploadResponse, Depends(upload_simple_file)]
 ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
+RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
 PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
 ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
-OssUploadDep = Annotated[FilePublic, Depends(oss_upload_file)]
+OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
+FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]

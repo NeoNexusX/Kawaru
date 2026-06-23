@@ -55,10 +55,10 @@ from exceptions import (
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, PartInDB, PackupStatus
+from models.file_models import FileCreate, FileInDB, PartInDB, PackupStatus, OssDownloadFile
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
-from models.experiment_models import ExperimentStatus
+from models.experiment_models import ExperimentStatus, OriginImzMLInDB
 
 from boot.config import get_config
 
@@ -771,6 +771,65 @@ async def merge_parts_to_file(
     await delete_parts_by_file_id(async_session, file_record.file_id)
 
 
+async def assert_origin_files_ready(
+    session: AsyncSession,
+    file_record: FileInDB,
+) -> OriginImzMLInDB:
+    """
+    校验 origin 文件就绪——RAW 和 ZIP 打包两条路共用。
+
+    Returns:
+        OriginImzMLInDB: 校验通过的 origin 记录
+
+    Raises:
+        file_content_missing_exception: origin 不存在、状态异常或文件缺失
+    """
+    assert file_record.file_id is not None
+    origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
+
+    if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
+        logger.warning(
+            "origin not found or not completed file_id=%s", file_record.file_id
+        )
+        raise file_content_missing_exception
+
+    imzml_path = origin.imzml_path if origin.imzml_path else None
+    ibd_path = origin.ibd_path if origin.ibd_path else None
+    if (
+        not imzml_path or not ibd_path or
+        not await OssStorage.check_file_exist(imzml_path) or
+        not await OssStorage.check_file_exist(ibd_path)
+    ):
+        logger.warning("origin files missing file_id=%s", file_record.file_id)
+        raise file_content_missing_exception
+
+    return origin
+
+
+async def prepare_download_raw_oss(
+    session: AsyncSession,
+    file_record: FileInDB,
+) -> list[OssDownloadFile]:
+    """
+    直链下载：不打包，为 origin 的 imzML/ibd 各签一个预签名 URL。
+
+    - 复用 OssStorage.sign_download_url（零改动），下载名由 OSS 对象 basename 决定，
+      imzML/ibd 同 stem 配对天然保留。
+    - 不触碰 file_record.path —— 避免被 cleanup_old_download_zips 误删 origin 永久文件。
+    """
+    origin = await assert_origin_files_ready(session, file_record)
+
+    imzml_url = await OssStorage.sign_download_url(origin.imzml_path, expires=SIGNED_URL_EXPIRE_SECONDS)
+    ibd_url = await OssStorage.sign_download_url(origin.ibd_path, expires=SIGNED_URL_EXPIRE_SECONDS)
+    if not imzml_url or not ibd_url:
+        raise file_content_missing_exception
+
+    return [
+        OssDownloadFile(filename=Path(origin.imzml_path).name, url=imzml_url, size=origin.imzml_size),
+        OssDownloadFile(filename=Path(origin.ibd_path).name, url=ibd_url, size=origin.ibd_size),
+    ]
+
+
 async def get_origin_path_for_packup(
     session: AsyncSession,
     file_record: FileInDB,
@@ -783,26 +842,8 @@ async def get_origin_path_for_packup(
         origin_type_not_supported_exception: 不支持的实验类型
     """
     if file_record.experiment_type == "imzML":
-        assert file_record.file_id is not None
-        origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
-
-        if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
-            logger.warning(
-                "origin not found or not completed file_id=%s", file_record.file_id
-            )
-            raise file_content_missing_exception
-
-        imzml_path = origin.imzml_path if origin.imzml_path else None
-        ibd_path = origin.ibd_path if origin.ibd_path else None
-        if (
-            not imzml_path or not ibd_path or
-            not await OssStorage.check_file_exist(imzml_path) or
-            not await OssStorage.check_file_exist(ibd_path)
-        ):
-            logger.warning("origin files missing file_id=%s", file_record.file_id)
-            raise file_content_missing_exception
-
-        return f"{Path(imzml_path).parent}/"
+        origin = await assert_origin_files_ready(session, file_record)
+        return f"{Path(origin.imzml_path).parent}/"
     else:
         logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
         raise origin_type_not_supported_exception
