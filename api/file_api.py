@@ -3,11 +3,14 @@
 #########################
 import json
 from typing import Annotated, Any
-from fastapi import Depends, File, Form, UploadFile, HTTPException
+
+from fastapi import Depends, File, Form, Query, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
-from background.experiment_background import trigger_experiment_extraction
-from storage_backend.storage import LocalStorage, OssStorage
+from api.file_upload_io import save_upload_file, save_and_persist_part
+from api.user_api import token_authen
+from api_helpers.file_helper import delete_file_by_storage, prepare_part_temp_path
+from api_services.experiment_service import delete_origin_files, valid_file_uploaded
 from api_services.file_service import (
     assert_file_owner,
     delete_file_and_parts,
@@ -28,14 +31,12 @@ from api_services.file_service import (
     validate_hash_and_size,
     get_file_record_by_id,
 )
-from api_helpers.file_helper import delete_file_by_storage, prepare_part_temp_path
-from api.file_upload_io import save_upload_file, save_and_persist_part
-from api_services.experiment_service import delete_origin_files, valid_file_uploaded
-from api.user_api import token_authen
 from api_services.user_service import count_items
+from background.experiment_background import trigger_experiment_extraction
 from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
+from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     file_persist_failed_exception,
@@ -45,7 +46,6 @@ from exceptions.file_exceptions import (
     user_download_limit_exception,
     download_not_implemented_exception
 )
-from exceptions.common_exceptions import internal_server_error_exception
 from models.file_models import (
     PartUploadStatus,
     FileCreate,
@@ -57,10 +57,11 @@ from models.file_models import (
     PartPublic,
     FileStatus,
 )
-from models.user_models import UserInDB
-from models.link_models import UserFileLink
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
-from tools import utc_time,get_logger
+from models.link_models import UserFileLink
+from models.user_models import UserInDB
+from storage_backend.storage import LocalStorage, OssStorage
+from tools import utc_time, get_logger
 
 logger = get_logger("api.file_api")
 
@@ -568,10 +569,9 @@ async def get_download_file_metadata(
     时机:在实际下载文件之前调用
     
     流程:
-    1. 权限验证(用户是否拥有该文件)
-    2. 下载次数限制检查(非管理员用户)
-    3. 准备下载文件(处理 origin 文件ZIP打包)
-    4. 更新下载统计(文件下载次数、用户下载次数)
+    1. 下载次数限制检查(非管理员用户)
+    2. 准备下载文件(处理 origin 文件ZIP打包)
+    3. 更新下载统计(文件下载次数、用户下载次数)
 
     origin 文件处理:
     - 如果原始文件不存在,但 origin 文件(imzML、ibd)存在
@@ -583,6 +583,7 @@ async def get_download_file_metadata(
     - 普通用户:受用户下载配额限制
     
     注意:
+    - 此接口不做文件归属权限验证:公开页面允许任意登录用户下载文件,因此只校验登录态(token_authen)而不校验文件归属
     - 此接口只返回元数据,不返回文件流
     - 实际文件下载由前端或其他接口处理
     - 实验文件的 ZIP 包是临时生成的,需要定期清理
@@ -590,8 +591,6 @@ async def get_download_file_metadata(
 
     file_record = await get_file_record_by_id(file_id, session)
     storage_type = file_record.storage_type
-    if not await assert_file_owner(session, file_record, current_user):
-        raise permission_denied_exception
 
     logger.debug(f"download request user={current_user.id} file_id={file_id}")
 
@@ -632,10 +631,10 @@ async def get_download_file_metadata(
 
 
 async def get_file_list(
-    page: int,
-    size: int,
     filters: FileFilter,
-    async_session: AsyncSessionDep
+    async_session: AsyncSessionDep,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
     """
     【公共文件列表接口】
@@ -644,11 +643,12 @@ async def get_file_list(
     时机:在前端查询文件列表时调用
 
     流程:
-    1. 分页查询文件列表(根据查询参数)
+    1. 按上传时间倒序分页查询文件列表(根据查询参数)
     2. 返回文件列表和分页元数据
 
     注意:
-    - 分页参数(page, size)默认值为 1, 10
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
     - 查询参数(filters)默认值为空字典
 
     """
@@ -698,7 +698,12 @@ async def get_file_list(
         # 分页查询文件列表
         offset = (page - 1) * size
 
-        data = (await async_session.exec(file_query.offset(offset).limit(size))).all() or None
+        data = (await async_session.exec(
+            file_query
+            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()) # pylint: disable=no-member
+            .offset(offset)
+            .limit(size)
+        )).all() or None
 
         # 分页元数据
         pagination_meta = PaginationMeta(
@@ -744,9 +749,9 @@ async def get_file_image_url(
 ) -> dict:
     """
     获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
-    根据 spectrum_mode 返回不同的 URL 集合：
-    - centroid: 返回 {"urls": {"tic_image.png": "..."}, "spectrum_mode": "centroid"}
-    - profile:  返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "spectrum_mode": "profile"}
+    根据 storage_mode 返回不同的 URL 集合：
+    - continuous: 返回 {"urls": {"umap_image.jpg": "...", "kmeans_image.jpg": "..."}, "storage_mode": "continuous"}
+    - processed:  返回 {"urls": {"tic_image.png": "..."}, "storage_mode": "processed"}
     Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
@@ -754,7 +759,7 @@ async def get_file_image_url(
     if not file_record.image_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    if file_record.spectrum_mode == "profile":
+    if file_record.storage_mode == "continuous":
         file_names = ["umap_image.jpg", "kmeans_image.jpg"]
     else:
         file_names = ["tic_image.png"]
@@ -775,7 +780,7 @@ async def get_file_image_url(
             await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
             urls[name] = url
 
-    return {"urls": urls, "spectrum_mode": file_record.spectrum_mode}
+    return {"urls": urls, "storage_mode": file_record.storage_mode}
 
 
 # 依赖注入类型别名

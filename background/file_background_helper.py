@@ -11,18 +11,18 @@ import hashlib
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from fastapi import HTTPException, status
 import aiofiles
 
 from alibabacloud_credentials.client import Client as CredentialClient
 from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
-from alibabacloud_oss_v2 import Client as OssSyncClient
+from alibabacloud_oss_v2 import (Client as OssSyncClient, HeadObjectRequest,
+                                  DeleteObjectRequest, ListObjectsV2Request, Tag,
+                                  PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest,
+                                  DeleteMultipleObjectsRequest, DeleteObject, credentials)
+from alibabacloud_oss_v2.config import load_default
 from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_oss_v2 import (HeadObjectRequest, DeleteObjectRequest, ListObjectsV2Request,
-                                  Tag, PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest,
-                                  DeleteMultipleObjectsRequest, DeleteObject)
 
 from celery_runtime.state import get_celery_app
 
@@ -98,19 +98,21 @@ async def validate_oss_file_task(file_path: str, size: int, file_verify_code: st
         try:
             # 创建OSS客户端
             if oss_client is None:
-                raise HTTPException(status_code=500, detail="oss client create failed")
+                logger.error("oss client create failed")
+                return False
 
             # 获取bucket名称
             bucket_name = OSS_BUCKET_NAME
             if not bucket_name:
-                raise HTTPException(status_code=500, detail="oss bucket name not set")
+                logger.error("oss bucket name not set")
+                return False
 
             # 发送请求
             req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
             meta = await oss_client.head_object(req)
 
             # 检查文件是否存在
-            if meta.status_code != status.HTTP_200_OK:
+            if meta.status_code != 200:
                 logger.warning(f"oss file {file_path} not exist")
                 return False
 
@@ -156,12 +158,14 @@ async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
         try:
             # 创建OSS客户端
             if oss_client is None:
-                raise HTTPException(status_code=500, detail="oss client create failed")
+                logger.error("oss client create failed")
+                return False
 
             # 获取bucket名称
             bucket_name = OSS_BUCKET_NAME
             if not bucket_name:
-                raise HTTPException(status_code=500, detail="oss bucket name not set")
+                logger.error("oss bucket name not set")
+                return False
 
             # 构造tagging
             tag_set: list[Tag] = []
@@ -172,7 +176,7 @@ async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
             # 发送请求
             req = PutObjectTaggingRequest(bucket=bucket_name, key=file_path, tagging=tagging) # type: ignore
             res = await oss_client.put_object_tagging(req)
-            if res.status_code != status.HTTP_200_OK:
+            if res.status_code != 200:
                 logger.warning(f"oss file {file_path} tag failed, status code {res.status_code}")
                 return False
             return True
@@ -188,12 +192,14 @@ async def check_oss_file_exist_task(file_path: str) -> bool:
         try:
             # 创建OSS客户端
             if oss_client is None:
-                raise HTTPException(status_code=500, detail="oss client create failed")
+                logger.error("oss client create failed")
+                return False
 
             # 获取bucket名称
             bucket_name = OSS_BUCKET_NAME
             if not bucket_name:
-                raise HTTPException(status_code=500, detail="oss bucket name not set")
+                logger.error("oss bucket name not set")
+                return False
 
             if file_path.endswith("/"): # 目录
                 # 发送请求
@@ -213,7 +219,7 @@ async def check_oss_file_exist_task(file_path: str) -> bool:
                 meta = await oss_client.head_object(req)
 
                 # 检查文件是否存在
-                if meta.status_code != status.HTTP_200_OK:
+                if meta.status_code != 200:
                     logger.warning(f"oss file {file_path} not exist")
                     return False
 
@@ -240,19 +246,21 @@ async def get_oss_file_size_task(file_path: str) -> int | None:
         try:
             # 创建OSS客户端
             if oss_client is None:
-                raise HTTPException(status_code=500, detail="oss client create failed")
+                logger.error("oss client create failed")
+                return None
 
             # 获取bucket名称
             bucket_name = OSS_BUCKET_NAME
             if not bucket_name:
-                raise HTTPException(status_code=500, detail="oss bucket name not set")
+                logger.error("oss bucket name not set")
+                return None
 
             # 发送请求
             req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
             meta = await oss_client.head_object(req)
 
             # 检查文件是否存在
-            if meta.status_code != status.HTTP_200_OK:
+            if meta.status_code != 200:
                 logger.warning(f"oss file {file_path} not found")
                 return None
 
@@ -402,12 +410,14 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
         try:
             # 创建OSS客户端
             if oss_client is None:
-                raise HTTPException(status_code=500, detail="oss client create failed")
+                logger.error("oss client create failed")
+                return False
 
             # 获取bucket名称
             bucket_name = OSS_BUCKET_NAME
             if not bucket_name:
-                raise HTTPException(status_code=500, detail="oss bucket name not set")
+                logger.error("oss bucket name not set")
+                return False
 
             keys = []
             err_count = 0
@@ -432,16 +442,16 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
                 keys = [file_path]
             if is_folder and len(keys) > 1:
                 # 批量删除：每批最多 1000 个对象，一次 HTTP 请求
-                _BATCH_SIZE = 1000
-                for i in range(0, len(keys), _BATCH_SIZE):
-                    batch = keys[i:i + _BATCH_SIZE]
+                batch_size = 1000
+                for i in range(0, len(keys), batch_size):
+                    batch = keys[i:i + batch_size]
                     req = DeleteMultipleObjectsRequest(
                         bucket=bucket_name,
                         objects=[DeleteObject(key=k) for k in batch],
                         quiet=True,
                     ) # type: ignore
                     res = await oss_client.delete_multiple_objects(req)
-                    if res.status_code != status.HTTP_200_OK:
+                    if res.status_code != 200:
                         logger.error(
                             "oss batch delete failed batch=%d-%d status=%s",
                             i, i + len(batch), res.status_code,
@@ -453,7 +463,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
                 for key in keys:
                     req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
                     res = await oss_client.delete_object(req)
-                    if res.status_code != status.HTTP_204_NO_CONTENT:
+                    if res.status_code != 204:
                         logger.error(f"oss file {key} deleted failed")
                         err_count += 1
                         continue
@@ -462,7 +472,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
             if is_folder:
                 req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
                 res = await oss_client.delete_object(req)
-                if res.status_code != status.HTTP_204_NO_CONTENT:
+                if res.status_code != 204:
                     logger.error(f"oss folder {file_path} deleted failed")
                     err_count += 1
 
@@ -489,12 +499,14 @@ async def sign_url_task(file_path: str, expires: int) -> str | None:
     try:
         # 创建OSS客户端
         if oss_client is None:
-            raise HTTPException(status_code=500, detail="oss client create failed")
+            logger.error("oss client create failed")
+            return None
 
         # 获取bucket名称
         bucket_name = OSS_BUCKET_NAME
         if not bucket_name:
-            raise HTTPException(status_code=500, detail="oss bucket name not set")
+            logger.error("oss bucket name not set")
+            return None
 
         # 生成预签名的URL
         pre_result = oss_client.presign(
@@ -517,9 +529,6 @@ def get_oss_presigned_url_task(file_path: str, expires: int = 300) -> str | None
     """
     生成 OSS 文件预签名下载 URL。
     """
-    from alibabacloud_oss_v2 import credentials
-    from alibabacloud_oss_v2.config import load_default
-
     try:
         access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
         access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")

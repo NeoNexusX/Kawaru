@@ -1,45 +1,34 @@
 """
 算法处理运行管理路由
 """
-from typing import Annotated
+import asyncio
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from api.processing_api import (
-    create_algorithm_task,
-    list_public_process_runs,
-    list_my_process_runs,
-    delete_process_run_endpoint,
-    get_zarr_folder_access,
+    CreateAlgorithmTaskDep,
+    DeleteProcessRunDep,
+    ListMyRunsDep,
+    ZarrFolderDep,
 )
 from models.processing_models import ExperimentProcessRunPublic
 from models.file_models import ZarrFolderAccess
+from models.filter_models import ListDataResponse
+from database.visit_stats import incr_visit
 
 processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 
-# 依赖注入类型别名
-CreateProcessDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorithm_task)]
-ListPublicDep = Annotated[list[ExperimentProcessRunPublic], Depends(list_public_process_runs)]
-ListMyDep = Annotated[list[ExperimentProcessRunPublic], Depends(list_my_process_runs)]
-DeleteProcessDep = Annotated[dict, Depends(delete_process_run_endpoint)]
-ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]
-
 
 @processing_router.post("", response_model=ExperimentProcessRunPublic)
-async def create_process(record: CreateProcessDep):
+async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
+    asyncio.create_task(incr_visit())
     return record
 
 
-@processing_router.get("/public/{file_id}", response_model=list[ExperimentProcessRunPublic])
-async def list_public(result: ListPublicDep):
-    """根据文件ID查询公开的运行记录"""
-    return result
-
-
-@processing_router.get("/mine", response_model=list[ExperimentProcessRunPublic])
-async def list_mine(result: ListMyDep):
-    """查询当前用户的运行记录"""
+@processing_router.get("/mine", response_model=ListDataResponse)
+async def list_mine(result: ListMyRunsDep):
+    """分页查询当前用户的运行记录"""
     return result
 
 
@@ -50,6 +39,6 @@ async def get_zarr_folder(result: ZarrFolderDep):
 
 
 @processing_router.delete("/{run_id}")
-async def delete_process(result: DeleteProcessDep):
+async def delete_process(result: DeleteProcessRunDep):
     """根据 run_id 删除算法处理运行记录"""
     return result

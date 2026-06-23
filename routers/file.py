@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
 from models.file_models import FilePublic, PartUploadStatus
@@ -9,6 +11,7 @@ from api.file_api import (
     OssUploadDep, ImageUrlDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
+from database.visit_stats import incr_visit
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -19,6 +22,7 @@ file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文�
 @file_router.post("/preflight", response_model=FilePublic)
 async def preflight_file(file_record: PreflightDep):
     """上传预检"""
+    asyncio.create_task(incr_visit())
     return file_record
 
 
@@ -37,6 +41,7 @@ async def list_user_files(files: ListFilesDep):
 @file_router.get("/{file_id}/download")
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
+    asyncio.create_task(incr_visit())
     if file_meta.storage_type == "oss":
         return file_meta
     return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
@@ -69,6 +74,7 @@ async def get_upload_status(status: PartStatusDep):
 @file_router.post("/list_files", response_model=ListDataResponse)
 async def list_files(list_file_response: ListPublicFilesDep):
     """查询文件列表"""
+    asyncio.create_task(incr_visit())
     return list_file_response
 
 

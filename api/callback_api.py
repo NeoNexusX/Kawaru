@@ -1,23 +1,25 @@
-from typing import Annotated
-from fastapi import Depends, HTTPException
 from zipfile import BadZipFile
+import os
+from typing import Annotated
+
+from fastapi import Depends, Header, HTTPException
 
 from sqlmodel import select
 
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from database.redis_client import redis_client
+from database.atomic_ops import atomic_increment
 from storage_backend.storage import OssStorage
 
 from api_services.file_service import get_file_by_filename
 from api_services.experiment_service import create_origin_record, mark_origin, delete_source_file_and_clear_path
 from api_services.processing_service import get_process_run_by_id, mark_process_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
-from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
-
-from models.experiment_models import ExperimentStatus
-from models.config_models import Config
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback
+from models.config_models import Config
+from models.experiment_models import ExperimentStatus
+from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
@@ -27,12 +29,16 @@ from exceptions.file_exceptions import (
 )
 from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
+from exceptions.callback_exceptions import invalid_fc_callback_token_exception
 
 from boot.config import get_config
 from tools.time_tools import utc_time
 from tools.logger import get_logger
 
 logger = get_logger("api.callback_api")
+
+# FC 回调验证 Token（从环境变量读取，与 FC 控制台配置一致）
+FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
 
 # TODO: 针对此处每个api，需要验证签名
 
@@ -106,9 +112,8 @@ async def oss_upload_callback(
             if error_type == "FileNotFoundError":
                 logger.error("oss upload not complete, filename = %s ZIP file must contain both .imzML and .ibd files", filename)
                 raise FileNotFoundError("ZIP file must contain both .imzML and .ibd files")
-            else:
-                logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
-                raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=W0719
+            logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
+            raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=broad-exception-raised
 
         # 验证路径是否为空
         if not file_path or not imzml_path or not ibd_path:
@@ -157,10 +162,10 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        # 根据 spectrum_mode 分发到不同的 FC 函数
-        # profile   → fc-feature (UMAP/KMeans 特征分析，大内存)
-        # centroid  → fc-tic (TIC 图像生成，轻量)
-        if source_file.spectrum_mode == "profile":
+        # 根据 storage_mode 分发到不同的 FC 函数
+        # continuous → fc-feature (UMAP/KMeans 特征分析，大内存)
+        # processed  → fc-tic (TIC 图像生成，轻量)
+        if source_file.storage_mode == "continuous":
             trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
         else:
             trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
@@ -254,13 +259,15 @@ async def algorithm_callback(
             output_size=output_size,
         )
 
-        # 累加用户处理配额
-        user = (await async_session.exec(
-            select(UserInDB).where(UserInDB.id == run_record.user_id)
-        )).first()
-        if user is not None:
-            user.processed_file_size += output_size
-            async_session.add(user)
+        # 累加用户处理配额（原子操作，防止并发丢失更新）
+        # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
+        # 改用 UPDATE SET processed_file_size = processed_file_size + N
+        # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+        if run_record.user_id is not None:
+            await atomic_increment(
+                async_session, UserInDB, run_record.user_id,
+                "processed_file_size", output_size,
+            )
 
         await async_session.commit()
         await async_session.refresh(run_record)
@@ -390,6 +397,20 @@ async def feature_callback(
         await async_session.rollback()
         logger.error("feature callback error file_id=%s error=%s", file_id, e)
         raise internal_server_error_exception from e
+
+
+async def verify_fc_callback_token(
+    x_fc_token: str | None = Header(None, alias="X-FC-Token"),
+) -> None:
+    """
+    验证 FC 回调请求的 Token。
+
+    从请求头 X-FC-Token 中读取 Token，与环境变量 FC_CALLBACK_TOKEN 比对。
+    如果 Token 缺失或不匹配，抛出 401 异常。
+    """
+    # 缺失/空 Token 或不匹配都视为未授权(401)，避免退化为 422 参数校验错误
+    if not x_fc_token or x_fc_token != FC_CALLBACK_TOKEN:
+        raise invalid_fc_callback_token_exception
 
 
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]

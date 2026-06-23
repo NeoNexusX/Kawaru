@@ -1,9 +1,16 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi import status
 
-from api.callback_api import GetExpectHashDep, GetConfigDep, OssUploadCallbackDep, AlgorithmCallbackDep, TicCallbackDep, FeatureCallbackDep, OssPackupCallbackDep
+from api.callback_api import (GetExpectHashDep, GetConfigDep,
+                              OssUploadCallbackDep, AlgorithmCallbackDep,
+                              TicCallbackDep, FeatureCallbackDep,
+                              OssPackupCallbackDep, verify_fc_callback_token)
 
-callback_router = APIRouter(prefix="/callback", tags=["callback"]) # 挂接了回调相关的api
+callback_router = APIRouter(
+    prefix="/callback",
+    tags=["callback"],
+    dependencies=[Depends(verify_fc_callback_token)],  # 所有回调路由都需要 Token 验证
+)
 
 #############
 # 回调 API

@@ -8,10 +8,11 @@ import shutil
 from pathlib import Path
 from typing import Sequence
 
-from sqlmodel import select, func
+from sqlmodel import select, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
+from database.atomic_ops import atomic_decrement
 from models.processing_models import (
     ExperimentProcessRunInDB,
     ProcessingAlgorithmsConfig,
@@ -84,18 +85,19 @@ async def delete_process_run(
 ) -> None:
     """
     删除算法处理运行记录及磁盘结果文件
+
+    并发安全：使用原子 SQL UPDATE 递减用户已处理配额，避免 read-modify-write
+    在并发场景（同一用户并行删除多条 run 记录）下的丢失更新问题。
     """
     if run_record.out_path:
         await cleanup_output_dir(run_record.out_path, storage_type)
 
-    # 扣除用户已处理配额
-    if run_record.output_size and run_record.output_size > 0:
-        user = (
-            await async_session.exec(
-                select(UserInDB).where(UserInDB.id == run_record.user_id))).first()
-        if user is not None:
-            user.processed_file_size = max(0, user.processed_file_size - run_record.output_size)
-            async_session.add(user)
+    # 扣除用户已处理配额（原子操作，防止并发丢失更新；GREATEST 保证不低于 0）
+    if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:
+        await atomic_decrement(
+            async_session, UserInDB, run_record.user_id,
+            "processed_file_size", run_record.output_size,
+        )
 
     await async_session.delete(run_record)
     logger.info("deleted process run id=%s", run_record.id)
@@ -164,43 +166,6 @@ async def get_process_runs_by_experiment_id(
             .where(ExperimentProcessRunInDB.experiment_id == experiment_id))).all()
 
 
-async def list_public_runs(
-    async_session: AsyncSession,
-    page: int = 1,
-    size: int = 10,
-) -> tuple[Sequence[ExperimentProcessRunInDB], int]:
-    """分页查询所有 is_public=True 且 status=COMPLETED 的 run"""
-    base_query = select(ExperimentProcessRunInDB).where(
-        ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
-        ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
-    )
-    total = (await async_session.exec(
-        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
-    rows = (await async_session.exec(
-        base_query.offset((page - 1) * size).limit(size))).all()
-    return rows, total
-
-
-async def list_public_runs_by_file_id(
-    async_session: AsyncSession,
-    file_id: int,
-) -> Sequence[dict]:
-    """根据源文件 ID 查询所有公开且完成的 run（含源文件名）"""
-    result = await async_session.exec(
-        select(ExperimentProcessRunInDB, FileInDB.filename)
-        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
-        .where(
-            ExperimentProcessRunInDB.source_file_id == file_id,
-            ExperimentProcessRunInDB.is_public == True,       # pylint: disable=singleton-comparison
-            ExperimentProcessRunInDB.status == ProcessingStatus.COMPLETED,
-        )
-    )
-    return [
-        {**row[0].model_dump(), "filename": row[1]}
-        for row in result.all()
-    ]
-
-
 async def list_user_runs(
     async_session: AsyncSession,
     user_id: int,
@@ -221,19 +186,28 @@ async def list_user_runs(
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,
-) -> Sequence[dict]:
-    """查询当前用户的所有 run（无分页，含源文件名）"""
-    result = await async_session.exec(
+    page: int = 1,
+    size: int = 10,
+) -> tuple[Sequence[dict], int]:
+    """分页查询当前用户的所有 run（含源文件名）"""
+    base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
-        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id) # type: ignore
-        .where(
-            ExperimentProcessRunInDB.user_id == user_id,
-        )
+        .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
+        .where(ExperimentProcessRunInDB.user_id == user_id)
     )
+    total = (await async_session.exec(
+        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
+    offset = (page - 1) * size
+    rows = (await async_session.exec(
+        base_query
+        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc())
+        .offset(offset)
+        .limit(size)
+    )).all()
     return [
         {**row[0].model_dump(), "filename": row[1]}
-        for row in result.all()
-    ]
+        for row in rows
+    ], total
 
 
 #########################

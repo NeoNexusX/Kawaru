@@ -95,6 +95,10 @@ class UserDetailPublic(UserBase):
     id: int # id字段公开，方便前端使用
     total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
     file_count: int = Field(default=0, description="用户文件数量")
+    max_total_file_size: int = Field(default=0, description="用户最大上传文件总大小（GB）")
+    max_file_count: int = Field(default=0, description="用户最大上传总文件数")
+    max_processing_size: int = Field(default=0, description="用户最大可算法处理文件总大小（GB）")
+    max_download_count: int = Field(default=0, description="用户最大可下载文件次数")
 
 class UserUpdate(BaseModel):
     """
