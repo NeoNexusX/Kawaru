@@ -400,7 +400,7 @@ async def feature_callback(
 
 
 async def verify_fc_callback_token(
-    x_fc_token: str = Header(..., alias="X-FC-Token"),
+    x_fc_token: str | None = Header(None, alias="X-FC-Token"),
 ) -> None:
     """
     验证 FC 回调请求的 Token。
@@ -408,7 +408,8 @@ async def verify_fc_callback_token(
     从请求头 X-FC-Token 中读取 Token，与环境变量 FC_CALLBACK_TOKEN 比对。
     如果 Token 缺失或不匹配，抛出 401 异常。
     """
-    if x_fc_token != FC_CALLBACK_TOKEN:
+    # 缺失/空 Token 或不匹配都视为未授权(401)，避免退化为 422 参数校验错误
+    if not x_fc_token or x_fc_token != FC_CALLBACK_TOKEN:
         raise invalid_fc_callback_token_exception
 
 

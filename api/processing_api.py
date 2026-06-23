@@ -4,7 +4,7 @@ Processing API — API 入口层
 import json
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Query
 from fastapi.exceptions import HTTPException
 
 from api_services.processing_service import (
@@ -90,8 +90,8 @@ async def create_algorithm_task(
 async def list_my_process_runs(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    page: int = 1,
-    size: int = 10,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
     """分页查询当前用户的所有运行记录"""
     try:

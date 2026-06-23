@@ -4,7 +4,7 @@
 import json
 from typing import Annotated, Any
 
-from fastapi import Depends, File, Form, UploadFile, HTTPException
+from fastapi import Depends, File, Form, Query, UploadFile, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from api.file_upload_io import save_upload_file, save_and_persist_part
@@ -569,10 +569,9 @@ async def get_download_file_metadata(
     时机:在实际下载文件之前调用
     
     流程:
-    1. 权限验证(用户是否拥有该文件)
-    2. 下载次数限制检查(非管理员用户)
-    3. 准备下载文件(处理 origin 文件ZIP打包)
-    4. 更新下载统计(文件下载次数、用户下载次数)
+    1. 下载次数限制检查(非管理员用户)
+    2. 准备下载文件(处理 origin 文件ZIP打包)
+    3. 更新下载统计(文件下载次数、用户下载次数)
 
     origin 文件处理:
     - 如果原始文件不存在,但 origin 文件(imzML、ibd)存在
@@ -584,6 +583,7 @@ async def get_download_file_metadata(
     - 普通用户:受用户下载配额限制
     
     注意:
+    - 此接口不做文件归属权限验证:公开页面允许任意登录用户下载文件,因此只校验登录态(token_authen)而不校验文件归属
     - 此接口只返回元数据,不返回文件流
     - 实际文件下载由前端或其他接口处理
     - 实验文件的 ZIP 包是临时生成的,需要定期清理
@@ -631,10 +631,10 @@ async def get_download_file_metadata(
 
 
 async def get_file_list(
-    page: int,
-    size: int,
     filters: FileFilter,
-    async_session: AsyncSessionDep
+    async_session: AsyncSessionDep,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
     """
     【公共文件列表接口】
@@ -643,11 +643,12 @@ async def get_file_list(
     时机:在前端查询文件列表时调用
 
     流程:
-    1. 分页查询文件列表(根据查询参数)
+    1. 按上传时间倒序分页查询文件列表(根据查询参数)
     2. 返回文件列表和分页元数据
 
     注意:
-    - 分页参数(page, size)默认值为 1, 10
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
     - 查询参数(filters)默认值为空字典
 
     """
@@ -697,7 +698,12 @@ async def get_file_list(
         # 分页查询文件列表
         offset = (page - 1) * size
 
-        data = (await async_session.exec(file_query.offset(offset).limit(size))).all() or None
+        data = (await async_session.exec(
+            file_query
+            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()) # pylint: disable=no-member
+            .offset(offset)
+            .limit(size)
+        )).all() or None
 
         # 分页元数据
         pagination_meta = PaginationMeta(

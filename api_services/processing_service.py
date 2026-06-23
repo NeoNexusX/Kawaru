@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Sequence
 
-from sqlmodel import select, func
+from sqlmodel import select, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -198,7 +198,12 @@ async def get_user_runs(
     total = (await async_session.exec(
         select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
     offset = (page - 1) * size
-    rows = (await async_session.exec(base_query.offset(offset).limit(size))).all()
+    rows = (await async_session.exec(
+        base_query
+        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc())
+        .offset(offset)
+        .limit(size)
+    )).all()
     return [
         {**row[0].model_dump(), "filename": row[1]}
         for row in rows
