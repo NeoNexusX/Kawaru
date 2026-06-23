@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 
-_RESULTS_DIR = Path(__file__).resolve().parent / "results"
+# helpers/ 在 tests/ 下一级，结果统一落到 tests/results/
+_RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 def compute_stats(values: list[float]) -> dict[str, float]:
