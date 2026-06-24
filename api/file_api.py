@@ -428,6 +428,7 @@ async def list_user_files(
     注意:
     - 只返回用户拥有的文件，包括预检记录
     - 支持模糊查询文件名
+    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
     """
     try:
         # 1. 获取用户文件ID列表
@@ -470,7 +471,9 @@ async def list_user_files(
 
         # 6. 分页查询
         offset = (page - 1) * size
-        data = (await session.exec(file_query.offset(offset).limit(size))).all() or []
+        data = (await session.exec(
+            file_query
+            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()).offset(offset).limit(size))).all() or [] # pylint: disable=no-member
 
         # 7. 分页元数据
         pagination_meta = PaginationMeta(
