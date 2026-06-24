@@ -114,10 +114,10 @@ jobs:
         run: docker pull "$KAWARU_IMAGE"
 
       - name: Start stack & wait healthy (compose, no build)
-        # 三个服务都带 healthcheck，--wait 直接等到 app(9001) 健康；用 GHCR 拉下来的镜像，绝不在此构建
+        # 五个服务都带 healthcheck，--wait 等 app(9001) + celery-worker + celery-beat 全部 healthy；用 GHCR 拉下来的镜像，绝不在此构建
         run: |
           $COMPOSE down -v --remove-orphans || true
-          $COMPOSE up -d --no-build --wait --wait-timeout 300
+          $COMPOSE up -d --no-build --wait --wait-timeout 400
 
       - name: Prepare writable test_temp
         # tests 会写 ../test_temp(=容器内 /test_temp)，预创建为 appuser 可写

@@ -1,10 +1,36 @@
 # 测试栈：临时、跑完即销，整套走 9001（与正式 8000 隔离）。
+# Celery worker / beat 已拆分为独立容器（与生产部署一致）。
 # 本地手动跑：
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent" -q
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 name: kawaru-test
+
+# ---------- 共享环境变量（YAML anchor，避免三份重复） ----------
+# 注意：env 定义为 list-of-strings 形式，方便 YAML alias 整体复用；
+# 如果某个 service 需要追加变量，用 compose 的 env_file 或单独 environment 覆盖。
+x-common-env: &common-env
+  - CONFIG_PATH=/app/docker/test-config.yaml
+  - REGION_PATH=/app/external/countries-states-cities-database/json/countries.json
+  - LOG_DIR=kawaru_logs
+  - LOG_LEVEL=debug
+  - SECRET_KEY=test-secret-key
+  - DATABASE_PASSWORD=kawaru-test-pass      # 与 mariadb 一致（测试内部值，非 secret）
+  - REDIS_PASSWORD=                         # redis 无密码
+  - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+  # OSS（必需；CI 的 integration-test 步骤会校验，缺则直接失败）
+  - OSS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID:-}
+  - OSS_ACCESS_KEY_SECRET=${OSS_ACCESS_KEY_SECRET:-}
+  - OSS_ROLE_ARN=${OSS_ROLE_ARN:-}
+  # FC 函数 token（app 启动时 import background.processing_background 会读取，缺则为 None；测试不触发 FC，可留空）
+  - OSS_FC_ALGORITHM_TOKEN=${OSS_FC_ALGORITHM_TOKEN:-}
+  - OSS_FC_TIC_TOKEN=${OSS_FC_TIC_TOKEN:-}
+  - OSS_FC_FEATURE_TOKEN=${OSS_FC_FEATURE_TOKEN:-}
+  - OSS_FC_PACKUP_TOKEN=${OSS_FC_PACKUP_TOKEN:-}
+  # FC 回调校验 token：api/callback_api.py 在 import 时硬读 os.environ["FC_CALLBACK_TOKEN"]，缺则 KeyError 直接崩；测试不触发回调，给占位即可
+  - FC_CALLBACK_TOKEN=${FC_CALLBACK_TOKEN:-test-fc-callback-token}
+  - BASE_URL=http://127.0.0.1:9001          # pytest 客户端连本容器 9001
 
 services:
   mariadb:
@@ -40,29 +66,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      CONFIG_PATH: /app/docker/test-config.yaml
-      REGION_PATH: /app/external/countries-states-cities-database/json/countries.json
-      LOG_DIR: kawaru_logs
-      LOG_LEVEL: debug
-      SECRET_KEY: test-secret-key
-      DATABASE_PASSWORD: kawaru-test-pass     # 与 mariadb 一致（测试内部值，非 secret）
-      REDIS_PASSWORD: ""                      # redis 无密码
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      # OSS（必需；CI 的 integration-test 步骤会校验，缺则直接失败）
-      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
-      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
-      OSS_ROLE_ARN: ${OSS_ROLE_ARN:-}
-      # region/bucket 不再用 env 注入：服务端读 config.oss.region_id，测试客户端也改读 config（见 helpers/oss.py）
-      # FC 函数 token（app 启动时 import background.processing_background 会读取，缺则为 None；当前测试用例不触发 FC，可留空）
-      OSS_FC_ALGORITHM_TOKEN: ${OSS_FC_ALGORITHM_TOKEN:-}
-      OSS_FC_TIC_TOKEN: ${OSS_FC_TIC_TOKEN:-}
-      OSS_FC_FEATURE_TOKEN: ${OSS_FC_FEATURE_TOKEN:-}
-      OSS_FC_PACKUP_TOKEN: ${OSS_FC_PACKUP_TOKEN:-}
-      # FC 回调校验 token：api/callback_api.py 在 import 时硬读 os.environ["FC_CALLBACK_TOKEN"]，缺则 KeyError 直接崩；测试不触发回调，给占位即可
-      FC_CALLBACK_TOKEN: ${FC_CALLBACK_TOKEN:-test-fc-callback-token}
-      BASE_URL: http://127.0.0.1:9001         # pytest 打本容器内的 9001
-
+    environment: *common-env
     ports:
       - "9001:9001"
     healthcheck:
@@ -70,3 +74,66 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+
+  # ---- Celery Worker（拆分独立容器） ----
+  celery-worker:
+    image: ${KAWARU_IMAGE:-kawaru-test:local}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy           # 等 app 先启动完成（建表 + 创建 admin）
+    environment: *common-env
+    command:
+      - "python"
+      - "-m"
+      - "celery"
+      - "-A"
+      - "celery_runtime.entrypoint:celery_app"
+      - "worker"
+      - "--pool"
+      - "prefork"
+      - "--loglevel"
+      - "INFO"
+      - "--logfile"
+      - "kawaru_logs/celery-worker.log"
+      - "-Q"
+      - "default"
+      - "--without-gossip"
+      - "--concurrency"
+      - "2"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_runtime.entrypoint:celery_app inspect ping --timeout 10 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # ---- Celery Beat（拆分独立容器） ----
+  celery-beat:
+    image: ${KAWARU_IMAGE:-kawaru-test:local}
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    environment: *common-env
+    command:
+      - "python"
+      - "-m"
+      - "celery"
+      - "-A"
+      - "celery_runtime.beat_entrypoint:beat_app"
+      - "beat"
+      - "--loglevel"
+      - "info"
+      - "--logfile"
+      - "kawaru_logs/celery-beat.log"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_runtime.beat_entrypoint:beat_app inspect ping --timeout 10 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
