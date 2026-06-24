@@ -59,6 +59,8 @@ services:
       OSS_FC_TIC_TOKEN: ${OSS_FC_TIC_TOKEN:-}
       OSS_FC_FEATURE_TOKEN: ${OSS_FC_FEATURE_TOKEN:-}
       OSS_FC_PACKUP_TOKEN: ${OSS_FC_PACKUP_TOKEN:-}
+      # FC 回调校验 token：api/callback_api.py 在 import 时硬读 os.environ["FC_CALLBACK_TOKEN"]，缺则 KeyError 直接崩；测试不触发回调，给占位即可
+      FC_CALLBACK_TOKEN: ${FC_CALLBACK_TOKEN:-test-fc-callback-token}
       BASE_URL: http://127.0.0.1:9001         # pytest 打本容器内的 9001
     ports:
       - "9001:9001"
