@@ -44,11 +44,11 @@ services:
       CONFIG_PATH: /app/docker/test-config.yaml
       REGION_PATH: /app/external/countries-states-cities-database/json/countries.json
       LOG_DIR: kawaru_logs
-      LOG_LEVEL: info
+      LOG_LEVEL: debug
       SECRET_KEY: test-secret-key
       DATABASE_PASSWORD: kawaru-test-pass     # 与 mariadb 一致（测试内部值，非 secret）
       REDIS_PASSWORD: ""                      # redis 无密码
-      SMTP_PASSWORD: test-smtp-pass
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       # OSS（必需；CI 的 integration-test 步骤会校验，缺则直接失败）
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
@@ -62,6 +62,7 @@ services:
       # FC 回调校验 token：api/callback_api.py 在 import 时硬读 os.environ["FC_CALLBACK_TOKEN"]，缺则 KeyError 直接崩；测试不触发回调，给占位即可
       FC_CALLBACK_TOKEN: ${FC_CALLBACK_TOKEN:-test-fc-callback-token}
       BASE_URL: http://127.0.0.1:9001         # pytest 打本容器内的 9001
+
     ports:
       - "9001:9001"
     healthcheck:

@@ -56,7 +56,7 @@ async def send_smtp_email_task(email_payload: dict) -> dict:
         msg["Subject"] = subject
         msg.set_content(text_content, charset='utf-8')
 
-        logger.debug("SMTP message to send: %s", msg.as_string())
+        logger.debug(f"SMTP message sent to {recipient} with txt: {text_content}")
 
         context = ssl.create_default_context()
         if smtp_port == 587:
@@ -70,6 +70,7 @@ async def send_smtp_email_task(email_payload: dict) -> dict:
                 server.send_message(msg)
 
         return {"success": True, "data": email_payload}
+
     except smtplib.SMTPResponseException as exc:
         if "qq.com" in email_payload.get("from", "") and getattr(exc, "smtp_code", None) == -1:
             logger.warning("SMTP non-standard quit response suppressed: %s", exc)

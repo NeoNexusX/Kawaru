@@ -16,11 +16,12 @@ token:
   algorithm: HS256
 
 email:
-  smtp_port: 465
-  smtp_username: ci@example.com
-  smtp_from_email: ci@example.com
-  smtp_server: smtp.example.com
+  smtp_port: 465 # or 587 465
+  smtp_username: 1513401658@qq.com
+  smtp_from_email: 1513401658@qq.com
+  smtp_server: smtp.qq.com
   totp_window: 30
+
 
 database:
   host: mariadb          # compose 服务名
