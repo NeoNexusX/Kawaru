@@ -69,6 +69,8 @@ services:
     environment: *common-env
     ports:
       - "9001:9001"
+    volumes:
+      - kawaru-logs:/app/kawaru_logs   # 与 celery-worker 共享日志目录：tests/helpers/totp.py 在 app 容器内读 background.log 抓验证码，但 worker 把日志写在自己容器里，必须挂同一卷才能跨容器读到
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9001/docs"]
       interval: 10s
@@ -86,6 +88,8 @@ services:
       app:
         condition: service_healthy           # 等 app 先启动完成（建表 + 创建 admin）
     environment: *common-env
+    volumes:
+      - kawaru-logs:/app/kawaru_logs       # 与 app 共享日志（tests/helpers/totp.py 需读 worker 写的 background.log）
     command:
       - "python"
       - "-m"
@@ -118,6 +122,8 @@ services:
       app:
         condition: service_healthy
     environment: *common-env
+    volumes:
+      - kawaru-logs:/app/kawaru_logs       # 共享日志目录，便于排查（beat 不写验证码，但日志统一处更好）
     command:
       - "python"
       - "-m"
@@ -130,3 +136,6 @@ services:
       - "--logfile"
       - "kawaru_logs/celery-beat.log"
     # 不加 healthcheck：beat 容器只跑 scheduler，没有 worker 进程，inspect ping 永远拿不到响应。
+
+volumes:
+  kawaru-logs:    # 跨容器共享日志（app 在容器内读 worker 写的 background.log 抓邮箱验证码）；down -v 会清空
