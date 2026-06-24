@@ -679,7 +679,7 @@ async def get_file_list(
                 FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
                 FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
                 FileInDB.solvent == filters.solvent if filters.solvent else True,
-                FileInDB.is_public == True, # pylint: disable=singleton-comparison
+                FileInDB.is_public == True, # noqa: E712 # pylint: disable=singleton-comparison
 
                 # 用户关联条件：没有username过滤或user_id在匹配列表中
                 or_(

@@ -126,7 +126,7 @@ async def get_fc_invoke_instance_id_by_request_id_task(request_id: str) -> str |
     # 解析查询结果
     for log in logs:
         content: dict = log.contents
-        if not "instanceID" in content:
+        if "instanceID" not in content:
             continue
         if content["requestId"] == request_id:
             return content["instanceID"]

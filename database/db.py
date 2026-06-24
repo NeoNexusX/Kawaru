@@ -174,7 +174,7 @@ async def ensure_database_exists():
             logger.info(f"Database '{db_name}' ensured")
 
     except Exception as e:
-        # 如果连接数据库失败，可能是权限问题，记录警告但尝试继续（也许库已经存在）
+        # 如果连接数据库失败，可能是权限问题
         logger.error(f"Failed to check/create database via {config.database.db_type} db: {e}")
         raise
 

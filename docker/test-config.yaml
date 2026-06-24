@@ -26,7 +26,7 @@ database:
   host: mariadb          # compose 服务名
   db_name: kawaru
   db_type: mariadb
-  db_username: kawaru
+  db_username: root      # 用 root 连接：业务账号无权连 mysql 系统库建库；密码复用 DATABASE_PASSWORD(=MARIADB_ROOT_PASSWORD)
   pool_size: 20
   max_overflow: 20
   echo_pool: false

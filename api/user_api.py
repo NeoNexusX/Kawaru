@@ -24,9 +24,32 @@ from api_services.user_service import (
     count_items,
 )
 
-from constants.user_constants import * # noqa: F401, F403 # pylint: disable=W0401, W0614
-from exceptions.user_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
-from exceptions.common_exceptions import * # noqa: F401, F403 # pylint: disable=W0401, W0614
+from constants.user_constants import (
+    ALLOWED_POSITION_TYPES,
+    ALLOWED_REGIONS,
+    LOGIN_EXPIRE_SECONDS,
+)
+from exceptions.user_exceptions import (
+    credentials_exception,
+    login_expired_exception,
+    token_expired_exception,
+    token_invalid_exception,
+    user_already_exists_exception,
+    email_already_exists_exception,
+    user_not_active_exception,
+    user_verification_bad_exception,
+    user_position_not_allowed_exception,
+    user_region_not_exist_exception,
+    user_orcid_not_exist_exception,
+    user_homepage_invalid_exception,
+    identity_not_allowed_exception,
+    user_not_found_exception,
+)
+from exceptions.common_exceptions import (
+    non_admin_operation_not_allowed_exception,
+    internal_server_error_exception,
+    admin_cannot_delete_self_exception,
+)
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
 from celery_runtime.result import wait_for_result
