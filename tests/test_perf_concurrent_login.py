@@ -5,9 +5,9 @@
 测量"login → list_files"整流程的端到端延迟（ms），不含 logout（仅清理）。
 
 复用:
-  - .env.pytest 中的 BASE_URL / TEST_USER / TEST_PWD
+  - .env 中的 BASE_URL / TEST_USER / TEST_PWD
   - conftest.py 中的 logger
-  - perf_helper.compute_stats / dump_json / results_path
+  - helpers.perf.compute_stats / dump_json / results_path
 
 运行方式:
     uv run pytest -m perf_concurrent
@@ -22,7 +22,7 @@ import pytest
 from httpx import AsyncClient
 
 from .conftest import logger, BASE_URL, TEST_USER, TEST_PWD
-from .perf_helper import compute_stats, dump_json, results_path
+from .helpers.perf import compute_stats, dump_json, results_path
 
 # ------------------------------------------------------------------ #
 # 并发测试参数，按需修改
@@ -108,10 +108,8 @@ class TestPerfConcurrentLogin:
     @pytest.mark.perf_concurrent
     async def test_concurrent_login_listfile(self):
         """100 个并发任务并行执行 login → list_files，记录每个任务的端到端延迟"""
-        if not BASE_URL:
-            pytest.skip("BASE_URL not set in .env.pytest")
         if not (TEST_USER and TEST_PWD):
-            pytest.skip("TEST_USER/TEST_PWD not set in .env.pytest")
+            pytest.fail("TEST_USER/TEST_PWD could not be resolved from env or api.log")
 
         logger.info("[perf concurrent] starting %s concurrent tasks", CONCURRENCY)
         wall_t0 = time.perf_counter()

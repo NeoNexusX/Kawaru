@@ -1,56 +1,18 @@
 name: CI
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-on: #push和pr都会触发
+on:
   push:
     branches: [test]
-  pull_request:
-    branches: [test]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
+  # ① 静态检查：依赖锁、语法、lint
+  static-checks:
     runs-on: ubuntu-latest
-    services:
-      mariadb:
-        image: mariadb:11.4
-        env:
-          MARIADB_DATABASE: kawaru
-          MARIADB_USER: kawaru
-          MARIADB_PASSWORD: kawaru-ci-db-pass
-          MARIADB_ROOT_PASSWORD: kawaru-ci-db-pass
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pkawaru-ci-db-pass"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
-      redis:
-        image: redis:7.2-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd="redis-cli ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
-
-    env:
-      SMTP_PASSWORD: ci-smtp-password
-      DATABASE_PASSWORD: kawaru-ci-db-pass
-      REDIS_PASSWORD: ""
-      SECRET_KEY: ci-secret-key
-      LOG_DIR: kawaru_logs
-      LOG_LEVEL: info
-      CONFIG_PATH: ${{ github.workspace }}/.github/ci/config.yaml #从该路径去读取文件
-      REGION_PATH: ${{ github.workspace }}/external/countries-states-cities-database/json/countries.json
-
     steps:
       - uses: actions/checkout@v6
 
@@ -65,139 +27,103 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Create CI config #会临时生成comfig.yaml文件
-        run: |
-          mkdir -p .github/ci
-          cat > .github/ci/config.yaml <<'EOF' 
-          server:
-            name: Kawaru
-            port: 8000
-            host: 127.0.0.1
-
-          token:
-            token_expire_minutes: 1440
-            login_expire_minutes: 120
-            algorithm: HS256
-
-          email:
-            smtp_port: 465
-            smtp_username: ci@example.com
-            smtp_from_email: ci@example.com
-            smtp_server: smtp.example.com
-            totp_window: 30
-
-          database:
-            host: 127.0.0.1
-            db_name: kawaru
-            db_type: mariadb
-            db_username: kawaru
-            pool_size: 10
-            max_overflow: 20
-            echo_pool: false
-            pool_recycle: 3600
-            port: 3306
-
-          redis:
-            username: default
-            host: 127.0.0.1
-            port: 6379
-            max_connection: 50
-            default_db_index: 0
-            celery_broker_db_index: 1
-            celery_backend_db_index: 2
-            celery_redbeat_db_index: 3
-
-          celery:
-            enable_embedded_celery: false
-            worker_concurrency: 2
-            worker_log_level: "INFO"
-            worker_log_file: "kawaru_logs/celery.log"
-            worker_disable_rate_limits: true
-            worker_pool: "prefork"
-
-          storage:
-            root: ./.ci-storage
-            local_root: data/
-            max_file_size_gb: 2000000000
-            chunk_buffer_size_mb: 1
-            max_chunks_per_upload: 40
-            allowed_storage_types: ["local"]
-            allowed_file_types: ["zip"]
-            allowed_experiment_types: ["imzML"]
-            max_path_length: 255
-            max_filename_length: 100
-            max_file_type_length: 64
-            max_files_per_user: 20
-            max_downloads_per_user: 50
-            preflight_ttl_minutes: 30
-            chunk_ttl_minutes: 30
-            cleanup_preflights_interval_minutes: 60
-            cleanup_download_zip_interval_minutes: 1440
-            download_zip_retention_days: 7
-
-          oss:
-            region_id: cn-shenzhen
-            bucket_name: kawaru-storage
-            oss_upload_sts_token_expire_minutes: 15
-            oss_download_sts_token_expire_minutes: 60
-            oss_zip_storage_root: data/
-            oss_experiment_storage_root: experiments/
-
-          admin_info:
-            username: kawaru
-            institution: Xiamen University
-            position: Researcher
-            research_field: Massflow
-            region: China
-            orcid: admin
-            homepage: admin
-            email: admin@example.com
-
-          user:
-            allowed_position_types:
-              - Researcher
-              - Postdoctoral Researcher
-              - Research Assistant
-              - Research Engineer
-              - Senior Researcher
-              - Professor
-              - Associate Professor
-              - Lecture
-              - PhD Student
-              - Master's Student
-            max_identity_length: 10
-            max_username_length: 128
-            max_useremail_length: 128
-            max_institution_length: 128
-            max_position_length: 128
-            max_research_field_length: 128
-            max_region_length: 128
-            max_orcid_length: 128
-            max_homepage_length: 128
-
-          sample_info:
-            max_experiment_name_length: 128
-            max_experiment_type_length: 128
-            max_organism_length: 128
-            max_organism_part_length: 128
-            max_condition_length: 128
-            max_sample_growth_conditions_length: 128
-            max_sample_stabilization_length: 128
-            max_tissue_modification_length: 128
-            max_maldi_matrix_length: 128
-            max_maldi_matrix_application_length: 128
-            max_solvent_length: 128
-          EOF
-
-      - name: Install dependencies #TODO 将日志密码提取出来，添加密码环境变量进去
+      - name: Resolve & install deps (lockfile check)
         run: uv sync --frozen
 
-      - name: Sanity check imports
-        run: uv run python -m compileall main.py api background boot celery_runtime constants database models routers storage_backend tests
+      - name: Compile (syntax check)
+        run: >-
+          uv run python -m compileall -q
+          main.py api api_helpers api_services background boot celery_runtime
+          constants database exceptions models routers storage_backend tools tests
 
-        #1 先启动 FastAPI 后端
-        #2 需要判活或者等待
-        #3 从 ./Kawaru/api.log 提取初始管理员密码
-        #4 生成.env.pytest（密码使用刚刚提取的，用户名固定）
-      - name: Run file tests 
-        run: uv run pytest tests/test_file.py -m "file" -q
+      - name: Lint (ruff)
+        run: uv run ruff check .
+        continue-on-error: true   # 先不阻塞；存量 lint 清完后去掉这行改为强制
+
+  # ② 打包：静态检查通过后，构建测试镜像并推到 GHCR
+  build-image:
+    needs: static-checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.img.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set image ref
+        id: img
+        run: echo "ref=ghcr.io/${{ github.repository_owner }}/kawaru:test-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.img.outputs.ref }}
+
+  # ③ 测试：在 GitHub 托管机上用 compose 起栈，容器内跑 pytest
+  integration-test:
+    needs: build-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      KAWARU_IMAGE: ${{ needs.build-image.outputs.image }}
+      COMPOSE: docker compose -f docker/docker-compose.test.yml -p kawaru-test
+      MARKERS: "oss or perf_concurrent"   # OSS 直传 + 并发登录基准（oss_callback 不跑）
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      OSS_ROLE_ARN: ${{ secrets.OSS_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check OSS secrets
+        run: |
+          for var in OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET OSS_ROLE_ARN; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Missing required secret: $var"
+              exit 1
+            fi
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull "$KAWARU_IMAGE"
+
+      - name: Start stack & wait healthy (compose, no build)
+        # 三个服务都带 healthcheck，--wait 直接等到 app(9001) 健康；用 GHCR 拉下来的镜像，绝不在此构建
+        run: |
+          $COMPOSE down -v --remove-orphans || true
+          $COMPOSE up -d --no-build --wait --wait-timeout 300
+
+      - name: Prepare writable test_temp
+        # tests 会写 ../test_temp(=容器内 /test_temp)，预创建为 appuser 可写
+        run: $COMPOSE exec -T -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
+
+      - name: Run pytest
+        run: $COMPOSE exec -T app python -m pytest -m "$MARKERS" -q
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v --remove-orphans || true

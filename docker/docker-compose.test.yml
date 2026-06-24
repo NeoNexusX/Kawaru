@@ -1,0 +1,69 @@
+# 测试栈：临时、跑完即销，整套走 9001（与正式 8000 隔离）。
+# 本地手动跑：
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent" -q
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
+name: kawaru-test
+
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: kawaru
+      MARIADB_USER: kawaru
+      MARIADB_PASSWORD: kawaru-test-pass
+      MARIADB_ROOT_PASSWORD: kawaru-test-pass
+    tmpfs:
+      - /var/lib/mysql      # 数据放内存，down 即销
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-pkawaru-test-pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.2-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: ${KAWARU_IMAGE:-kawaru-test:local}   # CI 注入 GHCR 预构建镜像；本地不设则用默认名配合 build
+    build:                                       # 仅本地开发用（CI 在 GitHub 构建后推 GHCR，测试时只 pull --no-build）
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      CONFIG_PATH: /app/docker/test-config.yaml
+      REGION_PATH: /app/external/countries-states-cities-database/json/countries.json
+      LOG_DIR: kawaru_logs
+      LOG_LEVEL: info
+      SECRET_KEY: test-secret-key
+      DATABASE_PASSWORD: kawaru-test-pass     # 与 mariadb 一致（测试内部值，非 secret）
+      REDIS_PASSWORD: ""                      # redis 无密码
+      SMTP_PASSWORD: test-smtp-pass
+      # OSS（必需；CI 的 integration-test 步骤会校验，缺则直接失败）
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_ROLE_ARN: ${OSS_ROLE_ARN:-}
+      # region/bucket 不再用 env 注入：服务端读 config.oss.region_id，测试客户端也改读 config（见 helpers/oss.py）
+      # FC 函数 token（app 启动时 import background.processing_background 会读取，缺则为 None；当前测试用例不触发 FC，可留空）
+      OSS_FC_ALGORITHM_TOKEN: ${OSS_FC_ALGORITHM_TOKEN:-}
+      OSS_FC_TIC_TOKEN: ${OSS_FC_TIC_TOKEN:-}
+      OSS_FC_FEATURE_TOKEN: ${OSS_FC_FEATURE_TOKEN:-}
+      OSS_FC_PACKUP_TOKEN: ${OSS_FC_PACKUP_TOKEN:-}
+      BASE_URL: http://127.0.0.1:9001         # pytest 打本容器内的 9001
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9001/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
