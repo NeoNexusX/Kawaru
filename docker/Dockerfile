@@ -26,7 +26,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl && \
     rm -rf /var/lib/apt/lists/* && \
-    useradd --create-home --shell /bin/bash appuser
+    useradd -u 1000 --create-home --shell /bin/bash appuser
 
 COPY --from=builder /install /usr/local
 COPY . .

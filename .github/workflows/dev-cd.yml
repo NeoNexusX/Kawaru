@@ -1,11 +1,5 @@
 name: Dev CD
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/kawaru
-  GITOPS_BRANCH: dev
-  GITOPS_PATH: overlays/dev/kustomization.yaml
-
 on:
   push:
     branches: [dev]
@@ -14,14 +8,16 @@ permissions:
   contents: read
   packages: write
 
-jobs:
-  publish-dev:
-    runs-on: ubuntu-latest
+concurrency:
+  group: dev-cd
+  cancel-in-progress: true
 
+jobs:
+  # ① 构建并推送 dev 镜像（dev-latest + dev-<sha>，前缀与 test- 区分）
+  build:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -34,12 +30,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ github.repository_owner }}/kawaru   # metadata-action 自动转小写
           tags: |
             type=raw,value=dev-latest
-            type=sha,prefix=sha-
+            type=sha,prefix=dev-
 
-      - name: Build and push image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -48,36 +44,39 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Validate GitOps settings
-        env:
-          GITOPS_REPOSITORY: ${{ vars.GITOPS_REPOSITORY }}
-          GITOPS_REPO_TOKEN: ${{ secrets.GITOPS_REPO_TOKEN }}
-        run: |
-          test -n "$GITOPS_REPOSITORY" || { echo "Missing Actions variable: GITOPS_REPOSITORY"; exit 1; }
-          test -n "$GITOPS_REPO_TOKEN" || { echo "Missing Actions secret: GITOPS_REPO_TOKEN"; exit 1; }
+  # ② 部署到独立 dev 服务器：同步 compose → pull → up（不碰 .env / dev-config.yaml）
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
 
-      - name: Checkout GitOps repo
-        uses: actions/checkout@v6
+      - name: Sync compose file to server
+        uses: appleboy/scp-action@v0.1.7
         with:
-          repository: ${{ vars.GITOPS_REPOSITORY }}
-          ref: ${{ env.GITOPS_BRANCH }}
-          token: ${{ secrets.GITOPS_REPO_TOKEN }}
-          path: gitops
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          port: 22
+          source: docker/docker-compose.dev.yml
+          target: /opt/kawaru-dev/
+          strip_components: 1            # 去掉 docker/ 前缀 → /opt/kawaru-dev/docker-compose.dev.yml
 
-      - name: Update dev image tag
+      - name: Pull & up
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          port: 22
+          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN
+          script: |
+            set -e
+            cd /opt/kawaru-dev
+            echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
+            docker compose -f docker-compose.dev.yml -p kawaru-dev pull
+            docker compose -f docker-compose.dev.yml -p kawaru-dev up -d --wait --wait-timeout 300
+            docker logout ghcr.io
         env:
-          IMAGE_TAG: sha-${{ github.sha }}
-        run: |
-          sed -i "s/newTag:.*/newTag: ${IMAGE_TAG}/" "gitops/${GITOPS_PATH}"
-
-      - name: Commit GitOps change
-        working-directory: gitops
-        env:
-          IMAGE_TAG: sha-${{ github.sha }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${GITOPS_PATH}"
-          git diff --cached --quiet && exit 0
-          git commit -m "chore: deploy dev image ${IMAGE_TAG}"
-          git push origin "${GITOPS_BRANCH}"
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}

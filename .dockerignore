@@ -1,0 +1,43 @@
+# 构建上下文裁剪：避免把宿主机运行时落盘 / 本地凭证 / 缓存烤进镜像层
+# dev 与 test compose 都把宿主机 data/、kawaru_logs/ bind 到容器，构建上下文里不能再带一份
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python 缓存与构建产物
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+build
+dist
+
+# 虚拟环境
+.venv
+venv
+env
+
+# 运行时落盘（容器内 /app/data 与 /app/kawaru_logs 由 compose mount）
+data
+kawaru_logs
+test_temp
+
+# 本地凭证 / 配置（绝不能进镜像）
+.env
+.env.*
+*.local.yaml
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+
+# 文档与 CI 自身
+docs
+.github
