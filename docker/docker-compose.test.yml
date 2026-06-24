@@ -104,12 +104,10 @@ services:
       - "--without-gossip"
       - "--concurrency"
       - "2"
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A celery_runtime.entrypoint:celery_app inspect ping --timeout 10 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
+    # 不加 healthcheck：
+    # 1) `celery inspect ping` 每次都冷启动 python + 重新加载 task 列表，10s 超时内回不来；
+    # 2) compose --wait 对无 healthcheck 的 service 只要求 Started，不要求 Healthy；
+    # 3) worker 异步消费 broker，pytest 时即便还没完全 ready，消息会缓冲在 Redis 里。
 
   # ---- Celery Beat（拆分独立容器） ----
   celery-beat:
@@ -131,9 +129,4 @@ services:
       - "info"
       - "--logfile"
       - "kawaru_logs/celery-beat.log"
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A celery_runtime.beat_entrypoint:beat_app inspect ping --timeout 10 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
+    # 不加 healthcheck：beat 容器只跑 scheduler，没有 worker 进程，inspect ping 永远拿不到响应。
