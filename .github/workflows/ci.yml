@@ -88,12 +88,15 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       OSS_ROLE_ARN: ${{ secrets.OSS_ROLE_ARN }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}   # perf_concurrent 注册要走邮件链路；缺则 QQ SMTP 登录失败
+      LOG_LEVEL: debug
+      
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check OSS secrets
+      - name: Check required secrets
         run: |
-          for var in OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET OSS_ROLE_ARN; do
+          for var in OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET OSS_ROLE_ARN SMTP_PASSWORD; do
             if [ -z "${!var}" ]; then
               echo "::error::Missing required secret: $var"
               exit 1
