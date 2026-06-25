@@ -1,0 +1,94 @@
+# Dev 常驻部署栈：app(FastAPI) + celery worker + celery beat + mariadb + redis（Celery 分离模式）
+#
+# dev-cd 只负责：构建镜像 + 同步本文件 + pull + up；不写 .env / dev-config.yaml。
+# 配置与密钥由人一次性准备在服务器固定目录（compose 自动读取同目录 .env）。
+#
+# 服务器布局（/opt/kawaru-dev/）：
+#   docker-compose.dev.yml   ← dev-cd 同步
+#   .env                     ← 人准备：所有环境变量（compose 自动读取：变量替换 + env_file）
+#   dev-config.yaml          ← 人准备：应用配置（挂载进容器，可外部改）
+#   data/{mariadb,redis,app,logs/{app,worker,beat}}   ← 落盘
+#
+# 常用命令（在 /opt/kawaru-dev 下）：
+#   docker compose -f docker-compose.dev.yml -p kawaru-dev pull
+#   docker compose -f docker-compose.dev.yml -p kawaru-dev up -d --wait
+#   docker compose -f docker-compose.dev.yml -p kawaru-dev logs -f worker
+name: kawaru-dev
+
+services:
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: kawaru
+      MARIADB_ROOT_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
+    volumes:
+      - ./data/mariadb:/var/lib/mysql          # 落盘：业务库
+    ports:
+      - "13306:3306"                            # 固定非默认端口便于外部检测；收紧可改 "127.0.0.1:13306:3306"
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DATABASE_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    volumes:
+      - ./data/redis:/data                      # 落盘：AOF（broker 队列 / redbeat 调度 / 业务数据）
+    ports:
+      - "16379:6379"                            # 固定非默认端口便于外部检测
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: ${APP_IMAGE:?set APP_IMAGE in .env}
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    env_file: [ .env ]                          # 整个 .env 注入容器
+    volumes:
+      - ./dev-config.yaml:/app/config/dev-config.yaml:ro   # 配置挂载，可外部改
+      - ./data/app:/app/data                               # 落盘：本地存储 local/temp_chunks/origin/processed
+      - ./data/logs/app:/app/kawaru_logs                   # 落盘：app 日志（按服务拆分）
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  worker:
+    image: ${APP_IMAGE:?}
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    env_file: [ .env ]
+    command: ["celery", "-A", "celery_runtime.entrypoint:celery_app", "worker",
+              "-Q", "default", "--pool", "prefork", "--concurrency", "2",
+              "--without-gossip", "--loglevel", "INFO"]
+    volumes:
+      - ./dev-config.yaml:/app/config/dev-config.yaml:ro
+      - ./data/app:/app/data                    # worker 也读写本地存储（打包/处理）
+      - ./data/logs/worker:/app/kawaru_logs
+    # 不设 healthcheck：inspect ping 每次会冷启动整套 app 而超时；存活由 restart 兜底
+
+  beat:
+    image: ${APP_IMAGE:?}
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+    env_file: [ .env ]
+    command: ["celery", "-A", "celery_runtime.beat_entrypoint:beat_app", "beat", "--loglevel", "INFO"]
+    volumes:
+      - ./dev-config.yaml:/app/config/dev-config.yaml:ro
+      - ./data/logs/beat:/app/kawaru_logs
+    # 不设 healthcheck：beat 是调度器，不响应 control 命令（inspect ping 永不通过）

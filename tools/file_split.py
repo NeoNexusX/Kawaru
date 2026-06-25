@@ -3,46 +3,47 @@ import sys
 import hashlib
 import math
 
-def calculate_sha256(data):
-    sha256_hash = hashlib.sha256()
-    sha256_hash.update(data)
-    return sha256_hash.hexdigest()
+def calculate_md5(data):
+    """计算数据的 MD5 哈希值。"""
+    md5_hash = hashlib.md5()
+    md5_hash.update(data)
+    return md5_hash.hexdigest()
 
 def split_file(file_path, num_chunks):
+    """将文件分割成指定数量的分片，并计算每个分片的 MD5 哈希值。"""
     if not os.path.exists(file_path):
         print(f"错误: 文件 '{file_path}' 不存在。")
         return
 
     file_size = os.path.getsize(file_path)
     chunk_size = math.ceil(file_size / num_chunks)
-    
+
     print(f"文件: {file_path}")
     print(f"总大小: {file_size} 字节")
     print(f"分片数量: {num_chunks}")
     print("-" * 60)
-    print(f"{'分片文件名':<30} {'大小 (字节)':<15} {'SHA256 哈希'}")
+    print(f"{'分片文件名':<30} {'大小 (字节)':<15} {'MD5 哈希'}")
     print("-" * 60)
 
     base_name = os.path.basename(file_path)
     file_dir = os.path.dirname(file_path)
-    name, ext = os.path.splitext(base_name)
 
     with open(file_path, 'rb') as f:
         for i in range(num_chunks):
             chunk_data = f.read(chunk_size)
             if not chunk_data:
                 break
-            
+
             chunk_filename = f"{base_name}.part{i+1}"
             chunk_path = os.path.join(file_dir, chunk_filename)
-            
+
             # 写入分片文件
             with open(chunk_path, 'wb') as chunk_file:
                 chunk_file.write(chunk_data)
-            
-            chunk_hash = calculate_sha256(chunk_data)
+
+            chunk_hash = calculate_md5(chunk_data)
             current_chunk_size = len(chunk_data)
-            
+
             print(f"{chunk_filename:<30} {current_chunk_size:<15} {chunk_hash}")
 
 if __name__ == "__main__":

@@ -41,17 +41,12 @@ Authentication Flow:
 
 ### 3. Email Service
 
-Supports two email sending methods (`api/email_api.py`):
+Email sending method (`api/email_api.py`):
 
-#### SMTP Method (Recommended)
+#### SMTP Method
 - Endpoint: `POST /emailsmtprequest`
 - Supports any SMTP server
 - Flexible configuration, suitable for most scenarios
-
-#### Mailgun API Method
-- Endpoint: `POST /emailrequest`
-- Requires Mailgun account
-- Suitable for large-scale email sending
 
 Email Verification Code Feature:
 - Uses TOTP algorithm to generate 6-digit verification codes
@@ -62,21 +57,22 @@ Email Verification Code Feature:
 
 Database module (`database/db.py`) features:
 - Uses SQLModel ORM (based on SQLAlchemy)
-- SQLite database (suitable for small and medium applications)
+- MariaDB with the asyncmy async driver (satisfies distributed requirements)
 - Automatic table creation
 - Dependency injection session management
 
-Database Session Usage Example:
+Asynchronous Database Session Usage Example:
 ```python
 from fastapi import Depends
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 from database.db import get_session
 
 @app.get("/example")
-def example_endpoint(session: Session = Depends(get_session)):
-    # Use session for database operations
+async def example_endpoint(session: AsyncSession = Depends(get_session)):
+    # use await session for database operations
     pass
 ```
+
 
 ## API Endpoint Documentation
 
@@ -94,7 +90,6 @@ Main API endpoints are defined in `main.py`:
 - `DELETE /user_delete` - Delete user (Requires Authentication)
 
 ### Email Service
-- `POST /emailrequest` - Send Email (Mailgun)
 - `POST /emailsmtprequest` - Send Email (SMTP)
 
 For detailed API documentation, please visit the `/docs` endpoint to view Swagger UI.
@@ -105,6 +100,7 @@ For detailed API documentation, please visit the `/docs` endpoint to view Swagge
 
 The project uses Pylint for code checking, configuration file is `.pylintrc`:
 - Max line length: 130 characters
+
 Run code check:
 ```bash
 uv run pylint api/ models/ database/ envset/

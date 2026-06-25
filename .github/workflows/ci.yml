@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ① 静态检查：依赖锁、语法、lint
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Resolve & install deps (lockfile check)
+        run: uv sync --frozen
+
+      - name: Compile (syntax check)
+        run: >-
+          uv run python -m compileall -q
+          main.py api api_helpers api_services background boot celery_runtime
+          constants database exceptions models routers storage_backend tools tests
+
+      - name: Lint (ruff)
+        run: uvx ruff check .     # uvx 临时拉取 ruff，不依赖项目环境（ruff 未在锁文件中声明）
+        continue-on-error: true   # 先不阻塞；存量 lint 清完后去掉这行改为强制
+
+  # ② 打包：静态检查通过后，构建测试镜像并推到 GHCR
+  build-image:
+    needs: static-checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.img.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set image ref
+        id: img
+        # GHCR 仓库名必须全小写；owner 可能含大写（如 NeoNexusX），这里转小写
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "ref=ghcr.io/${owner}/kawaru:test-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.img.outputs.ref }}
+
+  # ③ 测试：在 GitHub 托管机上用 compose 起栈，容器内跑 pytest
+  integration-test:
+    needs: build-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      KAWARU_IMAGE: ${{ needs.build-image.outputs.image }}
+      COMPOSE: docker compose -f docker/docker-compose.test.yml -p kawaru-test
+      MARKERS: "oss or perf_concurrent"   # OSS 直传 + 并发登录基准（oss_callback 不跑）
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      OSS_ROLE_ARN: ${{ secrets.OSS_ROLE_ARN }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}   # perf_concurrent 注册要走邮件链路；缺则 QQ SMTP 登录失败
+      LOG_LEVEL: debug
+      
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check required secrets
+        run: |
+          for var in OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET OSS_ROLE_ARN SMTP_PASSWORD; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Missing required secret: $var"
+              exit 1
+            fi
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull "$KAWARU_IMAGE"
+
+      - name: Start stack & wait healthy (compose, no build)
+        # 五个服务都带 healthcheck，--wait 等 app(9001) + celery-worker + celery-beat 全部 healthy；用 GHCR 拉下来的镜像，绝不在此构建
+        run: |
+          $COMPOSE down -v --remove-orphans || true
+          $COMPOSE up -d --no-build --wait --wait-timeout 400
+
+      - name: Prepare writable test_temp
+        # tests 会写 ../test_temp(=容器内 /test_temp)，预创建为 appuser 可写
+        run: $COMPOSE exec -T -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
+
+      - name: Run pytest
+        run: $COMPOSE exec -T app python -m pytest -m "$MARKERS" -q
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v --remove-orphans || true

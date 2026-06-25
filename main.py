@@ -1,53 +1,78 @@
-import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, FastAPI
+import os
+import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.user_api import  create_admin_user
-from database.db import create_db_and_tables, SessionDep
-from envset.config import get_config
-from envset.envset import EnvSet
-from logger import get_logger
+from boot.bootstrap import bootstrap
+bootstrap()
+# pylint: disable=wrong-import-position
+from boot.config import get_config
+from celery_runtime.launcher import start_embedded_celery, stop_embedded_celery,enable_embedded_celery
+from database.db import create_db_and_tables
+from api.user_api import create_admin_user
 from routers.user import user_router
 from routers.file import file_router
+from routers.callback import callback_router
+from routers.experiment import originexperiment_router
+from routers.processing import processing_router
+from routers.stats import stats_router
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # start run
-    create_db_and_tables()
-    EnvSet()
+async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
+    """
+    FastAPI lifespan context manager.
+    initialize resources before the application starts
+    """
+    # create database
+    await create_db_and_tables()
     # admin create
     await create_admin_user()
+    #celery worker/beat subprocess
+    workers, celery_beat_proc = await start_embedded_celery() if enable_embedded_celery() else ({}, None)
+    # save process objects so other parts of app can inspect/terminate if needed
+    app.state.celery_workers = workers
+    app.state.celery_beat_proc = celery_beat_proc
+
     yield
+
+    # shutdown: terminate celery workers if started
+    workers = getattr(app.state, 'celery_workers', {})
+    celery_beat_proc = getattr(app.state, 'celery_beat_proc', None)
+    if workers or celery_beat_proc is not None:
+        await stop_embedded_celery(workers, celery_beat_proc)
 
 
 app = FastAPI(lifespan=lifespan)
 
-# get the main logger
-logger = get_logger("main")
-
-# get config
-config = get_config()
-
 # CORSMiddleware跨域请求
-origins = ["*", ] # 接受所有来源请求
+config = get_config() # 获取全局配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=config.cors.allow_origins,
+    allow_credentials=config.cors.allow_credentials,
+    allow_methods=config.cors.allow_methods,
+    allow_headers=config.cors.allow_headers,
+    expose_headers=config.cors.expose_headers,
 )
 
 app.include_router(user_router)
 app.include_router(file_router)
-
+app.include_router(callback_router)
+app.include_router(originexperiment_router)
+app.include_router(processing_router)
+app.include_router(stats_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":
+
+    reload_enabled = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
     uvicorn.run(
         "main:app",  # 模块名:FastAPI 实例名
         host=config.server.host,  # 监听所有网络接口
         port=config.server.port,  # 端口号
-        log_level=config.server.log_level,  # 日志级别
-        reload=True,  # 开发时自动重载
+        log_level=os.getenv("LOG_LEVEL", "info"),  # 日志级别
+        reload=reload_enabled,  # 容器默认关闭，开发环境可通过环境变量开启
+        reload_excludes=[
+            "tests/**" # 排除测试文件夹导致的自动重载
+        ]
     )

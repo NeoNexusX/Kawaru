@@ -1,40 +1,141 @@
-from sqlalchemy import Column
-from sqlalchemy.types import JSON
-from sqlmodel import Field, SQLModel
-from logger import get_logger
+from typing import TYPE_CHECKING
+from pydantic import BaseModel
+from sqlmodel import Field, SQLModel, Relationship,Column, String,BigInteger
+from tools.logger import get_logger
+from boot.config import get_config
+from models.link_models import UserFileLink
+
+# 防止循环引用报错
+if TYPE_CHECKING:
+    from models.file_models import FileInDB
 
 # 获取服务器状态模块的日志器
-logger = get_logger("main.user_control")
+logger = get_logger("models.user_models")
 
-# 基本用户信息模型
+# 模型字段配置来自 config
+config = get_config()
+user_config = config.user
+admin_info = config.admin_info
+
 class UserBase(SQLModel):
-    username: str = Field()
+    """
+    基本用户信息模型
+    """
+    username: str = Field(max_length=user_config.max_username_length)
+    institution: str = Field(default="", max_length=user_config.max_institution_length)
+    position: str = Field(default="", max_length=user_config.max_position_length)
+    research_field: str | None = Field(max_length=user_config.max_research_field_length)
+    region: str | None = Field(max_length=user_config.max_region_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
+    homepage: str | None = Field(max_length=user_config.max_homepage_length)
     active: bool = Field(default=True)
-    identity: str = Field(default="user")
+    identity: str = Field(default="user", max_length=user_config.max_identity_length)
+    email: str = Field(sa_column=Column(String(user_config.max_useremail_length), unique=True), description="用户邮箱")
 
-# 存储于数据库中的用户信息模型
+
 class UserInDB(UserBase, table=True):
+    """
+    存储于数据库中的用户信息模型，包含加密密码和文件相关信息
+    """
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    email: str = Field()
-    hashed_password: str = Field()
-    file_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))#文件ID列表JSON格式
-    file_count: int = Field(default=0)
-    total_file_size: int = Field(default=0)
-    download_used: int = Field(default=0)
+    hashed_password: str = Field(max_length=256, description="加密后的密码")
 
-# 用于返回响应信息的用户模型
-class UserPublic(UserBase):
-    email: str
+    # 与 FileInDB 的多对多关系
+    files: list["FileInDB"] = Relationship(back_populates="owners", link_model=UserFileLink) # 每次访问需考虑性能开销，按需访问
+    file_count: int = Field(default=0, description="用户文件数量")
+    total_file_size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0), description="用户文件总大小（字节）")
+    download_used: int = Field(default=0, description="用户已使用的下载次数")
+    processed_file_size: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户已处理文件总大小（字节）"
+    )
 
-# 创建用户时需要提供的用户信息模型，包括邮箱、密码、验证码
+    # 用户配额字段（初始值来自 config.admin_info，管理员可通过 API 修改）
+    max_total_file_size: int = Field(
+        default=admin_info.max_total_file_size,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户最大上传文件总大小（GB）"
+    )
+    max_file_count: int = Field(
+        default=admin_info.max_file_count,
+        description="用户最大上传总文件数"
+    )
+    max_processing_size: int = Field(
+        default=admin_info.max_processing_size,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户最大可算法处理文件总大小（GB）"
+    )
+    max_download_count: int = Field(
+        default=admin_info.max_download_count,
+        description="用户最大可下载文件次数"
+    )
+
+
 class UserCreate(UserBase):
-    email: str
+    """新用户创建模型，包括邮箱、密码、验证码"""
     password: str
     verify_code: str
-    identity: str | None = Field(default=None)  # 传入的时候必须为None
+    identity: str = Field(
+        default=None,  # 默认创建时仍是 None
+        exclude=True,  # 序列化/入库时都排除，代码中再给UserInDB显式设置身份
+        max_length=user_config.max_identity_length,
+    )
 
-# 更新用户信息，需要提供邮箱和密码
-class UserUpdate(UserBase):
-    email: str = Field(default=None)
-    password: str | None = None
 
+class UserPublic(BaseModel):
+    """用于返回响应信息的用户模型"""
+    username: str = Field(max_length=user_config.max_username_length)
+    active: bool = Field(default=True)
+    identity: str = Field(default="user", max_length=user_config.max_identity_length)
+
+
+class UserDetailPublic(UserBase):
+    """用于返回响应信息的用户模型"""
+    id: int # id字段公开，方便前端使用
+    total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
+    file_count: int = Field(default=0, description="用户文件数量")
+    max_total_file_size: int = Field(default=0, description="用户最大上传文件总大小（GB）")
+    max_file_count: int = Field(default=0, description="用户最大上传总文件数")
+    max_processing_size: int = Field(default=0, description="用户最大可算法处理文件总大小（GB）")
+    max_download_count: int = Field(default=0, description="用户最大可下载文件次数")
+
+class UserUpdate(BaseModel):
+    """
+    新用户信息模型，需要提供邮箱和密码，可选更新字段，不允许更新身份，名字字段
+    """
+    username: str = Field(max_length=user_config.max_username_length) #强制提供
+    email: str | None= Field(default=None,max_length=user_config.max_useremail_length, description="用户邮箱") #不强制提供
+    password: str | None = None #不强制提供
+    verify_code: str | None = None #邮箱验证码
+    institution: str | None = Field(default=None, max_length=user_config.max_institution_length)
+    position: str | None = Field(default=None, max_length=user_config.max_position_length)
+    research_field: str | None = Field(default=None, max_length=user_config.max_research_field_length)
+    region: str | None = Field(default=None, max_length=user_config.max_region_length)
+    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
+    homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)
+
+
+class UserQuotaPublic(SQLModel):
+    """用户配额统一返回模型"""
+    # 上传文件相关
+    total_uploaded_size_bytes: int = Field(description="用户已上传文件总大小（字节）")
+    file_count: int = Field(description="用户文件数量")
+    max_files_per_user: int = Field(description="用户最大文件数量")
+    max_total_file_size: int = Field(description="用户上传文件总大小限额（GB）")
+
+    # 处理相关
+    max_processing_size_gb: int = Field(description="用户处理累计限额（GB）")
+    total_processed_size_bytes: int = Field(description="用户已处理总大小（字节）")
+
+    # 下载相关
+    download_used: int = Field(description="用户已使用下载次数")
+    max_download_count: int = Field(description="用户最大可下载文件次数")
+
+
+class UserQuotaLimits(SQLModel):
+    """用户配额限额模型（请求和响应共用，请求时字段可选，响应时返回当前值）"""
+    max_total_file_size: int | None = Field(default=None, description="用户最大上传文件总大小（GB）")
+    max_file_count: int | None = Field(default=None, description="用户最大上传总文件数")
+    max_processing_size: int | None = Field(default=None, description="用户最大可算法处理文件总大小（GB）")
+    max_download_count: int | None = Field(default=None, description="用户最大可下载文件次数")
