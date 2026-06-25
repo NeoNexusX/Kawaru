@@ -82,3 +82,35 @@ jobs:
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:dev-latest
+
+      # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
+      # 把 5 个服务的状态 + 各自 tail 日志打出来，免去人工 SSH 翻日志
+      - name: Dump stack diagnostics on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          port: 22
+          script: |
+            set +e   # 诊断阶段不要因为某条命令失败就中断
+            cd /opt/kawaru-dev
+            COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
+
+            echo "========== compose ps =========="
+            $COMPOSE ps -a
+
+            echo "========== app inspect (health + state) =========="
+            APP_CID=$($COMPOSE ps -q app)
+            if [ -n "$APP_CID" ]; then
+              docker inspect --format '{{json .State}}' "$APP_CID" \
+                | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2))" 2>/dev/null \
+                || docker inspect --format '{{json .State}}' "$APP_CID"
+            fi
+
+            for svc in app worker beat mariadb redis; do
+              echo "========== logs: $svc (tail=200) =========="
+              $COMPOSE logs --no-color --tail=200 "$svc" 2>&1 || true
+            done
+            exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
