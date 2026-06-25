@@ -75,7 +75,7 @@ jobs:
             export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
             cd /opt/kawaru-dev
             echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
-            docker compose -f docker-compose.dev.yml -p kawaru-dev pull
+            docker compose -f docker-compose.dev.yml -p kawaru-dev pull app worker beat
             docker compose -f docker-compose.dev.yml -p kawaru-dev up -d --wait --wait-timeout 300
             docker logout ghcr.io
         env:
@@ -93,8 +93,10 @@ jobs:
           username: ${{ secrets.DEV_SSH_USER }}
           key: ${{ secrets.DEV_SSH_KEY }}
           port: 22
+          envs: APP_IMAGE
           script: |
             set +e   # 诊断阶段不要因为某条命令失败就中断
+            export APP_IMAGE="${APP_IMAGE,,}"   # 同 deploy：compose 插值需要它，否则 ps/logs 全挂
             cd /opt/kawaru-dev
             COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
 
@@ -114,3 +116,5 @@ jobs:
               $COMPOSE logs --no-color --tail=200 "$svc" 2>&1 || true
             done
             exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
+        env:
+          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:dev-latest
