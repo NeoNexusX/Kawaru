@@ -1,18 +1,39 @@
 #########################
-# Experiment API Helper - 底层工具函数
+# Experiment Helper - 底层工具函数
 # 职责：纯工具函数，无业务逻辑，无数据库依赖
-# 包含：目录管理、文件验证、ZIP解压
+# 包含：目录管理、文件验证、ZIP解压、OSS 打包任务派发
 #########################
 from __future__ import annotations
 
 import zipfile
 import shutil
 from pathlib import Path
+from celery.result import AsyncResult
+
+from celery_runtime.result import wait_for_result
+from background.experiment_background_helper import packup_oss_file_task
 from constants.file_constants import ALLOWED_EXPERIMENT_TYPES
 from tools.logger import get_logger
 
 
-logger = get_logger("api.experiment_api_helper")
+logger = get_logger("api_helpers.experiment_helper")
+
+
+async def packup_oss_file(filename: str, packup_folder: str, zip_file_path: str) -> str | None:
+    """
+    打包OSS文件夹为zip文件
+
+    :param filename: 文件名
+    :param packup_folder: 要打包的oss文件夹路径（如"experiment/aaa/")
+    :param zip_file_path: 打包后的zip文件路径（如"data/aaa.zip")
+    :return: 函数调用ID
+    """
+    res: AsyncResult = packup_oss_file_task.delay(filename, packup_folder, zip_file_path)  # type: ignore
+    fc_request_id: str | None = await wait_for_result(res, poll_interval=0.1) # type: ignore # 大文件打包超时时间需配置大一些
+    if fc_request_id is None:
+        logger.error(f"failed to trigger packup oss file due to server timeout: from {packup_folder} to {zip_file_path}")
+        return None
+    return fc_request_id
 
 
 def extract_and_validate_imzml_zip(zip_file_path: Path, target_dir: Path) -> tuple[Path, Path]:
@@ -91,14 +112,14 @@ def validate_experiment_type(experiment_type: str) -> bool:
 def validate_imzml_files(imzml_path: Path, ibd_path: Path) -> bool: # pylint: disable=unused-argument
     """
     验证 imzML 和 ibd 文件是否为有效可读的 MSI 实验数据
-    
+
     Args:
         imzml_path: imzML 文件路径
         ibd_path: ibd 文件路径
-    
+
     Returns:
         True 表示验证通过，False 表示验证失败
-    
+
     TODO: 后续扩展验证逻辑
     - 检查文件格式是否正确
     - 验证文件完整性

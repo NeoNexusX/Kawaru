@@ -1,7 +1,17 @@
+# Dev 应用配置：挂载到容器 /app/config/dev-config.yaml（服务器上可直接改后重启生效）。
+# 业务密钥（DB/Redis/SMTP/OSS 凭证）不在这里，放 .env。
+# 与 docker/docker-compose.dev.yml 配套：database.host/redis.host 用 compose 服务名。
 server:
   name: Kawaru
   port: 8000
   host: 0.0.0.0
+
+cors:
+  allow_origins: ["*"]            # dev：按需收紧到前端域名
+  allow_credentials: false
+  allow_methods: ["GET", "POST", "DELETE", "OPTIONS"]
+  allow_headers: ["Authorization", "Content-Type", "Accept", "Origin"]
+  expose_headers: ["Content-Disposition", "Content-Length"]
 
 token:
   token_expire_minutes: 1440
@@ -9,22 +19,18 @@ token:
   algorithm: HS256
 
 email:
-  # Support for MailGun
-  mailgun_domain: YOUR_MAILGUN_DOMAIN
-  # Support for SMTP
-  smtp_port: 465 # or 587
+  smtp_port: 465
   smtp_username: 1513401658@qq.com
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
-  #support for totp
   totp_window: 30
 
 database:
-  host: kawaru-test.cpes2okukxkj.ap-southeast-1.rds.amazonaws.com
-  db_name: kawaru_test_new_year
+  host: mariadb            # compose 服务名
+  db_name: kawaru
   db_type: mariadb
-  db_username: kawaru
-  pool_size: 1000
+  db_username: root        # 用 root 连接；密码复用 .env 的 DATABASE_PASSWORD(=MARIADB_ROOT_PASSWORD)
+  pool_size: 20
   max_overflow: 20
   echo_pool: false
   pool_recycle: 3600
@@ -32,7 +38,7 @@ database:
 
 redis:
   username: default
-  host: 10.26.58.61
+  host: redis              # compose 服务名
   port: 6379
   max_connection: 50
   default_db_index: 0
@@ -41,50 +47,69 @@ redis:
   celery_redbeat_db_index: 3
 
 celery:
-  enable_embedded_celery: true
-  worker_concurrency: 10
+  enable_embedded_celery: false   # ★分离模式：worker/beat 由独立容器运行，app 不再 fork 子进程
+  worker_concurrency: 2           # 仅参考；实际并发由 compose 的 worker --concurrency 决定
   worker_log_level: "INFO"
   worker_log_file: "kawaru_logs/celery.log"
-  worker_disable_rate_limits: True
+  worker_disable_rate_limits: true
   worker_pool: "prefork"
+  large_file_poll_time: 1000
 
 storage:
-  root: ../
-  local_root: data/
-  max_file_size_gb: 2000000000
+  root: /app/data          # 落盘根；compose 把 ./data/app 挂到此
+  local_root: local
   chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
-  allowed_storage_types: ["local"]
+  allowed_storage_types: ["local", "oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
   max_path_length: 255
   max_filename_length: 100
   max_file_type_length: 64
-  max_files_per_user: 20
-  max_downloads_per_user: 50
-  preflight_ttl_minutes: 30
   cleanup_preflights_interval_minutes: 60
-  cleanup_download_zip_interval_minutes: 1440
-  download_zip_retention_days: 7
-  chunk_ttl_minutes: 30
+  cleanup_download_zip_interval_minutes: 60
+  cleanup_failed_experiments_interval_minutes: 60
+  preflight_ttl_minutes: 30
+  download_zip_ttl_minutes: 30
+  signed_url_ttl_minutes: 60
+  failed_experiment_ttl_minutes: 30
 
 oss:
-  region_id: cn-shenzhen
-  bucket_name: kawaru-storage
+  # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）
+  region_id: cn-hangzhou
+  bucket_name: kawaru-oss
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_experiment_storage_root: experiments/
+  oss_packup_zip_storage_root: packup/
+  oss_origin_storage_root: origin/
+  oss_processed_storage_root: processed/
+  oss_default_timeout_seconds: 20
+  fc_logstore_name: default-logs
+  fc_log_project_name: serverless-cn-hangzhou-aa660bbc-2121-50eb-8de1-2d1d263fecc2
+  fc_unzip_timeout_seconds: 40
+  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
+  fc_packup_timeout_seconds: 200
+  fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
+  fc_algorithm_timeout_seconds: 60
+  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou.fcapp.run
+  fc_tic_timeout_seconds: 60
+  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
+  fc_feature_timeout_seconds: 60
 
 admin_info:
   username: kawaru
   institution: Xiamen University
   position: Researcher
   research_field: Massflow
-  region: China
+  region: CN
   orcid: admin
   homepage: admin
-  email: examplr@example.com
+  email: admin@example.com
+  max_total_file_size: 200
+  max_file_count: 20
+  max_processing_size: 200
+  max_download_count: 50
 
 user:
   allowed_position_types:
@@ -111,6 +136,7 @@ user:
 sample_info:
   max_experiment_name_length: 128
   max_experiment_type_length: 128
+  max_instrument_types_length: 128
   max_organism_length: 128
   max_organism_part_length: 128
   max_condition_length: 128
@@ -120,3 +146,6 @@ sample_info:
   max_maldi_matrix_length: 128
   max_maldi_matrix_application_length: 128
   max_solvent_length: 128
+  max_polarity_length: 128
+  max_ionisation_source_length: 128
+  max_analyzer_length: 128

@@ -8,22 +8,83 @@ import argparse
 import hashlib
 from pathlib import Path
 import aiofiles
+import asyncio
+import zipfile
 
 
 CHUNK_SIZE = 1024 * 1024  # 1MB分片大小
 
-async def compute_file_md5(file_path: str) -> tuple[str, int]:
+async def compute_imzml_md5(file_path: str | Path) -> tuple[str, int]:
+    """
+    异步计算.imzML文件的MD5哈希值和大小
+    计算方式：分别分块读取.imzML文件和.ibd文件，计算整体哈希值和大小
+
+    参数:
+        file_path: imzML实验ZIP文件路径
+
+    返回:
+        (md5哈希值, 文件大小)
+    """
+    def _extract_file(file_path: str | Path, extract_tmp_path: Path) -> tuple[Path|None, Path|None]:
+        imzml_path = None
+        ibd_path = None
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            for filename in zip_ref.namelist():
+                if filename.endswith(".imzML"):
+                    imzml_path = Path(filename)
+                if filename.endswith(".ibd"):
+                    ibd_path = Path(filename)
+            zip_ref.extractall(extract_tmp_path)
+            return imzml_path, ibd_path
+
+    file_verify_code = hashlib.md5()
+    imzml_path = None
+    ibd_path = None
+    imzml_size, ibd_size = 0, 0
+
+    extract_tmp_path = Path(file_path).parent / "extract_tmp"
+
+    _loop = asyncio.get_running_loop()
+    imzml_path, ibd_path = await _loop.run_in_executor(None, _extract_file, file_path, extract_tmp_path)
+
+    if not imzml_path or not ibd_path:
+        raise FileNotFoundError("ZIP file must contain both .imzML and .ibd files")
+
+    async with aiofiles.open(extract_tmp_path / imzml_path, mode='rb') as imzml_file:
+        await imzml_file.seek(0)
+        while True:
+            chunk = await imzml_file.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            file_verify_code.update(chunk)
+            imzml_size += len(chunk)
+
+    async with aiofiles.open(extract_tmp_path / ibd_path, mode='rb') as ibd_file:
+        await ibd_file.seek(0)
+        while True:
+            chunk = await ibd_file.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            file_verify_code.update(chunk)
+            ibd_size += len(chunk)
+
+    return file_verify_code.hexdigest(), imzml_size + ibd_size
+
+async def compute_file_md5(file_path: str | Path) -> tuple[str, int]:
     """
     异步计算文件的MD5哈希值和大小
-    
+s
     参数:
         file_path: 文件路径
-        
+
     返回:
         (md5哈希值, 文件大小)
     """
     md5 = hashlib.md5()
     size = 0
+
+    if isinstance(file_path, Path):
+        file_path = str(file_path.resolve())
 
     # 使用aiofiles异步打开文件
     async with aiofiles.open(file_path, 'rb') as file:

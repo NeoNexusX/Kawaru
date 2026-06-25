@@ -1,11 +1,14 @@
+import asyncio
+
 from fastapi import APIRouter
 from models.auth import Token
-from models.email_models import EmailConfirmRequest
-from models.user_models import UserPublic,UserDetailPublic
+from models.user_models import UserPublic,UserDetailPublic, UserQuotaPublic, UserQuotaLimits
 from models.filter_models import ListDataResponse
 from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
-                          AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep)
-from api.email_api import EmailConfirmDep, EmailConfirmSMTPDep
+                          AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
+                          UpdateUserQuotaDep)
+from api.email_api import EmailConfirmSMTPDep
+from database.visit_stats import incr_visit
 
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
 #########################
@@ -20,6 +23,7 @@ async def login(token: UserLoginDep) -> Token:
     Params(FormData):username, password
     """
     try:
+        asyncio.create_task(incr_visit())
         return token
     except Exception as e:
         raise e
@@ -52,6 +56,7 @@ async def create_user(user: UserCreateDep):
     Method:Post
     Params(Body):"username", "active", "identity=None", "email", "password", "verify_code"
     """
+    asyncio.create_task(incr_visit())
     return user
 
 
@@ -75,24 +80,14 @@ async def update_user(user: UserUpdateDep):
     return user
 
 
-@user_router.delete("/user_delete")
+@user_router.delete("/user_delete/{user_id}",response_model=UserPublic)
 async def del_user(user: UserDeleDep):
     """
-    Delete current user:
+    Delete user by ID (admin only):
     Method:Delete
-    Params:N/A
+    Params:path user_id
     """
     return user
-
-
-@user_router.post("/emailrequest", response_model=EmailConfirmRequest)#MAILGUN邮箱服务
-async def create_user_email_server(email: EmailConfirmDep):
-    """
-    Use MailGun to send verification code:
-    Method:Post
-    Params(Body):"email", "send_time"
-    """
-    return email
 
 
 @user_router.post("/emailsmtprequest", response_model=EmailConfirmSMTPDep)#SMTP邮箱服务
@@ -113,3 +108,32 @@ async def list_users(list_user_response: ListUsersDep):
     Params:filter
     """
     return list_user_response
+
+
+@user_router.get("/users/quota", response_model=UserQuotaPublic)
+async def get_user_quota(quota: UserQuotaDep):
+    """
+    获取当前用户的配额信息
+
+    返回：
+    - 上传相关: 单文件大小限额、已上传总大小、文件数、最大文件数、上传总大小限额
+    - 处理相关: 处理累计限额、已处理总大小、下载文件数量、最大下载文件数量
+    """
+    return quota
+
+
+@user_router.post("/users/{user_id}/quota", response_model=UserQuotaLimits)
+async def update_user_quota(result: UpdateUserQuotaDep):
+    """
+    管理员修改指定用户的配额信息
+
+    Params:
+    - user_id: 目标用户 ID（路径参数）
+    - Body: UserQuotaLimits（所有字段可选，只更新传入的非 None 字段）
+      - max_total_file_size: 用户最大上传文件总大小（GB）
+      - max_file_count: 用户最大上传总文件数
+      - max_processing_size: 用户最大可算法处理文件总大小（GB）
+      - max_download_count: 用户最大可下载文件次数
+    返回：更新后四个限额值（UserQuotaLimits）
+    """
+    return result

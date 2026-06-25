@@ -41,17 +41,12 @@ Authentication Flow:
 
 ### 3. Email Service
 
-Supports two email sending methods (`api/email_api.py`):
+Email sending method (`api/email_api.py`):
 
-#### SMTP Method (Recommended)
+#### SMTP Method
 - Endpoint: `POST /emailsmtprequest`
 - Supports any SMTP server
 - Flexible configuration, suitable for most scenarios
-
-#### Mailgun API Method
-- Endpoint: `POST /emailrequest`
-- Requires Mailgun account
-- Suitable for large-scale email sending
 
 Email Verification Code Feature:
 - Uses TOTP algorithm to generate 6-digit verification codes
@@ -95,7 +90,6 @@ Main API endpoints are defined in `main.py`:
 - `DELETE /user_delete` - Delete user (Requires Authentication)
 
 ### Email Service
-- `POST /emailrequest` - Send Email (Mailgun)
 - `POST /emailsmtprequest` - Send Email (SMTP)
 
 For detailed API documentation, please visit the `/docs` endpoint to view Swagger UI.

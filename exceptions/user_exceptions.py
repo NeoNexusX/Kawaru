@@ -3,6 +3,38 @@ from fastapi import HTTPException
 from exceptions.utils_exception import format_exception_detail
 
 
+# ===================== Auth 相关异常 =====================
+# 从 api/auth_api.py 迁移至此
+
+# 用户名或密码错误
+credentials_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail=format_exception_detail("Incorrect username or password"),
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+# 登录状态过期
+login_expired_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="login status expired or user has logged out",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+# 令牌过期
+token_expired_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail=format_exception_detail("Token expired"),
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+token_invalid_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail=format_exception_detail("Invalid token"),
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+# ===================== User 相关异常 =====================
+
 user_already_exists_exception = HTTPException(
     status_code=status.HTTP_409_CONFLICT,#提示用户已经存在
     detail=format_exception_detail("User already exists")
@@ -60,6 +92,12 @@ identity_not_allowed_exception = HTTPException(
 
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
+    # Auth 异常
+    "credentials_exception",
+    "login_expired_exception",
+    "token_expired_exception",
+    "token_invalid_exception",
+    # User 异常
     "user_already_exists_exception",
     "email_already_exists_exception",
     "user_not_active_exception",

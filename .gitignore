@@ -210,11 +210,9 @@ __marimo__/
 *.db
 .idea
 config.yaml
-.env
 .DS_Store
 .vscode
 storage/
-.env.pytest
 
 # logs
 kawaru_logs/

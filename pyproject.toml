@@ -3,7 +3,7 @@ name = "kawaru"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "aiofiles==24.1.0",
     "aiohttp>=3.13.3",
@@ -20,7 +20,7 @@ dependencies = [
     "fastapi>=0.121.3",
     "gevent>=26.4.0",
     "greenlet==3.3.1",
-    "httpx[socks]>=0.28.1",
+    "httpx[http2,socks]>=0.28.1",
     "passlib>=1.7.4",
     "pydantic>=2.12.4",
     "pyjwt>=2.10.1",
@@ -39,4 +39,14 @@ dependencies = [
     "starlette>=0.50.0",
     "uvicorn>=0.38.0",
     "watchfiles>=1.1.1",
+    "aliyun-log-python-sdk>=0.9.44",
+    "pytest-order>=1.3.0",
+    "m2crypto<0.43",
 ]
+
+[tool.uv.sources]
+massflow = { path = "dist/massflow-0.1.0-py3-none-any.whl" }
+
+[tool.ruff.lint.per-file-ignores]
+# main.py 在所有 import 之前刻意调用 bootstrap()，因此模块级 import 不在文件顶部
+"main.py" = ["E402"]

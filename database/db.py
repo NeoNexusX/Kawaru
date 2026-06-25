@@ -1,5 +1,6 @@
 import os
 from typing import Annotated, AsyncGenerator
+from contextlib import asynccontextmanager
 from fastapi import Depends
 from sqlmodel import SQLModel, create_engine, Session
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -51,7 +52,7 @@ def get_sync_engine():
     return _SYNC_ENGINE
 
 
-def get_async_engine(standalone: bool = False):
+def get_async_engine(standalone: bool = False): #TODO celery可以和主进程分开
     """
     加载异步引擎
 
@@ -112,6 +113,23 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
         raise e
 
 
+@asynccontextmanager
+async def get_standalone_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Celery 等独立场景使用的短生命周期会话。
+
+    每次进入上下文都会创建独立 engine；退出时无论成功或异常都主动 dispose 连接池，
+    避免 standalone engine 累积导致 MySQL 连接数打满。
+    """
+    engine = get_async_engine(standalone=True)
+    try:
+        async with AsyncSession(engine) as session:
+            yield session
+    finally:
+        await engine.dispose()
+        logger.debug("Standalone async engine disposed")
+
+
 def get_sync_session():
     """
     获取同步数据库会话
@@ -156,7 +174,7 @@ async def ensure_database_exists():
             logger.info(f"Database '{db_name}' ensured")
 
     except Exception as e:
-        # 如果连接数据库失败，可能是权限问题，记录警告但尝试继续（也许库已经存在）
+        # 如果连接数据库失败，可能是权限问题
         logger.error(f"Failed to check/create database via {config.database.db_type} db: {e}")
         raise
 

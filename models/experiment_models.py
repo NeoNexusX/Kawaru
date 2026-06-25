@@ -3,9 +3,14 @@
 """
 from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, SQLModel, Column, Integer, ForeignKey, BigInteger
+from typing import TYPE_CHECKING
+
+from sqlmodel import Field, SQLModel, Relationship, Column, Integer, ForeignKey, BigInteger
 from tools import utc_time
 from boot.config import get_config
+
+if TYPE_CHECKING:
+    from models.processing_models import ExperimentProcessRunInDB
 
 config = get_config()
 storage_config = config.storage
@@ -52,12 +57,12 @@ class ExperimentPublic(SQLModel):
 
 
 #########################
-# ImzML 实验模型
+# ImzML 原始数据模型(算法处理前的原始落库记录)
 #########################
 
-class ExperimentImzMLInDB(ExperimentBase, table=True):
-    """ImzML 实验数据库模型"""
-    __tablename__ = "experiment_imzml" #type:ignore
+class OriginImzMLInDB(ExperimentBase, table=True):
+    """ImzML 原始数据数据库模型(存放上传/解压后的 imzML/ibd 路径，供后续算法处理使用)"""
+    __tablename__ = "origin_imzml" #type:ignore
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
 
     # 外键关联 FileInDB，数据库层面配置级联删除
@@ -82,25 +87,34 @@ class ExperimentImzMLInDB(ExperimentBase, table=True):
     status: str = Field(default="processing", description="处理状态: processing, completed, failed", max_length=255)
     error_message: str = Field(default="", description="错误信息(失败时)", max_length=255)
 
+    # ORM 层级联删除：删除 origin 时自动级联删除关联的 process_run
+    process_runs: list["ExperimentProcessRunInDB"] = Relationship(
+        back_populates="experiment",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",  # ORM 层：删除父记录时级联标记子记录
+            "passive_deletes": True            # 告知 ORM：DB 已配置 CASCADE，无需逐行 DELETE
+        }
+    )
 
-class ExperimentImzMLPublic(ExperimentPublic):
-    """ImzML 实验公开模型(继承公共字段，添加 imzML 特有字段)"""
+class OriginImzMLPublic(ExperimentPublic):
+    """ImzML 原始数据公开模型(继承公共字段，添加 imzML 特有字段)"""
     imzml_size: int
     ibd_size: int
+    status: str
 
 
 #########################
-# 预留：RAW 实验模型(示例)
+# 预留：RAW 原始数据模型(示例)
 #########################
 
-# class ExperimentRawInDB(ExperimentBase, table=True):
-#     """RAW 实验数据库模型"""
-#     __tablename__ = "experiment_raw"
+# class OriginRawInDB(ExperimentBase, table=True):
+#     """RAW 原始数据数据库模型"""
+#     __tablename__ = "origin_raw"
 #     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
 #     # RAW 特有字段
 #     raw_path: str = Field(default="", description=".raw 文件的绝对存储路径")
 #     raw_size: int = Field(default=0, ge=0, description=".raw 文件大小(字节)")
 
-# class ExperimentRawPublic(ExperimentPublic):
-#     """RAW 实验公开模型"""
+# class OriginRawPublic(ExperimentPublic):
+#     """RAW 原始数据公开模型"""
 #     raw_size: int

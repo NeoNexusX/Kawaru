@@ -74,14 +74,14 @@ curl -X POST "http://localhost:8000/files/upload_simple" \
   -F "file=@sample.zip"
 ```
 
-### 查询实验
+### 查询 origin
 
-**GET /experiments/imzml/{file_id}**
+**GET /origins/imzml/{file_id}**
 
-根据源文件 ID 查询实验记录。系统会根据文件的 `experiment_type` 字段自动定位对应实验表。
+根据源文件 ID 查询 origin 记录。系统会根据文件的 `experiment_type` 字段自动定位对应 origin 表。
 
 ```bash
-curl -X GET "http://localhost:8000/experiments/imzml/123" \
+curl -X GET "http://localhost:8000/origins/imzml/123" \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -123,13 +123,13 @@ storage/
 │           └── sample.ibd
 ```
 
-## 扩展新实验类型
+## 扩展新 origin 类型
 
-添加新实验类型（如 RAW）只需：
+添加新 origin 类型（如 RAW）只需：
 
-1. **创建实验模型** (`models/experiment_models.py`)
+1. **创建 origin 模型** (`models/experiment_models.py`)
 ```python
-class ExperimentRawInDB(SQLModel, table=True):
+class OriginRawInDB(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int
     source_file_id: int
@@ -138,20 +138,20 @@ class ExperimentRawInDB(SQLModel, table=True):
 
 2. **添加查询函数** (`api/experiment_api.py`)
 ```python
-async def get_raw_experiment(file_id: int, user_id: int, session: SessionDep):
+async def get_origin_raw(file_id: int, user_id: int, session: SessionDep):
     return session.exec(
-        select(ExperimentRawInDB).where(
-            ExperimentRawInDB.source_file_id == file_id,
-            ExperimentRawInDB.user_id == user_id
+        select(OriginRawInDB).where(
+            OriginRawInDB.source_file_id == file_id,
+            OriginRawInDB.user_id == user_id
         )
     ).first()
 ```
 
 3. **注册到映射表**
 ```python
-EXPERIMENT_QUERY_MAP = {
-    "imzML": get_imzml_experiment,
-    "raw": get_raw_experiment,  # 新增
+ORIGIN_QUERY_MAP = {
+    "imzML": get_origin_imzml_by_file_id,
+    "raw": get_origin_raw,  # 新增
 }
 ```
 

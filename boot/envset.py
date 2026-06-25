@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 from tools.logger import get_logger
 
 stander_envs=[
-    'MAILGUN_API_KEY',
     'SMTP_PASSWORD',
     'DATABASE_PASSWORD',
     'LOG_DIR',

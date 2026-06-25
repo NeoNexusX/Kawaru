@@ -19,9 +19,11 @@ STORAGE_ROOT = Path(storage_config.root)
 LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
 TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
 OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
+OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
+OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
+
 
 # 文件大小限制
-MAX_FILE_SIZE = int(storage_config.max_file_size_gb) * BYTES_IN_GB
 CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB
 
 # 单次上传最大允许分片数限制
@@ -35,29 +37,37 @@ ALLOWED_EXPERIMENT_TYPES = set(storage_config.allowed_experiment_types)
 # 文件名限制
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
 
-# 用户文件配额
-MAX_FILES_PER_USER = int(storage_config.max_files_per_user)
-MAX_TOTAL_STORAGE_PER_USER = MAX_FILE_SIZE * MAX_FILES_PER_USER
-
-# 下载次数限制
-MAX_DOWNLOADS_PER_USER = int(getattr(storage_config, "max_downloads_per_user", 50))
-
-# 清理相关的 TTL 设置（分钟）
-PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
-CHUNK_TTL_MINUTES = int(getattr(storage_config, "chunk_ttl_minutes", 30))
-
 # 清理过期预检任务的间隔时间
-CLEANUP_PREFLIGHTS_INTERVAL_SECONDS = config.storage.cleanup_preflights_interval_minutes * 60
+PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
+CLEANUP_PREFLIGHTS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_preflights_interval_minutes", 60))
 
 # 下载zip文件清理策略
-DOWNLOAD_ZIP_RETENTION_DAYS = int(getattr(storage_config, "download_zip_retention_days", 7))
-CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 1440)) * 60
+DOWNLOAD_ZIP_TTL_MINUTES = int(getattr(storage_config, "download_zip_ttl_minutes", 30))
+CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 60))
+
+# 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
+SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
+PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
+
 
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
+OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
+FC_LOGSTORE_NAME = config.oss.fc_logstore_name
+FC_LOG_PROJECT_NAME = config.oss.fc_log_project_name
+FC_UNZIP_TIMEOUT_SECONDS = config.oss.fc_unzip_timeout_seconds
+FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
+FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
+FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
+FC_ALGORITHM_TIMEOUT_SECONDS = config.oss.fc_algorithm_timeout_seconds
+FC_TIC_ENDPOINT = config.oss.fc_tic_endpoint
+FC_TIC_TIMEOUT_SECONDS = config.oss.fc_tic_timeout_seconds
+FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
+FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
 
-__all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
+
+__all__ = [
     "BYTES_IN_KB",
     "BYTES_IN_MB",
     "BYTES_IN_GB",
@@ -65,19 +75,31 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "STORAGE_ROOT",
     "LOCAL_STORAGE_ROOT",
     "TEMP_PARTS_ROOT",
-    "MAX_FILE_SIZE",
     "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
     "ALLOWED_EXPERIMENT_TYPES",
     "MAX_FILENAME_LENGTH",
-    "MAX_FILES_PER_USER",
-    "MAX_TOTAL_STORAGE_PER_USER",
-    "MAX_DOWNLOADS_PER_USER",
     "PREFLIGHT_TTL_MINUTES",
-    "CHUNK_TTL_MINUTES",
-    "CLEANUP_PREFLIGHTS_INTERVAL_SECONDS",
-    "DOWNLOAD_ZIP_RETENTION_DAYS",
-    "CLEANUP_DOWNLOAD_ZIP_INTERVAL_SECONDS",
+    "CLEANUP_PREFLIGHTS_INTERVAL_MINUTES",
+    "DOWNLOAD_ZIP_TTL_MINUTES",
+    "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",
+    "SIGNED_URL_EXPIRE_SECONDS",
+    "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
+    "OSS_ORIGIN_STORAGE_ROOT",
+    "FC_UNZIP_TIMEOUT_SECONDS",
+    "FC_PACKUP_ENDPOINT",
+    "FC_PACKUP_TIMEOUT_SECONDS",
+    "FC_ALGORITHM_ENDPOINT",
+    "FC_ALGORITHM_TIMEOUT_SECONDS",
+    "FC_TIC_ENDPOINT",
+    "FC_TIC_TIMEOUT_SECONDS",
+    "FC_FEATURE_ENDPOINT",
+    "FC_FEATURE_TIMEOUT_SECONDS",
+    "OSS_DEFAULT_TIMEOUT_SECONDS",
+    "FC_LOGSTORE_NAME",
+    "FC_LOG_PROJECT_NAME",
+    "OSS_REGION_ID",
+    "OSS_BUCKET_NAME",
 ]

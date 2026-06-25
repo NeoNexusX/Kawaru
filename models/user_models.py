@@ -15,6 +15,7 @@ logger = get_logger("models.user_models")
 # 模型字段配置来自 config
 config = get_config()
 user_config = config.user
+admin_info = config.admin_info
 
 class UserBase(SQLModel):
     """
@@ -44,6 +45,31 @@ class UserInDB(UserBase, table=True):
     file_count: int = Field(default=0, description="用户文件数量")
     total_file_size: int = Field(default=0,sa_column=Column(BigInteger, nullable=False, default=0), description="用户文件总大小（字节）")
     download_used: int = Field(default=0, description="用户已使用的下载次数")
+    processed_file_size: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户已处理文件总大小（字节）"
+    )
+
+    # 用户配额字段（初始值来自 config.admin_info，管理员可通过 API 修改）
+    max_total_file_size: int = Field(
+        default=admin_info.max_total_file_size,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户最大上传文件总大小（GB）"
+    )
+    max_file_count: int = Field(
+        default=admin_info.max_file_count,
+        description="用户最大上传总文件数"
+    )
+    max_processing_size: int = Field(
+        default=admin_info.max_processing_size,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+        description="用户最大可算法处理文件总大小（GB）"
+    )
+    max_download_count: int = Field(
+        default=admin_info.max_download_count,
+        description="用户最大可下载文件次数"
+    )
 
 
 class UserCreate(UserBase):
@@ -64,18 +90,15 @@ class UserPublic(BaseModel):
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
 
 
-class UserDetailPublic(BaseModel):
+class UserDetailPublic(UserBase):
     """用于返回响应信息的用户模型"""
-    username: str = Field(max_length=user_config.max_username_length)
-    active: bool = Field(default=True)
-    identity: str = Field(default="user", max_length=user_config.max_identity_length)
-    institution: str = Field(default="", max_length=user_config.max_institution_length)
-    position: str = Field(default="", max_length=user_config.max_position_length)
-    research_field: str | None = Field(max_length=user_config.max_research_field_length)
-    region: str | None = Field(max_length=user_config.max_region_length)
-    orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
-    homepage: str | None = Field(max_length=user_config.max_homepage_length)
-    email: str = Field(max_length=user_config.max_useremail_length, description="用户邮箱")
+    id: int # id字段公开，方便前端使用
+    total_file_size: int = Field(default=0, description="用户文件总大小（字节）")
+    file_count: int = Field(default=0, description="用户文件数量")
+    max_total_file_size: int = Field(default=0, description="用户最大上传文件总大小（GB）")
+    max_file_count: int = Field(default=0, description="用户最大上传总文件数")
+    max_processing_size: int = Field(default=0, description="用户最大可算法处理文件总大小（GB）")
+    max_download_count: int = Field(default=0, description="用户最大可下载文件次数")
 
 class UserUpdate(BaseModel):
     """
@@ -91,3 +114,28 @@ class UserUpdate(BaseModel):
     region: str | None = Field(default=None, max_length=user_config.max_region_length)
     orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)
+
+
+class UserQuotaPublic(SQLModel):
+    """用户配额统一返回模型"""
+    # 上传文件相关
+    total_uploaded_size_bytes: int = Field(description="用户已上传文件总大小（字节）")
+    file_count: int = Field(description="用户文件数量")
+    max_files_per_user: int = Field(description="用户最大文件数量")
+    max_total_file_size: int = Field(description="用户上传文件总大小限额（GB）")
+
+    # 处理相关
+    max_processing_size_gb: int = Field(description="用户处理累计限额（GB）")
+    total_processed_size_bytes: int = Field(description="用户已处理总大小（字节）")
+
+    # 下载相关
+    download_used: int = Field(description="用户已使用下载次数")
+    max_download_count: int = Field(description="用户最大可下载文件次数")
+
+
+class UserQuotaLimits(SQLModel):
+    """用户配额限额模型（请求和响应共用，请求时字段可选，响应时返回当前值）"""
+    max_total_file_size: int | None = Field(default=None, description="用户最大上传文件总大小（GB）")
+    max_file_count: int | None = Field(default=None, description="用户最大上传总文件数")
+    max_processing_size: int | None = Field(default=None, description="用户最大可算法处理文件总大小（GB）")
+    max_download_count: int | None = Field(default=None, description="用户最大可下载文件次数")
