@@ -46,3 +46,7 @@ dependencies = [
 
 [tool.uv.sources]
 massflow = { path = "dist/massflow-0.1.0-py3-none-any.whl" }
+
+[tool.ruff.lint.per-file-ignores]
+# main.py 在所有 import 之前刻意调用 bootstrap()，因此模块级 import 不在文件顶部
+"main.py" = ["E402"]

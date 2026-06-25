@@ -2,6 +2,11 @@ FROM python:3.12.9-bookworm AS builder
 
 WORKDIR /app
 
+# m2crypto（阿里云 SDK 间接依赖）需源码编译：swig 生成绑定 + libssl-dev 提供 OpenSSL 头文件
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends swig libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir --upgrade pip uv
 
@@ -21,7 +26,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential curl && \
     rm -rf /var/lib/apt/lists/* && \
-    useradd --create-home --shell /bin/bash appuser
+    useradd -u 1000 --create-home --shell /bin/bash appuser
 
 COPY --from=builder /install /usr/local
 COPY . .

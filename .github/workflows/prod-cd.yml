@@ -1,0 +1,120 @@
+name: Prod CD
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: prod-cd
+  cancel-in-progress: false        # 正式发布不抢占：让已在跑的发布跑完，避免半途中断生产滚动
+
+jobs:
+  # ① 构建并推送正式镜像（latest + sha-<sha>，与 dev-latest / test- 区分）
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/kawaru   # metadata-action 自动转小写
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ② 部署到独立 prod 服务器：同步 compose → pull → up（不碰 .env / prod-config.yaml）
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Sync compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: 22
+          source: docker/docker-compose.prod.yml
+          target: /opt/kawaru-prod/
+          strip_components: 1            # 去掉 docker/ 前缀 → /opt/kawaru-prod/docker-compose.prod.yml
+
+      - name: Pull & up
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: 22
+          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN,APP_IMAGE
+          script: |
+            set -e
+            export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
+            cd /opt/kawaru-prod
+            echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
+            docker compose -f docker-compose.prod.yml -p kawaru-prod pull app worker beat
+            docker compose -f docker-compose.prod.yml -p kawaru-prod up -d --wait --wait-timeout 300
+            docker logout ghcr.io
+        env:
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:latest
+
+      # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
+      # 把 5 个服务的状态 + 各自 tail 日志打出来，免去人工 SSH 翻日志
+      - name: Dump stack diagnostics on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: 22
+          envs: APP_IMAGE
+          script: |
+            set +e   # 诊断阶段不要因为某条命令失败就中断
+            export APP_IMAGE="${APP_IMAGE,,}"   # 同 deploy：compose 插值需要它，否则 ps/logs 全挂
+            cd /opt/kawaru-prod
+            COMPOSE="docker compose -f docker-compose.prod.yml -p kawaru-prod"
+
+            echo "========== compose ps =========="
+            $COMPOSE ps -a
+
+            echo "========== app inspect (health + state) =========="
+            APP_CID=$($COMPOSE ps -q app)
+            if [ -n "$APP_CID" ]; then
+              docker inspect --format '{{json .State}}' "$APP_CID" \
+                | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2))" 2>/dev/null \
+                || docker inspect --format '{{json .State}}' "$APP_CID"
+            fi
+
+            for svc in app worker beat mariadb redis; do
+              echo "========== logs: $svc (tail=200) =========="
+              $COMPOSE logs --no-color --tail=200 "$svc" 2>&1 || true
+            done
+            exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
+        env:
+          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:latest
