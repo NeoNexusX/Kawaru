@@ -49,7 +49,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:8.4-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
