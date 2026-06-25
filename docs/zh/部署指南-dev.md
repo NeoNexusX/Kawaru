@@ -15,9 +15,18 @@ redis(16379)  ──┼─ app(8000)
 ```
 
 - `enable_embedded_celery: false`，app 不再 fork worker/beat；worker、beat 各自独立容器。
+
 - 端口：app `8000`；mariadb 暴露 `13306`、redis 暴露 `16379`（非默认，便于外部检测）。
 
-## 服务器一次性准备（/opt/kawaru-dev）
+- 可以使用panel来查看对应的容器情况：
+
+  https://testpanel.neonexus.top/containers/container
+
+  
+
+  ![image-20260625111959965](https://neonexus-picture.oss-ap-southeast-1.aliyuncs.com/test/image-20260625111959965.png)
+
+## 服务器一次性准备（项目目录：/opt/kawaru-dev）
 
 ```bash
 # 1) 目录
@@ -29,17 +38,15 @@ cd /opt/kawaru-dev
 sudo chown -R 1000:1000 /opt/kawaru-dev/data/app /opt/kawaru-dev/data/logs
 
 # 3) 放配置（从仓库复制模板，改成真实值）
-#    docker/dev.env.example -> /opt/kawaru-dev/.env
-#    docker/dev-config.yaml -> /opt/kawaru-dev/dev-config.yaml
-#    .env 至少填：SECRET_KEY(openssl rand -hex 32)、DATABASE_PASSWORD、REDIS_PASSWORD、
-#               APP_IMAGE(小写 owner)、FC_CALLBACK_TOKEN(非空)、真实 OSS/SMTP 凭证
-#
-# 不需要手动 docker login ghcr.io —— dev-cd 每次部署会用 GHCR_PULL_USER/TOKEN 自动登录
+.env 
+还有config放到对应的目录，不能变化
 ```
 
 之后每次 push `dev` 自动滚动升级，数据不丢。
 
 ## 落盘清单（bind mount → 本地）
+
+以下数据都存储到宿主机器硬盘上，不在容器里面。
 
 | 内容 | 容器内 | 宿主机 |
 |---|---|---|
@@ -59,12 +66,17 @@ cd /opt/kawaru-dev
 # 查看配置 / 密码
 cat .env
 # 看日志（按服务拆分）
+# 注意：docker-compose.dev.yml 里 image 引用了 ${APP_IMAGE} 变量（不在 .env 里），
+# 直接跑 compose 命令会报 "required variable APP_IMAGE is missing a value"，
+# 需先在当前 shell 导出该变量：
+export APP_IMAGE=ghcr.io/neonexusx/kawaru:dev-latest
 docker compose -f docker-compose.dev.yml -p kawaru-dev logs -f worker
 # 改了 .env / dev-config.yaml 后手动生效
 docker compose -f docker-compose.dev.yml -p kawaru-dev up -d
 # 外部检测 DB / Redis
 mysql -h <服务器IP> -P 13306 -uroot -p
 redis-cli -h <服务器IP> -p 16379 -a <REDIS_PASSWORD> ping
+#密码在env里面
 # 确认 worker 已连上 broker（一次性，勿放进 healthcheck）
 docker compose -f docker-compose.dev.yml -p kawaru-dev exec -T worker \
   celery -A celery_runtime.entrypoint:celery_app inspect ping --timeout 30
@@ -85,6 +97,5 @@ docker compose -f docker-compose.dev.yml -p kawaru-dev exec -T worker \
 | `DEV_SSH_HOST` / `DEV_SSH_USER` / `DEV_SSH_KEY` | 独立 dev 服务器（22 端口） |
 | `GHCR_PULL_USER` | GitHub 用户名（小写），dev-cd SSH 到服务器后用它登录 GHCR 拉私有镜像 |
 | `GHCR_PULL_TOKEN` | PAT（classic，scope 只勾 `read:packages`），与 `GHCR_PULL_USER` 配套；过期前到 GitHub 重新生成并更新此 secret |
-| `GITHUB_TOKEN`（自动） | 构建推 GHCR |
 
 DB/Redis/OSS/SMTP 等业务凭证都在服务器 `.env` 里，**不进 GitHub Secrets**。
