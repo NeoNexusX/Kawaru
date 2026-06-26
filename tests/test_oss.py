@@ -1,9 +1,10 @@
 """
 OSS 测试集合（与本地上传测试区分开）
 
-TestOss.test_upload_to_oss          [oss]
-    preflight -> 拿 STS -> SDK 直传 OSS。不依赖 OSS 上传完成回调，
-    托管 runner 只要有出站网络 + OSS secrets 即可跑。
+TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
+TestOss.test_file_metadata              [oss]   GET /files/{file_id}/metadata（公开接口，不依赖回调）
+TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（需鉴权，轮询等 OSS 回调）
+TestOss.test_cleanup_oss_upload         [oss]   清理 OSS 文件 + DB 记录 + 临时 zip
 
 共用构件：
   - tests/helpers/uploads.py  build_preflight_payload / make_test_zip_to_local / TEST_FILENAME
@@ -14,6 +15,7 @@ TestOss.test_upload_to_oss          [oss]
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Tuple
@@ -92,6 +94,45 @@ class TestOss:
         TestOss._uploaded_file_id = file_id
         logger.info((f"test_upload_to_oss passed: upload_time_seconds={upload_time_seconds} username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
                      f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
+
+    @pytest.mark.oss
+    async def test_file_metadata(self, async_client: AsyncClient):
+        """测试 GET /files/{file_id}/metadata（公开接口，无需鉴权）"""
+        if TestOss._uploaded_file_id is None:
+            pytest.skip("no uploaded file to test metadata against")
+
+        file_id = TestOss._uploaded_file_id
+        rs = await async_client.get(f"/files/{file_id}/metadata")
+        assert rs.status_code == 200, f"metadata failed: {rs.text}"
+        body = rs.json()
+        assert body["file_id"] == file_id
+        logger.info("test_file_metadata passed: file_id=%s filename=%s", file_id, body.get("filename"))
+
+    @pytest.mark.oss
+    async def test_raw_download_metadata(self, admin_login: Tuple[AsyncClient, str, str]):
+        """测试 GET /files/{file_id}/download_raw（轮询等待 OSS 回调完成后返回 OSS 预签名 URL）"""
+        if TestOss._uploaded_file_id is None:
+            pytest.skip("no uploaded file to test raw download against")
+
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+        file_id = TestOss._uploaded_file_id
+
+        # 轮询等待 OSS 回调完成（解压 + 创建 origin 记录），最多等 30 秒
+        POLL_TIMEOUT = 30
+        POLL_INTERVAL = 1
+        for _ in range(POLL_TIMEOUT // POLL_INTERVAL):
+            rs = await client.get(f"/files/{file_id}/download_raw", headers=auth)
+            if rs.status_code == 200:
+                break
+            await asyncio.sleep(POLL_INTERVAL)
+        else:
+            pytest.skip(f"OSS callback did not complete within {POLL_TIMEOUT}s, last status={rs.status_code}") #type: ignore
+
+        body = rs.json()
+        assert "files" in body
+        assert len(body["files"]) == 2, f"expected 2 files (imzML + ibd), got {len(body['files'])}"
+        logger.info("test_raw_download_metadata passed: got %d files", len(body["files"]))
 
     @pytest.mark.oss
     @pytest.mark.order("last")

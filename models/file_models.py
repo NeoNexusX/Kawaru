@@ -108,7 +108,7 @@ class PartPublic(PartBase):
 
 
 class FilePublic(FileBase):
-    """对外返回的文件信息"""
+    """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）"""
 
     file_id: int
     status: str = Field(default="", max_length=32, description="文件处理状态: uploading, processing, completed, failed")
@@ -116,11 +116,16 @@ class FilePublic(FileBase):
     download_count: int
     last_downloaded_at: datetime
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
+    is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
+
+
+class FileOssUploadResponse(FilePublic):
+    """OSS 上传接口专用响应模型，附加 STS 临时凭证及写入路径"""
+
     oss_sts_token: OssStsToken | None = Field(default=None)
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
-    is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
 
 
 class FileListResponse(SQLModel):
@@ -312,6 +317,20 @@ class FileDownloadMeta(FileBase):
             download_count=record.download_count,
             last_downloaded_at=record.last_downloaded_at,
         )
+
+
+class OssDownloadFile(SQLModel):
+    """RAW 直链下载的单个文件"""
+
+    filename: str   # "Brain01.imzML" / "Brain01.ibd"
+    url: str        # 预签名下载 URL
+    size: int       # 字节
+
+
+class RawDownloadResponse(SQLModel):
+    """RAW 直链下载接口的完整响应"""
+
+    files: list[OssDownloadFile]
 
 
 class ZarrFolderAccess(SQLModel):
