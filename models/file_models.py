@@ -204,6 +204,17 @@ class FileStreamingResponse(StreamingResponse):  # 是响应类模型 不能使�
             },
         )
 
+    def _stream_generator(self) -> AsyncGenerator[bytes, None]:
+        """返回异步生成器函数（非协程）"""
+
+        async def generator():
+            async with httpx.AsyncClient() as client:
+                async with client.stream("GET", self.url, **self.http_kwargs) as response:
+                    # 如果上游返回 Content-Length，可以透传
+                    if "Content-Length" in response.headers:
+                        self.raw_headers.append(
+                            (b"content-length", str(response.headers["Content-Length"]).encode())
+                        )
 
 class URLStreamingResponse(StreamingResponse):
     """从上游 URL 流式代理响应到前端，保持低内存占用"""
