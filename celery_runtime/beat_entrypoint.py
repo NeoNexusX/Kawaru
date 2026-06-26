@@ -31,6 +31,7 @@ def build_beat_app() -> Celery:
         "beat_scheduler": "redbeat.schedulers.RedBeatScheduler",
         "timezone": "UTC",
         "enable_utc": True,
+        "task_default_queue": "default",
         # 刻意不设置 "imports"：beat 无需加载 task 实现
         "beat_schedule": build_beat_schedule(constants),
     })

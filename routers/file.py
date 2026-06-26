@@ -2,13 +2,13 @@ import asyncio
 
 from fastapi import APIRouter
 from models.file_models import FileStreamingResponse
-from models.file_models import FilePublic, PartUploadStatus
+from models.file_models import FilePublic, PartUploadStatus, FileOssUploadResponse
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, PreflightDep,PartPublic,
+    DownloadFileDep, RawDownloadDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
-    OssUploadDep, ImageUrlDep
+    OssUploadDep, ImageUrlDep, FileMetadataDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 from database.visit_stats import incr_visit
@@ -26,7 +26,7 @@ async def preflight_file(file_record: PreflightDep):
     return file_record
 
 
-@file_router.post("/upload_simple", response_model=FilePublic)#简单上传
+@file_router.post("/upload_simple", response_model=FileOssUploadResponse)#简单上传
 async def upload_simple_file(file_record: SimpleUploadDep):
     """简单上传"""
     return file_record
@@ -36,6 +36,13 @@ async def upload_simple_file(file_record: SimpleUploadDep):
 async def list_user_files(files: ListFilesDep):
     """查询用户文件"""
     return files
+
+
+@file_router.get("/{file_id}/download_raw")
+async def download_file_raw(file_meta: RawDownloadDep):
+    """RAW 直链下载——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    asyncio.create_task(incr_visit())
+    return file_meta
 
 
 @file_router.get("/{file_id}/download")
@@ -78,7 +85,7 @@ async def list_files(list_file_response: ListPublicFilesDep):
     return list_file_response
 
 
-@file_router.post("/upload", response_model=FilePublic)
+@file_router.post("/upload", response_model=FileOssUploadResponse)
 async def upload_file(file_record: OssUploadDep):
     """上传文件至OSS存储"""
     return file_record
@@ -88,6 +95,12 @@ async def upload_file(file_record: OssUploadDep):
 async def get_file_images(image_urls: ImageUrlDep):
     """获取文件图像 OSS 下载 URL（公开接口，根据 spectrum_mode 返回不同数量的 URL）"""
     return image_urls
+
+
+@file_router.get("/{file_id}/metadata", response_model=FilePublic)
+async def get_file_metadata(metadata: FileMetadataDep):
+    """根据文件ID查询文件元数据"""
+    return metadata
 
 
 # @file_router.post("/test_api")
