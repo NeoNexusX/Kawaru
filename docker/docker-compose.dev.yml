@@ -92,3 +92,14 @@ services:
       - ./dev-config.yaml:/app/config/dev-config.yaml:ro
       - ./data/logs/beat:/app/kawaru_logs
     # 不设 healthcheck：beat 是调度器，不响应 control 命令（inspect ping 永不通过）
+
+# 固定默认网络的网桥名与网段：便于 Clash TUN 的 exclude-interface / route-exclude-address
+# 按名字/网段排除，避免每次 down/up 网桥名（br-<网络ID>）变化导致排除失效。
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: kawaru-br0
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
