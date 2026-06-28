@@ -11,7 +11,10 @@ from typing import Any
 
 from httpx import AsyncClient
 
-VERIFY_CODE_PATTERN = re.compile(r"Your code is\s+(\d{6})")
+# 注册/改邮箱文案（见 api_helpers/email_template.py）："Your verification code is: 123456"
+VERIFY_CODE_PATTERN = re.compile(r"verification code is:\s+(\d{6})")
+# 密码重置文案（见 api_helpers/email_template.py）："Password reset code: 123456"
+RESET_CODE_PATTERN = re.compile(r"Password reset code:\s+(\d{6})")
 
 # SMTP debug 行由 background.api_background 写入（logger 组名 background），固定落此文件。
 VERIFY_CODE_LOG_FILE = "background.log"
@@ -38,8 +41,8 @@ def _read_since(path: Path, offset: int) -> str:
         return ""
 
 
-def _latest_verify_code(text: str) -> str | None:
-    matches = VERIFY_CODE_PATTERN.findall(text)
+def _latest_match(text: str, pattern: re.Pattern[str]) -> str | None:
+    matches = pattern.findall(text)
     return matches[-1] if matches else None
 
 
@@ -47,15 +50,16 @@ async def request_email_verify_code(
     base_url: str,
     email: str,
     timeout: float | int,
+    purpose: str = "register",
 ) -> dict[str, Any]:
-    """Request the app to generate an email verification code."""
+    """Request the app to generate an email verification code for the given purpose."""
     async with AsyncClient(base_url=base_url, timeout=timeout) as client:
         response = await client.post(
             "/emailsmtprequest",
             json={
                 "email": email,
                 "send_time": datetime.now(timezone.utc).isoformat(),
-                "purpose": "register",
+                "purpose": purpose,
             },
         )
         return {
@@ -68,11 +72,14 @@ async def fetch_verify_code_from_logs(
     base_url: str,
     email: str,
     timeout: float | int = 60,
-    poll_timeout: float = 10,
+    poll_timeout: float = 15,
     poll_interval: float = 0.2,
+    purpose: str = "register",
+    pattern: re.Pattern[str] = VERIFY_CODE_PATTERN,
 ) -> tuple[str, dict[str, Any]]:
     """
-    Trigger /emailsmtprequest and read the generated code from newly appended logs.
+    Trigger /emailsmtprequest (for `purpose`) and read the generated code from newly
+    appended logs, matching `pattern` (defaults to the register/update code format).
 
     The SMTP message is logged at debug level by background.api_background, which
     (logger group 'background') writes to <LOG_DIR>/background.log, so we only read
@@ -84,16 +91,16 @@ async def fetch_verify_code_from_logs(
     except FileNotFoundError:
         offset = 0
 
-    request_result = await request_email_verify_code(base_url, email, timeout)
+    request_result = await request_email_verify_code(base_url, email, timeout, purpose=purpose)
     if request_result["status_code"] != 200:
         raise RuntimeError(
-            f"/emailsmtprequest failed (status={request_result['status_code']}), "
+            f"/emailsmtprequest(purpose={purpose}) failed (status={request_result['status_code']}), "
             f"no verification code will be generated. Response: {request_result['text']}"
         )
 
     deadline = time.monotonic() + poll_timeout
     while time.monotonic() < deadline:
-        code = _latest_verify_code(_read_since(log_path, offset))
+        code = _latest_match(_read_since(log_path, offset), pattern)
         if code:
             return code, {
                 "source": f"log:{log_path}",
@@ -102,8 +109,8 @@ async def fetch_verify_code_from_logs(
         await asyncio.sleep(poll_interval)
 
     raise RuntimeError(
-        "Could not find verification code in logs after /emailsmtprequest returned 200. "
-        "The code is logged by the SMTP debug message as 'Your code is <digits>'; "
-        "make sure the worker process runs with LOG_LEVEL=debug so the record is written. "
+        f"Could not find verification code (purpose={purpose}, pattern={pattern.pattern!r}) "
+        "in logs after /emailsmtprequest returned 200. The code is logged by the SMTP debug "
+        "message; make sure the worker process runs with LOG_LEVEL=debug so the record is written. "
         f"Checked log: {log_path}"
     )

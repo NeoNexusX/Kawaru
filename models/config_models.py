@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class ServerSettings(BaseModel):
     """服务器配置模型"""
-    name: str
+    name: str = "SpatialXomics"  # 项目名，用于邮件文案等对外展示
     port: int
     host: str
 
@@ -59,6 +59,16 @@ class EmailSettings(BaseModel):
     smtp_from_email: str
     smtp_server: str
     totp_window: int
+    reset_password_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="单轮密码重置中，验证码允许的最大校验失败次数，超过则锁定本轮重置以防暴力破解",
+    )
+    email_send_cooldown_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="同一邮箱两次发送验证码邮件之间的最小间隔（秒），不区分用途，防邮件轰炸",
+    )
 
 
 class StorageSettings(BaseModel):

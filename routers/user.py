@@ -5,7 +5,7 @@ from models.auth import Token
 from models.user_models import UserPublic,UserDetailPublic, UserQuotaPublic, UserQuotaLimits
 from models.filter_models import ListDataResponse
 from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
-                          AdminCreateDep,UserUpdateDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
+                          AdminCreateDep,UserUpdateDep, ResetPasswordDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
                           UpdateUserQuotaDep)
 from api.email_api import EmailConfirmSMTPDep
 from database.visit_stats import incr_visit
@@ -76,6 +76,17 @@ async def update_user(user: UserUpdateDep):
     Update user information:
     Method:Post
     Params(Body):"username", "active", "identity"(None), "email", "password"
+    """
+    return user
+
+
+@user_router.post("/password_reset", response_model=UserPublic)
+async def reset_password(user: ResetPasswordDep):
+    """
+    Reset password via email (forgot password, no login required):
+    Method:Post
+    Params(Body):"email", "verify_code", "new_password"
+    先调用 /emailsmtprequest（purpose=reset_password）获取验证码，再调用本接口重置。
     """
     return user
 
