@@ -18,6 +18,7 @@ from api_services.user_service import (
     authenticate_user,
     validate_orcid,
     validate_update_user_data,
+    verify_reset_code,
     get_user,
     get_user_by_id,
     get_user_by_email,
@@ -44,6 +45,7 @@ from exceptions.user_exceptions import (
     user_homepage_invalid_exception,
     identity_not_allowed_exception,
     user_not_found_exception,
+    reset_code_invalid_exception,
 )
 from exceptions.common_exceptions import (
     non_admin_operation_not_allowed_exception,
@@ -57,7 +59,7 @@ from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
 from models.email_models import TOTP
-from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits
+from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
 logger = get_logger("api.user_api")
@@ -332,6 +334,29 @@ async def update_user(
     return user # type:ignore
 
 
+async def reset_password(
+    data: PasswordResetConfirm,
+    async_session: AsyncSessionDep,
+) -> UserPublic:
+    """
+    忘记密码：未登录用户凭邮箱 + 验证码重置密码。
+    验证码与邮箱绑定且单次有效（见 user_service.verify_reset_code）。
+    """
+    user = await get_user_by_email(data.email, async_session)
+    # 邮箱不存在或账号未激活时本不该有有效验证码，统一按验证码错误处理，
+    # 既禁止未激活账号重置密码，又不泄露邮箱是否注册/是否激活
+    if user is None or not user.active:
+        raise reset_code_invalid_exception
+
+    await verify_reset_code(data.email, data.verify_code)
+
+    user.hashed_password = hashed_password(data.new_password)
+    async_session.add(user)
+    await async_session.commit()
+
+    return user # type:ignore
+
+
 async def del_user(
     user_id: int,
     current_admin: Annotated[UserInDB, Depends(token_authen)],
@@ -523,6 +548,7 @@ UserLogoutDep = Annotated[UserPublic, Depends(logout)]  # 用户登出
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用户
 AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增（管理员用户）
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用户信息
+ResetPasswordDep = Annotated[UserPublic, Depends(reset_password)]  # 忘记密码：凭邮箱验证码重置
 UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 根据用户 ID 删除指定用户
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
 ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖
