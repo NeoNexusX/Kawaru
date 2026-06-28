@@ -353,6 +353,9 @@ async def reset_password(
     user.hashed_password = hashed_password(data.new_password)
     async_session.add(user)
     await async_session.commit()
+    # commit 后对象属性被过期，需 refresh 重新加载，否则序列化为响应模型时
+    # 会在异步会话外触发懒加载导致 500
+    await async_session.refresh(user)
 
     return user # type:ignore
 
