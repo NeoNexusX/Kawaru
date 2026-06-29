@@ -90,6 +90,21 @@ identity_not_allowed_exception = HTTPException(
     detail=format_exception_detail("Identity field must be None, it will be set by the API endpoint")
 )
 
+reset_code_invalid_exception = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,#密码重置验证码错误或已过期
+    detail=format_exception_detail("Reset code is invalid or expired")
+)
+
+reset_password_too_many_attempts_exception = HTTPException(
+    status_code=status.HTTP_429_TOO_MANY_REQUESTS,#密码重置验证码尝试次数过多，本轮已锁定
+    detail=format_exception_detail("Too many attempts, please request a new reset code")
+)
+
+email_send_too_frequent_exception = HTTPException(
+    status_code=status.HTTP_429_TOO_MANY_REQUESTS,#同一邮箱发送验证码邮件过于频繁，处于冷却期
+    detail=format_exception_detail("Verification email requested too frequently, please try again later")
+)
+
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     # Auth 异常
@@ -109,4 +124,7 @@ __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "user_homepage_invalid_exception",
     "identity_not_allowed_exception",
     "user_not_found_exception",
+    "reset_code_invalid_exception",
+    "reset_password_too_many_attempts_exception",
+    "email_send_too_frequent_exception",
 ]

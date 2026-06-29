@@ -116,6 +116,13 @@ class UserUpdate(BaseModel):
     homepage: str | None = Field(default=None, max_length=user_config.max_homepage_length)
 
 
+class PasswordResetConfirm(BaseModel):
+    """忘记密码：未登录用户凭邮箱验证码重置密码"""
+    email: str = Field(max_length=user_config.max_useremail_length, description="用户邮箱")
+    verify_code: str = Field(description="邮箱收到的重置验证码")
+    new_password: str = Field(description="新密码")
+
+
 class UserQuotaPublic(SQLModel):
     """用户配额统一返回模型"""
     # 上传文件相关

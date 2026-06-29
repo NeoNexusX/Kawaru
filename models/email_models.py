@@ -13,6 +13,7 @@ class EmailPurpose(str, Enum):
     """邮件发送目的枚举"""
     REGISTER = "register"
     UPDATE = "update"
+    RESET_PASSWORD = "reset_password"  # 忘记密码：未登录用户凭邮箱重置密码
 
 
 class EmailConfirmResponseBase(BaseModel):
