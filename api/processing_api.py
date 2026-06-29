@@ -53,8 +53,8 @@ async def create_algorithm_task(
         if not await validate_process_request(current_user, body.algorithms):
             raise invalid_process_request_exception
 
-        # 2. 查文件归属 + 就绪 origin，同时获取文件名
-        origin, filename = await get_origin_for_processing(async_session, body.file_id, current_user)
+        # 2. 查文件归属 + 就绪 origin，同时获取文件名和元数据
+        origin, filename, metadata = await get_origin_for_processing(async_session, body.file_id, current_user)
 
         assert current_user.id is not None
         run_record = await create_process_run(
@@ -75,6 +75,7 @@ async def create_algorithm_task(
             imzml_path=origin.imzml_path,
             config_json=run_record.params_json,
             output_path=oss_output_path,
+            metadata=metadata,
         )
 
         return ExperimentProcessRunPublic(**run_record.model_dump(), filename=filename)

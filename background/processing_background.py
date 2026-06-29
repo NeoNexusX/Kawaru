@@ -48,6 +48,7 @@ async def trigger_fc_algorithm_task(
     imzml_path: str,
     config_json: str,
     output_path: str,
+    metadata: dict | None = None,
 ) -> None:
     """触发 fc-algorithm 执行算法管线处理（异步调用）"""
     event = {
@@ -55,6 +56,7 @@ async def trigger_fc_algorithm_task(
         "imzml_path": imzml_path,
         "config_json": config_json,
         "output_path": output_path,
+        "metadata": metadata or {},
     }
     logger.info("trigger fc algorithm run_id=%s imzml_path=%s", run_id, imzml_path)
     request_id = await invoke_fc(FC_ALGORITHM_URL, FC_ALGORITHM_TOKEN, event, FC_ALGORITHM_TIMEOUT)

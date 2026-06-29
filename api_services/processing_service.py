@@ -200,7 +200,7 @@ async def get_user_runs(
     offset = (page - 1) * size
     rows = (await async_session.exec(
         base_query
-        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc())
+        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc()) #pylint: disable=no-member
         .offset(offset)
         .limit(size)
     )).all()
@@ -240,7 +240,7 @@ async def get_origin_for_processing(
     async_session: AsyncSession,
     file_id: int,
     current_user: UserInDB,
-) -> tuple[OriginImzMLInDB, str]:
+) -> tuple[OriginImzMLInDB, str, dict]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
 
@@ -270,7 +270,16 @@ async def get_origin_for_processing(
         logger.warning("origin not ready file_id=%s status=%s", file_id, origin.status)
         raise invalid_process_request_exception
 
-    return origin, file_record.filename
+    # 提取需要写入 Zarr 的元数据字段
+    metadata = {
+        "filename": file_record.filename,                       # Zarr: 原始文件名
+        "ionisation_source": file_record.ionisation_source or "", # Zarr: 离子源类型（如 MALDI、ESI）
+        "analyzer": file_record.analyzer or "",                 # Zarr: 质量分析器类型（如 TOF、Orbitrap）
+        "pixel_size_horizontal": file_record.pixel_size_horizontal or 0.0,  # Zarr: 水平像素尺寸 (μm)
+        "pixel_size_vertical": file_record.pixel_size_vertical or 0.0,      # Zarr: 垂直像素尺寸 (μm)
+        "polarity": file_record.polarity or "",                 # Zarr: 极性（positive / negative）
+    }
+    return origin, file_record.filename, metadata
 
 
 async def get_storage_type_by_source_file_id(
