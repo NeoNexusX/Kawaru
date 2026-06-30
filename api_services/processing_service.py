@@ -17,6 +17,7 @@ from models.processing_models import (
     ExperimentProcessRunInDB,
     ProcessingAlgorithmsConfig,
     ProcessingStatus,
+    RAW_CONVERT_MARKER,
 )
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
@@ -72,6 +73,47 @@ async def create_process_run(
     return run_record
 
 
+async def create_raw_convert_run(
+    file_id: int,
+    user_id: int,
+    experiment_id: int,
+    async_session: AsyncSession,
+) -> tuple[ExperimentProcessRunInDB, bool]:
+    """
+    创建 raw_convert 类型的处理 run（无算法，直转 spectra_zarr）
+
+    防重复：若同文件同用户已有 processing 状态的 raw_convert run，直接返回已有 run。
+
+    Returns:
+        (run_record, is_existing) — is_existing=True 表示返回的是已有记录（防重复命中）
+    """
+    existing = (
+        await async_session.exec(
+            select(ExperimentProcessRunInDB).where(
+                ExperimentProcessRunInDB.source_file_id == file_id,
+                ExperimentProcessRunInDB.user_id == user_id,
+                ExperimentProcessRunInDB.params_json == RAW_CONVERT_MARKER,
+                ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
+            )
+        )
+    ).first()
+    if existing:
+        logger.info("raw_convert run already exists for file_id=%s user_id=%s run_id=%s",
+                     file_id, user_id, existing.id)
+        return existing, True
+
+    run = ExperimentProcessRunInDB(
+        source_file_id=file_id,
+        user_id=user_id,
+        experiment_id=experiment_id,
+        params_json=RAW_CONVERT_MARKER,
+        status=ProcessingStatus.PROCESSING,
+    )
+    async_session.add(run)
+    await async_session.flush()
+    return run, False
+
+
 #########################
 # 删
 #########################
@@ -98,6 +140,7 @@ async def delete_process_run(
         )
 
     await async_session.delete(run_record)
+
     logger.info("deleted process run id=%s", run_record.id)
 
 
@@ -193,6 +236,7 @@ async def get_user_runs(
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(ExperimentProcessRunInDB.user_id == user_id)
     )
+
     total = (await async_session.exec(
         select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
     offset = (page - 1) * size

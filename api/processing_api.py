@@ -10,6 +10,7 @@ from fastapi.exceptions import HTTPException
 from api_services.processing_service import (
     assert_zarr_folder_access,
     create_process_run,
+    create_raw_convert_run,
     delete_process_run,
     get_origin_for_processing,
     get_process_run_by_id,
@@ -32,10 +33,11 @@ from models.filter_models import ListDataResponse, PaginationMeta
 from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
+    ExperimentProcessRunRawConvert,
 )
 from storage_backend.storage import OssStorage
 
-from background.processing_background import trigger_fc_algorithm_task
+from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api")
@@ -84,6 +86,67 @@ async def create_algorithm_task(
         raise
     except Exception as e:
         logger.exception("create algorithm task failed user=%s file_id=%s", current_user.id, body.file_id)
+        await rollback_process_run(async_session, run_record)
+        raise internal_server_error_exception from e
+
+
+async def create_raw_convert_task(
+    body: ExperimentProcessRunRawConvert,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> ExperimentProcessRunPublic:
+    """创建 raw_convert 直转任务 — 写 DB + 异步触发 FC fc-raw-convert"""
+    run_record = None
+    try:
+        # 1. 查文件归属 + 就绪 origin，同时获取文件名和元数据
+        origin, filename, metadata = await get_origin_for_processing(
+            async_session, body.file_id, current_user,
+        )
+
+        assert current_user.id is not None
+
+        # 2. 创建 raw_convert run（含防重复，experiment_id 必须在此设置）
+        run_record, is_existing = await create_raw_convert_run(
+            file_id=body.file_id,
+            user_id=current_user.id,
+            experiment_id=origin.id,  # type: ignore
+            async_session=async_session,
+        )
+
+        # 若返回的是已有 processing 中的 run，直接返回
+        if is_existing:
+            await async_session.commit()
+            await async_session.refresh(run_record)
+            return ExperimentProcessRunPublic(
+                **run_record.model_dump(), filename=filename,
+            )
+
+        # 构造 OSS 输出路径
+        oss_output_path = f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{run_record.id}.zarr/"  # type: ignore
+
+        # 提交数据库，让 run_id 生效
+        await async_session.commit()
+        await async_session.refresh(run_record)
+        await async_session.refresh(origin)
+
+        # 3. 异步触发 FC raw_convert 函数
+        trigger_fc_raw_convert_task.delay(  # type: ignore
+            run_id=run_record.id,
+            imzml_path=origin.imzml_path,
+            ibd_path=origin.ibd_path,
+            output_path=oss_output_path,
+            metadata=metadata,
+        )
+
+        return ExperimentProcessRunPublic(
+            **run_record.model_dump(), filename=filename,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("create raw_convert task failed user=%s file_id=%s",
+                         current_user.id, body.file_id)
         await rollback_process_run(async_session, run_record)
         raise internal_server_error_exception from e
 
@@ -177,6 +240,7 @@ async def get_zarr_folder_access(
 
 # 依赖注入类型别名
 CreateAlgorithmTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorithm_task)]
+CreateRawConvertTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_raw_convert_task)]
 ListMyRunsDep = Annotated[ListDataResponse, Depends(list_my_process_runs)]
 DeleteProcessRunDep = Annotated[dict[str, int | str], Depends(delete_process_run_endpoint)]
 ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]

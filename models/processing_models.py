@@ -95,6 +95,10 @@ class ProcessingAlgorithmsConfig(BaseModel):
 # 算法处理运行数据库表
 #########################
 
+# raw_convert 类型标记：params_json 为此值时表示直转 run（无算法处理）
+RAW_CONVERT_MARKER = "__RAW_CONVERT__"
+
+
 class ExperimentProcessRunBase(SQLModel):
     """算法处理运行 — 公共字段（不含文件路径，API 返回用）"""
     params_json: str | None = Field(default=None, max_length=4096, description="算法参数 JSON 字符串")
@@ -170,6 +174,11 @@ class ExperimentProcessRunCreate(SQLModel):
     """
     file_id: int
     algorithms: ProcessingAlgorithmsConfig
+
+
+class ExperimentProcessRunRawConvert(SQLModel):
+    """前端提交 raw_convert 直转请求（无算法处理，仅需 file_id）"""
+    file_id: int
 
 
 class ExperimentProcessRunPublic(ExperimentProcessRunBase):

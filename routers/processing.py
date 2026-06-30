@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from api.processing_api import (
     CreateAlgorithmTaskDep,
+    CreateRawConvertTaskDep,
     DeleteProcessRunDep,
     ListMyRunsDep,
     ZarrFolderDep,
@@ -22,6 +23,13 @@ processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 @processing_router.post("", response_model=ExperimentProcessRunPublic)
 async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
+    asyncio.create_task(incr_visit())
+    return record
+
+
+@processing_router.post("/raw-convert", response_model=ExperimentProcessRunPublic)
+async def create_raw_convert(record: CreateRawConvertTaskDep):
+    """创建 imzML 直转 Zarr 任务（无算法处理）"""
     asyncio.create_task(incr_visit())
     return record
 
