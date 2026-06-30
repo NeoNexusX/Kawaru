@@ -58,7 +58,7 @@ async def create_algorithm_task(
 
         assert current_user.id is not None
         run_record = await create_process_run(
-            async_session, origin, body.algorithms, current_user.id, body.is_public,
+            async_session, origin, body.algorithms, current_user.id,
         )
 
         # 构造 OSS 输出路径

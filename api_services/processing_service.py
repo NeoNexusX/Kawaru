@@ -52,7 +52,6 @@ async def create_process_run(
     experiment: OriginImzMLInDB,
     algorithms_config: ProcessingAlgorithmsConfig,
     user_id: int,
-    is_public: bool = False,
 ) -> ExperimentProcessRunInDB:
     """
     创建算法处理运行记录
@@ -67,7 +66,6 @@ async def create_process_run(
         params_json=algorithms_config.model_dump_json(),
         status=ProcessingStatus.PROCESSING,
         started_at=utc_time(),
-        is_public=is_public,
     )
     async_session.add(run_record)
     await async_session.flush()
@@ -369,7 +367,6 @@ async def assert_zarr_folder_access(
     # 2. 权限校验
     is_authorized = (
         current_user.identity == "admin"
-        or run_record.is_public
         or run_record.user_id == current_user.id
     )
     if not is_authorized:

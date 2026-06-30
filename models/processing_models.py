@@ -102,7 +102,6 @@ class ExperimentProcessRunBase(SQLModel):
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     started_at: datetime | None = Field(default=None, description="开始执行时间")
     finished_at: datetime | None = Field(default=None, description="结束时间")
-    is_public: bool = Field(default=False, description="是否公开运行结果")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
@@ -171,7 +170,6 @@ class ExperimentProcessRunCreate(SQLModel):
     """
     file_id: int
     algorithms: ProcessingAlgorithmsConfig
-    is_public: bool = Field(default=False, description="是否公开运行结果")
 
 
 class ExperimentProcessRunPublic(ExperimentProcessRunBase):
@@ -181,5 +179,4 @@ class ExperimentProcessRunPublic(ExperimentProcessRunBase):
     source_file_id: int
     user_id: int
     created_at: datetime
-    is_public: bool = False
     filename: str = ""
