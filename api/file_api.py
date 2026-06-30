@@ -22,6 +22,7 @@ from api_services.file_service import (
     prepare_download_raw_oss,
     rollback_simple_upload,
     get_reuse_file_by_hash,
+    set_file_public_service,
     unlink_user_from_file,
     update_download_stats,
     validate_and_merge_parts_business,
@@ -563,6 +564,38 @@ async def delete_user_file(
     return {"file_id": file_id, "status": "deleted"}
 
 
+async def set_file_public(
+    file_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> dict[str, Any]:
+    """
+    【文件公开设置接口】
+
+    功能:将私有文件(is_public=False)改为公开(is_public=True)。
+    权限:仅文件所有者或管理员可操作。
+
+    流程:
+    1. 查询文件记录
+    2. 权限校验(文件所有者或管理员)
+    3. 更新 is_public 字段为 True
+
+    注意:
+    - 操作是幂等的:重复调用不会产生副作用
+    - 设为公开后,文件将出现在公共文件列表中
+    """
+    file_record = await get_file_record_by_id(file_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+
+    await set_file_public_service(async_session, file_record)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+
+    logger.info(f"file set to public user={current_user.id} file_id={file_id}")
+    return {"file_id": file_id, "is_public": file_record.is_public}
+
+
 async def get_download_file_metadata(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -911,3 +944,4 @@ ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
+SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
