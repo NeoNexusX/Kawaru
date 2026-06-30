@@ -33,7 +33,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/kawaru   # metadata-action 自动转小写
           tags: |
             type=raw,value=latest
-            type=sha
+            type=sha,prefix=sha-,format=long
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -81,7 +81,7 @@ jobs:
         env:
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:latest
+          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:sha-${{ github.sha }}
 
       # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
       # 把 5 个服务的状态 + 各自 tail 日志打出来，免去人工 SSH 翻日志
@@ -117,4 +117,4 @@ jobs:
             done
             exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
         env:
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:latest
+          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:sha-${{ github.sha }}

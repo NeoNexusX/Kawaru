@@ -1,96 +1,86 @@
 # Contribution Guide
 
-Welcome to contribute to MassFlow-Kawaru! This document provides a unified process and quality standards for multi-person collaboration, ensuring orderly division of labor, code stability, and controllable releases.
-
 ## Quick Start
 
-- After forking the repository, first switch to the remote `dev` branch and create your working branch (see branch naming rules below).
-
-- Install recommended Cursor/Trae/VSCode extensions locally (see README and `.vscode/extensions.json`). PyCharm users can skip this.
-
-- Install dependencies and development environment:
-
-  ```bash
-  # Ensure uv is installed
-  uv sync
-
-  # Ensure submodule is installed and updated
-  bash setup_submodule.sh
-  ```
-
-- Follow naming conventions and code style (`../zh/命名规范.md`, `.pylintrc`).
-
-- After completing the task, submit a PR, self-check according to the review checklist, and request a review.
+1. Fork the repository, sync the latest `test` branch from upstream on GitHub
+2. `uv sync` to install dependencies
+3. Create a feature branch from `test`, submit a PR when done
 
 ## Branch Strategy
 
-- `dev`: Main development branch, used for daily development work, merged after review by designated personnel.
-  - Feature: `feature/<topic>` (e.g., `feature/imzml-import`)
-- `main`: Protected branch, only PRs reviewed by administrators are merged; kept stable and releasable.
-- Merge Strategy: Prioritize squash merge to keep commit history clean; rebase to clean up commit records when necessary.
+```
+main  ← merge commit ← dev  ← merge commit ← test  ← squash merge ← feature/*
+```
 
-## Submission Process (Issue → Branch → PR)
+| Branch | Purpose | Merge Strategy |
+|--------|---------|----------------|
+| `feature/*` | Personal feature branches | — |
+| `test` | Integration testing | feature → test: **Squash and merge**, delete branch after merge |
+| `dev` | Acceptance | test → dev: **Create a merge commit** |
+| `main` | Production | dev → main: **Create a merge commit** |
 
-1. Claim Issue: Before starting a new issue, delete the previous repository [including local and online content].
-2. Development and Self-check: Follow code standards, run local checks, and write necessary tests [you can submit a PR first and write test code as requested by the reviewer].
-3. Submit PR:
-   - Concise Title (Recommended to follow Conventional Commits): e.g., `feat(file): ...`
-   - Complete Description: Key changes, impact scope, test points (`Closes #<id>`). AI generation is recommended.
-   - Request Review: Assign module owner or code owner.
-4. Review and Merge: AI preliminary review → Fix comment items → Owner review → Meet review checklist → Merge to `dev`.
+test/dev/main use merge commit (not squash) to preserve intermediate commit history and avoid duplicate commits appearing in future PRs.
+
+## Submission Process
+
+### 1. Start a New Task
+
+```bash
+# After Sync fork on GitHub:
+git checkout test
+git pull origin test
+git checkout -b feature/<topic>
+```
+
+### 2. Submit PR
+
+- **feature → test**: Squash and merge, delete feature branch after merge
+- Title follows Conventional Commits: `feat(file): support chunked upload`
+- Description includes key changes, impact scope, `Closes #<id>`
+
+### 3. Sync During Collaboration
+
+After someone's PR is merged, sync the latest test before continuing:
+
+```bash
+git fetch origin
+git rebase origin/test   # recommended, keeps linear history
+# or git merge origin/test
+```
+
+### 4. Merge Upward
+
+After testing passes: test → dev → main, all via Create a merge commit PR.
 
 ## Commit Message Conventions
 
-- Recommended to use Conventional Commits:
-  - `feat: <description>` New feature
-  - `fix: <description>` Bug fix
-  - `docs: <description>` Documentation update
-  - `refactor: <description>` Refactoring without affecting function
-  - `test: <description>` Test related
-- Example: `feat(data-manager): support split/merge write modes`
+Use Conventional Commits: `feat` / `fix` / `docs` / `refactor` / `test`
 
-## Code Standards and Naming
+## Naming Conventions
 
-- Follow `../zh/命名规范.md`:
-  - Class: `PascalCase`, domain abbreviations keep uppercase (e.g., `MSIDataManager`)
-  - Function/Variable/File: `snake_case` (e.g., `load_full_data_from_file`)
-  - Property: Private `_meta_*` and public `meta_*` property mapping (via `@property`)
-- Unified Style and Static Check:
-  - Run `pylint` (follow `.pylintrc`), `black`, `isort`
+| Type | Style | Example |
+|------|-------|---------|
+| Files/functions/variables | `snake_case` | `user_api.py`, `create_user` |
+| Classes | `PascalCase` | `UserInDB`, `UserPublic` |
+| Constants | `UPPER_CASE` | `SECRET_KEY` |
+| Boolean variables | `is_`/`has_` prefix | `is_active` |
+| Dependency injection | `get_` prefix | `get_db` |
 
-## Editors and Tools
+Model naming: `UserBase` (shared fields), `UserInDB` (database), `UserPublic` (response), `UserCreate`/`UserUpdate` (request).
 
-- Cursor/Trae/VSCode:
-  - Install recommended extensions (Python, Pylance, Pylint)
-  - Workspace `.vscode/extensions.json` will automatically prompt for installation
-- Optional: Enable Format on Save and configure Black/isort consistency.
+All function parameters and return values must have type annotations. Use Python 3.10+ syntax (`|` instead of `Union`).
 
-## Testing and Quality Assurance
+## Code Checks
 
-- Test Scope:
-
-  - Unit Tests: Module methods and critical paths (load, write, filter, visualize)
-  - Integration Tests: End-to-end path from data file to processing output (lightweight data)
-
-- Run Tests:
-
-  ```bash
-  uv run pytest
-  ```
-
-- Local Check (Recommended as a pre-commit step):
-
-  - No errors, 10 runs passed
+```bash
+uv run pylint api/ models/ database/   # max line length 130
+uv run pytest                           # run tests
+```
 
 ## PR Review Checklist
 
-- Naming style and module boundaries are consistent, interfaces and data conventions meet specifications
-- No obvious performance and memory issues; avoid unnecessary copy/allocation
-- Assertions and error handling are in place, boundary cases are covered
-- Documentation updates (README/Chinese docs/examples) are in place
-- Passed local and CI checks; new/updated tests cover critical logic
-- Change description is clear
-
-## Contact
-
-- If you have questions or support needs, please submit an Issue in the repository; or @owner in the PR for discussion.
+- Naming conventions, module boundaries, and interfaces are consistent
+- No obvious performance/memory issues
+- Error handling is in place, boundary cases covered
+- Documentation updated accordingly
+- Tests pass and cover critical logic
