@@ -8,7 +8,7 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
-    OssUploadDep, ImageUrlDep, FileMetadataDep
+    OssUploadDep, ImageUrlDep, FileMetadataDep, SetFilePublicDep
 )
 from constants.file_constants import CHUNK_BUFFER_SIZE
 from database.visit_stats import incr_visit
@@ -101,6 +101,12 @@ async def get_file_images(image_urls: ImageUrlDep):
 async def get_file_metadata(metadata: FileMetadataDep):
     """根据文件ID查询文件元数据"""
     return metadata
+
+
+@file_router.put("/{file_id}/set_public")
+async def set_file_public(result: SetFilePublicDep):
+    """将文件设为公开"""
+    return result
 
 
 # @file_router.post("/test_api")

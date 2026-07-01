@@ -530,6 +530,16 @@ async def validate_hash_and_size(
 #########################
 # File  - 改
 #########################
+async def set_file_public_service(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+) -> None:
+    """将文件标记为公开"""
+    file_record.is_public = True
+    async_session.add(file_record)
+    await async_session.flush()
+
+
 async def update_download_stats(
     session: AsyncSession,
     file_record: FileInDB,

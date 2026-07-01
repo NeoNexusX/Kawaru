@@ -20,7 +20,7 @@ from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCall
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
-from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic
+from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic, RAW_CONVERT_MARKER
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
@@ -268,6 +268,23 @@ async def algorithm_callback(
                 async_session, UserInDB, run_record.user_id,
                 "processed_file_size", output_size,
             )
+
+        # raw_convert 成功回调：写入 fileindb.default_run_id
+        if run_record.params_json == RAW_CONVERT_MARKER:
+            file_record = (
+                await async_session.exec(
+                    select(FileInDB).where(
+                        FileInDB.file_id == run_record.source_file_id,
+                    )
+                )
+            ).first()
+            if file_record:
+                file_record.default_run_id = run_record.id
+                async_session.add(file_record)
+                logger.info(
+                    "set default_run_id=%s for file_id=%s",
+                    run_record.id, run_record.source_file_id,
+                )
 
         await async_session.commit()
         await async_session.refresh(run_record)

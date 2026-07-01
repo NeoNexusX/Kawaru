@@ -17,6 +17,7 @@ from models.processing_models import (
     ExperimentProcessRunInDB,
     ProcessingAlgorithmsConfig,
     ProcessingStatus,
+    RAW_CONVERT_MARKER,
 )
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
@@ -52,7 +53,6 @@ async def create_process_run(
     experiment: OriginImzMLInDB,
     algorithms_config: ProcessingAlgorithmsConfig,
     user_id: int,
-    is_public: bool = False,
 ) -> ExperimentProcessRunInDB:
     """
     创建算法处理运行记录
@@ -67,11 +67,51 @@ async def create_process_run(
         params_json=algorithms_config.model_dump_json(),
         status=ProcessingStatus.PROCESSING,
         started_at=utc_time(),
-        is_public=is_public,
     )
     async_session.add(run_record)
     await async_session.flush()
     return run_record
+
+
+async def create_raw_convert_run(
+    file_id: int,
+    user_id: int,
+    experiment_id: int,
+    async_session: AsyncSession,
+) -> tuple[ExperimentProcessRunInDB, bool]:
+    """
+    创建 raw_convert 类型的处理 run（无算法，直转 spectra_zarr）
+
+    防重复：若同文件同用户已有 processing 状态的 raw_convert run，直接返回已有 run。
+
+    Returns:
+        (run_record, is_existing) — is_existing=True 表示返回的是已有记录（防重复命中）
+    """
+    existing = (
+        await async_session.exec(
+            select(ExperimentProcessRunInDB).where(
+                ExperimentProcessRunInDB.source_file_id == file_id,
+                ExperimentProcessRunInDB.user_id == user_id,
+                ExperimentProcessRunInDB.params_json == RAW_CONVERT_MARKER,
+                ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
+            )
+        )
+    ).first()
+    if existing:
+        logger.info("raw_convert run already exists for file_id=%s user_id=%s run_id=%s",
+                     file_id, user_id, existing.id)
+        return existing, True
+
+    run = ExperimentProcessRunInDB(
+        source_file_id=file_id,
+        user_id=user_id,
+        experiment_id=experiment_id,
+        params_json=RAW_CONVERT_MARKER,
+        status=ProcessingStatus.PROCESSING,
+    )
+    async_session.add(run)
+    await async_session.flush()
+    return run, False
 
 
 #########################
@@ -100,6 +140,7 @@ async def delete_process_run(
         )
 
     await async_session.delete(run_record)
+
     logger.info("deleted process run id=%s", run_record.id)
 
 
@@ -195,12 +236,13 @@ async def get_user_runs(
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(ExperimentProcessRunInDB.user_id == user_id)
     )
+
     total = (await async_session.exec(
         select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
     offset = (page - 1) * size
     rows = (await async_session.exec(
         base_query
-        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc())
+        .order_by(col(ExperimentProcessRunInDB.created_at).desc(), col(ExperimentProcessRunInDB.id).desc()) #pylint: disable=no-member
         .offset(offset)
         .limit(size)
     )).all()
@@ -240,7 +282,7 @@ async def get_origin_for_processing(
     async_session: AsyncSession,
     file_id: int,
     current_user: UserInDB,
-) -> tuple[OriginImzMLInDB, str]:
+) -> tuple[OriginImzMLInDB, str, dict]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
 
@@ -270,7 +312,16 @@ async def get_origin_for_processing(
         logger.warning("origin not ready file_id=%s status=%s", file_id, origin.status)
         raise invalid_process_request_exception
 
-    return origin, file_record.filename
+    # 提取需要写入 Zarr 的元数据字段
+    metadata = {
+        "filename": file_record.filename,                       # Zarr: 原始文件名
+        "ionisation_source": file_record.ionisation_source or "", # Zarr: 离子源类型（如 MALDI、ESI）
+        "analyzer": file_record.analyzer or "",                 # Zarr: 质量分析器类型（如 TOF、Orbitrap）
+        "pixel_size_horizontal": file_record.pixel_size_horizontal or 0.0,  # Zarr: 水平像素尺寸 (μm)
+        "pixel_size_vertical": file_record.pixel_size_vertical or 0.0,      # Zarr: 垂直像素尺寸 (μm)
+        "polarity": file_record.polarity or "",                 # Zarr: 极性（positive / negative）
+    }
+    return origin, file_record.filename, metadata
 
 
 async def get_storage_type_by_source_file_id(
@@ -360,7 +411,6 @@ async def assert_zarr_folder_access(
     # 2. 权限校验
     is_authorized = (
         current_user.identity == "admin"
-        or run_record.is_public
         or run_record.user_id == current_user.id
     )
     if not is_authorized:

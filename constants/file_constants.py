@@ -65,6 +65,8 @@ FC_TIC_ENDPOINT = config.oss.fc_tic_endpoint
 FC_TIC_TIMEOUT_SECONDS = config.oss.fc_tic_timeout_seconds
 FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
 FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
+FC_RAW_CONVERT_ENDPOINT = config.oss.fc_raw_convert_endpoint
+FC_RAW_CONVERT_TIMEOUT_SECONDS = config.oss.fc_raw_convert_timeout_seconds
 
 
 __all__ = [
@@ -97,6 +99,8 @@ __all__ = [
     "FC_TIC_TIMEOUT_SECONDS",
     "FC_FEATURE_ENDPOINT",
     "FC_FEATURE_TIMEOUT_SECONDS",
+    "FC_RAW_CONVERT_ENDPOINT",
+    "FC_RAW_CONVERT_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "FC_LOGSTORE_NAME",
     "FC_LOG_PROJECT_NAME",
