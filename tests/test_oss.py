@@ -3,16 +3,16 @@ OSS 测试集合（与本地上传测试区分开）
 
 TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
 TestOss.test_file_metadata              [oss]   GET /files/{file_id}/metadata（公开接口，不依赖回调）
-TestOss.test_simulate_fc_callback       [oss]   模拟 FC 回调 → 更新 DB（本地：文件在 OSS 则成功；CI：文件缺失则 skip）
-TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（需鉴权，回调后直接验证）
-TestOss.test_cleanup_oss_upload         [oss]   清理 OSS 文件 + DB 记录 + 临时 zip
+TestOss.test_simulate_fc_callback       [oss]   等 60s FC 解压 → 模拟回调 → 更新 DB
+TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（回调后直接验证）
+TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理 OSS 文件 + DB 记录 + 临时 zip
 
 共用构件：
   - tests/helpers/uploads.py  build_preflight_payload / make_test_zip_to_local / TEST_FILENAME
   - tests/helpers/oss.py      upload_file_to_oss（STS 直传）
 
 运行方式:
-    uv run pytest -m oss            # 仅直传（CI 可跑，需 OSS secrets）
+    uv run pytest -m oss            # 仅本地跑（需真实 OSS + FC，CI 不跑）
 """
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ class TestOss:
     _uploaded_file_id: int | None = None
     _oss_path: str | None = None
     _file_verify_code: str | None = None
+    _imzml_hash: str | None = None
+    _ibd_hash: str | None = None
 
     @pytest.mark.oss
     async def test_upload_to_oss(self, admin_login: Tuple[AsyncClient, str, str]):
@@ -52,7 +54,7 @@ class TestOss:
         client, token, token_type = admin_login
         auth = {"Authorization": f"{token_type.title()} {token}"}
 
-        zip_path = make_test_zip_to_local()
+        zip_path, imzml_hash, ibd_hash = make_test_zip_to_local()
         file_verify_code, size = await compute_imzml_md5(zip_path) # type: ignore
         logger.info(f"test_upload_to_oss: file_verify_code={file_verify_code}, size={size}")
 
@@ -107,6 +109,8 @@ class TestOss:
         TestOss._uploaded_file_id = file_id
         TestOss._oss_path = oss_path
         TestOss._file_verify_code = file_verify_code
+        TestOss._imzml_hash = imzml_hash
+        TestOss._ibd_hash = ibd_hash
         logger.info((f"test_upload_to_oss passed: upload_time_seconds={upload_time_seconds} username={username} file_id={file_id} size={size} oss_path={oss_path}\n"
                      f"etag={result.etag} fc-request-id={fc_request_id} real-md5={file_verify_code}"))
 
@@ -130,16 +134,14 @@ class TestOss:
         OSS 路径规则：
           zip       → data/{stem}.zip
           imzML/ibd → origin/{stem}/{stem}.imzML / origin/{stem}/{stem}.ibd
-
-        本地测试（FC 已跑、文件存在 OSS）→ 回调 200，DB 更新成功；
-        CI（FC 没跑、文件缺失）→ tag_oss_file 返回 False → 回调 500 → pytest.skip。
         """
         if TestOss._uploaded_file_id is None:
             pytest.skip("no uploaded file to simulate callback against")
 
-        # 等 FC 解压完成（OSS 事件触发 FC → 冷启动 → 下载 zip → 解压 → 上传 imzML+ibd）
-        logger.info("waiting 15s for FC unzip to complete...")
-        await asyncio.sleep(15)
+        # 等 FC 解压完成（OSS 事件触发 → 冷启动 → 下载 → 解压 → 上传 imzML+ibd）
+        FC_WAIT = 60
+        logger.info("waiting %ds for FC unzip to complete...", FC_WAIT)
+        await asyncio.sleep(FC_WAIT)
 
         client, token, token_type = admin_login
         auth = {"Authorization": f"{token_type.title()} {token}"}
@@ -168,12 +170,10 @@ class TestOss:
             },
         )
 
-        if rs.status_code != 200:
-            # CI 环境 FC 没跑，imzML/ibd 不在 OSS，tag_oss_file 失败
-            pytest.skip(
-                f"FC callback failed (status={rs.status_code}), "
-                f"likely imzML/ibd not on OSS — skipping raw-download test"
-            )
+        assert rs.status_code == 200, (
+            f"FC callback failed: status={rs.status_code} body={rs.text}. "
+            f"Check that FC unzip completed and files exist at {imzml_path} / {ibd_path}"
+        )
 
         body = rs.json()
         assert body["file_id"] == TestOss._uploaded_file_id
@@ -182,7 +182,7 @@ class TestOss:
 
     @pytest.mark.oss
     async def test_raw_download_metadata(self, admin_login: Tuple[AsyncClient, str, str]):
-        """测试 GET /files/{file_id}/download_raw（回调后 DB 已更新，直接验证）"""
+        """测试 GET /files/{file_id}/download_raw（回调后 DB 已更新，下载验证 MD5）"""
         if TestOss._uploaded_file_id is None:
             pytest.skip("no uploaded file to test raw download against")
 
@@ -190,18 +190,51 @@ class TestOss:
         auth = {"Authorization": f"{token_type.title()} {token}"}
         file_id = TestOss._uploaded_file_id
 
-        # 最多重试 3 次（容错网络抖动），回调成功后 DB 已有记录无需长轮询
-        for attempt in range(3):
+        # 最多重试 3 次（容错网络抖动），回调成功后 imzML/ibd 已在 OSS
+        rs = None
+        for _ in range(3):
             rs = await client.get(f"/files/{file_id}/download_raw", headers=auth)
             if rs.status_code == 200:
                 break
             await asyncio.sleep(0.5)
-        else:
-            pytest.skip(f"raw download not ready after 3 attempts, last status={rs.status_code}")  # type: ignore
 
-        body = rs.json()
+        assert rs.status_code == 200, (  # type: ignore
+            f"raw download failed after 3 retries: status={rs.status_code} body={rs.text}"  # type: ignore
+        )
+
+        body = rs.json()  # type: ignore
         assert "files" in body
-        assert len(body["files"]) == 2, f"expected 2 files (imzML + ibd), got {len(body['files'])}"
+        assert len(body["files"]) == 2, f"expected 2 files, got {len(body['files'])}"
+
+        # 按 filename 排序保证顺序（字母序：.ibd < .imzML）
+        files = sorted(body["files"], key=lambda f: f["filename"])
+        stem = Path(TEST_FILENAME).stem
+        expected_ibd   = f"{stem}.ibd"
+        expected_imzml = f"{stem}.imzML"
+
+        assert files[0]["filename"] == expected_ibd
+        assert files[1]["filename"] == expected_imzml
+
+        # 下载并验证 MD5（hash 按 ibd → imzML 顺序匹配 sorted）
+        import hashlib
+        for f, expected_hash in zip(files, [TestOss._ibd_hash, TestOss._imzml_hash]):
+            url = f["url"]
+            assert url.startswith("https://"), (
+                f"expected presigned OSS URL (https://), got '{url[:60]}...' for {f['filename']}"
+            )
+
+            h = hashlib.md5()
+            async with client.stream("GET", url) as stream:
+                async for chunk in stream.aiter_bytes(1024 * 1024):
+                    h.update(chunk)
+            got_hash = h.hexdigest()
+            assert got_hash == expected_hash, (
+                f"MD5 mismatch for {f['filename']}: expected={expected_hash} got={got_hash}"
+            )
+
+            logger.info("downloaded %s size=%s hash=%s", f["filename"],
+                        f.get("size"), got_hash)
+
         logger.info("test_raw_download_metadata passed: got %d files", len(body["files"]))
 
     @pytest.mark.oss
@@ -214,6 +247,10 @@ class TestOss:
         if TestOss._uploaded_file_id is None:
             pytest.skip("nothing to clean up")
 
+        # 等 celery 后台任务（trigger_fc_feature_task 等）自然结束
+        logger.info("waiting 20s for celery tasks to settle before cleanup...")
+        await asyncio.sleep(20)
+
         rs = await client.delete(f"/files/{TestOss._uploaded_file_id}", headers=auth)
         assert rs.status_code == 200, rs.text
         assert rs.json()["status"] in ("deleted", "unlinked")
@@ -223,3 +260,5 @@ class TestOss:
         TestOss._uploaded_file_id = None
         TestOss._oss_path = None
         TestOss._file_verify_code = None
+        TestOss._imzml_hash = None
+        TestOss._ibd_hash = None
