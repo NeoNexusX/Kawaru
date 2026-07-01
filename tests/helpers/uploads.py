@@ -29,26 +29,30 @@ def make_test_zip_to_local(
     temp_dir.mkdir(parents=True, exist_ok=True)
     zip_path = temp_dir / TEST_FILENAME
 
+    stem = Path(TEST_FILENAME).stem  # 统一 stem，保证内外文件名一致
+
     # 分块创建 imzML 文件
     _CHUNK_BUFFER_SIZE = 1024  # 1 KB # pylint:disable = invalid-name
-    with open(temp_dir / "test_imzML.imzML", "wb") as zf:
+    imzml_tmp = temp_dir / f"{stem}.imzML"
+    with open(imzml_tmp, "wb") as zf:
         for _ in range(0, imzml_size, _CHUNK_BUFFER_SIZE):
             zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
 
     # 分块创建 ibd 文件
-    with open(temp_dir / "test_ibd.ibd", "wb") as zf:
+    ibd_tmp = temp_dir / f"{stem}.ibd"
+    with open(ibd_tmp, "wb") as zf:
         for _ in range(0, ibd_size, _CHUNK_BUFFER_SIZE):
             zf.write(os.urandom(_CHUNK_BUFFER_SIZE))
 
     # 压缩 zip 包（STORED 不压缩，最终大小 ≈ imzml + ibd，精确可控）
     zip_path.unlink(missing_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
-        zf.write(temp_dir / "test_imzML.imzML", "test_imzML.imzML")
-        zf.write(temp_dir / "test_ibd.ibd", "test_ibd.ibd")
+        zf.write(imzml_tmp, f"{stem}.imzML")
+        zf.write(ibd_tmp, f"{stem}.ibd")
 
     # 删除源文件
-    (temp_dir / "test_imzML.imzML").unlink()
-    (temp_dir / "test_ibd.ibd").unlink()
+    imzml_tmp.unlink()
+    ibd_tmp.unlink()
 
     return zip_path
 
