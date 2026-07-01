@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [feature_bear]
+    branches: [test]
   workflow_dispatch:
 
 concurrency:
