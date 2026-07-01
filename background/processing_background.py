@@ -18,6 +18,8 @@ from constants.file_constants import (
     FC_TIC_TIMEOUT_SECONDS,
     FC_FEATURE_ENDPOINT,
     FC_FEATURE_TIMEOUT_SECONDS,
+    FC_RAW_CONVERT_ENDPOINT,
+    FC_RAW_CONVERT_TIMEOUT_SECONDS,
 )
 from tools.fc_client import invoke_fc
 from tools.logger import get_logger
@@ -41,6 +43,11 @@ FC_FEATURE_URL = FC_FEATURE_ENDPOINT
 FC_FEATURE_TIMEOUT = FC_FEATURE_TIMEOUT_SECONDS
 FC_FEATURE_TOKEN = os.getenv("OSS_FC_FEATURE_TOKEN")
 
+# ---- fc-raw-convert（imzML 直转 Zarr，无算法处理）----
+FC_RAW_CONVERT_URL = FC_RAW_CONVERT_ENDPOINT
+FC_RAW_CONVERT_TIMEOUT = FC_RAW_CONVERT_TIMEOUT_SECONDS
+FC_RAW_CONVERT_TOKEN = os.getenv("OSS_FC_RAW_CONVERT_TOKEN")
+
 
 @celery_app.task()
 async def trigger_fc_algorithm_task(
@@ -48,6 +55,7 @@ async def trigger_fc_algorithm_task(
     imzml_path: str,
     config_json: str,
     output_path: str,
+    metadata: dict | None = None,
 ) -> None:
     """触发 fc-algorithm 执行算法管线处理（异步调用）"""
     event = {
@@ -55,6 +63,7 @@ async def trigger_fc_algorithm_task(
         "imzml_path": imzml_path,
         "config_json": config_json,
         "output_path": output_path,
+        "metadata": metadata or {},
     }
     logger.info("trigger fc algorithm run_id=%s imzml_path=%s", run_id, imzml_path)
     request_id = await invoke_fc(FC_ALGORITHM_URL, FC_ALGORITHM_TOKEN, event, FC_ALGORITHM_TIMEOUT)
@@ -100,3 +109,29 @@ async def trigger_fc_feature_task(
         logger.info("trigger fc feature success file_id=%s request_id=%s", file_id, request_id)
     else:
         logger.error("trigger fc feature failed file_id=%s", file_id)
+
+
+@celery_app.task()
+async def trigger_fc_raw_convert_task(
+    run_id: int,
+    imzml_path: str,
+    ibd_path: str,
+    output_path: str,
+    metadata: dict | None = None,
+) -> None:
+    """触发 fc-raw-convert 执行 imzML 直转 Zarr（无算法处理，异步调用）"""
+    event = {
+        "run_id": run_id,
+        "imzml_path": imzml_path,
+        "ibd_path": ibd_path,
+        "output_path": output_path,
+        "metadata": metadata or {},
+    }
+    logger.info("trigger fc raw_convert run_id=%s imzml_path=%s", run_id, imzml_path)
+    request_id = await invoke_fc(
+        FC_RAW_CONVERT_URL, FC_RAW_CONVERT_TOKEN, event, FC_RAW_CONVERT_TIMEOUT,
+    )
+    if request_id is not None:
+        logger.info("trigger fc raw_convert success run_id=%s request_id=%s", run_id, request_id)
+    else:
+        logger.error("trigger fc raw_convert failed run_id=%s", run_id)
