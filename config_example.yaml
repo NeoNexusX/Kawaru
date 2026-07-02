@@ -2,7 +2,7 @@
 # 业务密钥（DB/Redis/SMTP/OSS 凭证）不在这里，放 .env。
 # 与 docker/docker-compose.dev.yml 配套：database.host/redis.host 用 compose 服务名。
 server:
-  name: Kawaru
+  name: SpatialXomics
   port: 8000
   host: 0.0.0.0
 
@@ -24,22 +24,24 @@ email:
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
   totp_window: 30
+  reset_password_max_attempts: 5   # 单轮密码重置验证码最大校验失败次数，超过则锁定本轮重置
+  email_send_cooldown_seconds: 60   # 同一邮箱两次发送验证码邮件的最小间隔（秒），不区分用途，防邮件轰炸
 
 database:
-  host: mariadb            # compose 服务名
-  db_name: kawaru
+  host: 47.98.174.83            # compose 服务名
+  db_name: kawaru_test
   db_type: mariadb
   db_username: root        # 用 root 连接；密码复用 .env 的 DATABASE_PASSWORD(=MARIADB_ROOT_PASSWORD)
   pool_size: 20
   max_overflow: 20
   echo_pool: false
   pool_recycle: 3600
-  port: 3306
+  port: 13306
 
 redis:
   username: default
-  host: redis              # compose 服务名
-  port: 6379
+  host: 47.98.174.83              # compose 服务名
+  port: 16379
   max_connection: 50
   default_db_index: 0
   celery_broker_db_index: 1
@@ -96,6 +98,8 @@ oss:
   fc_tic_timeout_seconds: 60
   fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
   fc_feature_timeout_seconds: 60
+  fc_raw_convert_endpoint: http://imz-to-zarr-xrujfuejtn.cn-hangzhou.fcapp.run
+  fc_raw_convert_timeout_seconds: 60
 
 admin_info:
   username: kawaru

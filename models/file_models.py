@@ -117,6 +117,7 @@ class FilePublic(FileBase):
     last_downloaded_at: datetime
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
     is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
+    default_run_id: int | None = Field(default=None, description="指向默认展示的 raw_convert/algo run")
 
 
 class FileOssUploadResponse(FilePublic):
@@ -151,6 +152,7 @@ class FileInDB(FileBase, table=True):
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1)  # 分片上传的总分片数(仅用于分片上传)
     image_path: str | None = Field(default=None, max_length=255, description="图像输出目录在 OSS 上的路径")
+    default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
 
     # 与 PartInDB 的一对多关系,配置级联删除
     parts: List["PartInDB"] = Relationship(

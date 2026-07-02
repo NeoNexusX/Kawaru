@@ -73,8 +73,8 @@ storage:
   failed_experiment_ttl_minutes: 30
 
 oss:
-  region_id: cn-shenzhen          # 直接使用此值（服务端 + 测试客户端都从这读）；改成你测试 bucket 的 region
-  bucket_name: kawaru-test    # ← 改成你的测试 bucket
+  region_id: cn-hangzhou
+  bucket_name: kawaru-oss
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/

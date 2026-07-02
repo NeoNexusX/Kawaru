@@ -22,6 +22,7 @@ from api_services.file_service import (
     prepare_download_raw_oss,
     rollback_simple_upload,
     get_reuse_file_by_hash,
+    set_file_public_service,
     unlink_user_from_file,
     update_download_stats,
     validate_and_merge_parts_business,
@@ -563,6 +564,38 @@ async def delete_user_file(
     return {"file_id": file_id, "status": "deleted"}
 
 
+async def set_file_public(
+    file_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> dict[str, Any]:
+    """
+    【文件公开设置接口】
+
+    功能:将私有文件(is_public=False)改为公开(is_public=True)。
+    权限:仅文件所有者或管理员可操作。
+
+    流程:
+    1. 查询文件记录
+    2. 权限校验(文件所有者或管理员)
+    3. 更新 is_public 字段为 True
+
+    注意:
+    - 操作是幂等的:重复调用不会产生副作用
+    - 设为公开后,文件将出现在公共文件列表中
+    """
+    file_record = await get_file_record_by_id(file_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+
+    await set_file_public_service(async_session, file_record)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+
+    logger.info(f"file set to public user={current_user.id} file_id={file_id}")
+    return {"file_id": file_id, "is_public": file_record.is_public}
+
+
 async def get_download_file_metadata(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -638,7 +671,6 @@ async def get_download_file_metadata(
 
 async def get_raw_download_metadata(
     file_id: int,
-    current_user: Annotated[UserInDB, Depends(token_authen)],
     session: AsyncSessionDep,
 ) -> RawDownloadResponse:
     """
@@ -647,21 +679,19 @@ async def get_raw_download_metadata(
     功能：不打包，直接为 origin 的 imzML/ibd 各签一个预签名 URL 返回。
     时机：前端请求 RAW 直链下载时调用。
 
+    公开接口，无需鉴权：任何人都可直接获取 imzML/ibd 直链下载 URL，因此不做登录态与
+    用户下载配额校验，也不更新用户维度的下载次数（仅更新文件维度统计）。
+
     与旧下载接口的区别：
     - 旧接口 GET /files/{id}/download：走 FC ZIP 打包，可能返回 <PACKING>
     - 新接口 GET /files/{id}/download_raw：跳过打包，毫秒级返回两个直链 URL
 
     流程：
-    1. 下载次数限制检查（非管理员用户）
-    2. 校验文件类型（仅支持 OSS + imzML）
-    3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
-    4. 更新下载统计
+    1. 校验文件类型（仅支持 OSS + imzML）
+    2. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
+    3. 更新下载统计（仅文件维度）
 
     Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
-
-    下载限制：
-    - 管理员：无限制
-    - 普通用户：受用户下载配额限制
 
     注意：
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
@@ -669,13 +699,7 @@ async def get_raw_download_metadata(
     """
     file_record = await get_file_record_by_id(file_id, session)
 
-    logger.debug(f"raw download request user={current_user.id} file_id={file_id}")
-
-    # 下载次数限制检查
-    if current_user.identity != "admin":
-        used = current_user.download_used or 0
-        if used >= current_user.max_download_count:
-            raise user_download_limit_exception
+    logger.debug(f"raw download request file_id={file_id}")
 
     # 只支持 OSS + imzML
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
@@ -688,13 +712,12 @@ async def get_raw_download_metadata(
         response = RawDownloadResponse.model_validate_json(cached)
 
         # 缓存命中仍然计一次下载
-        await update_download_stats(session, file_record, current_user)
+        await update_download_stats(session, file_record)
         await session.commit()
-        await session.refresh(current_user)
         await session.refresh(file_record)
 
         logger.info(
-            f"raw download (cached) user={current_user.id} file_id={file_id} filename={file_record.filename}"
+            f"raw download (cached) file_id={file_id} filename={file_record.filename}"
         )
         return response
 
@@ -706,14 +729,13 @@ async def get_raw_download_metadata(
     await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
 
     # 更新下载统计
-    await update_download_stats(session, file_record, current_user)
+    await update_download_stats(session, file_record)
 
     await session.commit()
-    await session.refresh(current_user)
     await session.refresh(file_record)
 
     logger.info(
-        f"raw download success user={current_user.id} file_id={file_id} filename={file_record.filename}"
+        f"raw download success file_id={file_id} filename={file_record.filename}"
     )
 
     return response
@@ -911,3 +933,4 @@ ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
+SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]

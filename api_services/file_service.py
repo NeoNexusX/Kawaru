@@ -530,19 +530,31 @@ async def validate_hash_and_size(
 #########################
 # File  - 改
 #########################
+async def set_file_public_service(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+) -> None:
+    """将文件标记为公开"""
+    file_record.is_public = True
+    async_session.add(file_record)
+    await async_session.flush()
+
+
 async def update_download_stats(
     session: AsyncSession,
     file_record: FileInDB,
-    current_user: UserInDB,
+    current_user: UserInDB | None = None,
 ) -> None:
     """
     更新下载统计（原子操作，防止并发丢失更新）
 
     使用数据库级别的 UPDATE SET field = field + 1，
     避免 ORM read-modify-write 模式在高并发下的竞态条件。
+
+    current_user 为空时（免登录下载）只更新文件维度的统计，跳过用户已用下载次数。
     """
     now = utc_time()
-    assert file_record.file_id is not None and current_user.id is not None
+    assert file_record.file_id is not None
 
     # 原子递增文件下载次数 + 更新最近下载时间
     await atomic_increment(
@@ -554,11 +566,12 @@ async def update_download_stats(
         "last_downloaded_at", now, pk_column="file_id",
     )
 
-    # 原子递增用户已用下载次数
-    await atomic_increment(
-        session, UserInDB, current_user.id,
-        "download_used",
-    )
+    # 原子递增用户已用下载次数（仅登录用户）
+    if current_user is not None and current_user.id is not None:
+        await atomic_increment(
+            session, UserInDB, current_user.id,
+            "download_used",
+        )
 
 
 #########################
