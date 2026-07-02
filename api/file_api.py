@@ -591,6 +591,7 @@ async def set_file_public(
     await set_file_public_service(async_session, file_record)
     await async_session.commit()
     await async_session.refresh(file_record)
+    await async_session.refresh(current_user)
 
     logger.info(f"file set to public user={current_user.id} file_id={file_id}")
     return {"file_id": file_id, "is_public": file_record.is_public}
