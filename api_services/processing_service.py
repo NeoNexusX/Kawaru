@@ -66,7 +66,6 @@ async def create_process_run(
         user_id=user_id,
         params_json=algorithms_config.model_dump_json(),
         status=ProcessingStatus.PROCESSING,
-        started_at=utc_time(),
     )
     async_session.add(run_record)
     await async_session.flush()
@@ -131,6 +130,21 @@ async def delete_process_run(
     """
     if run_record.out_path:
         await cleanup_output_dir(run_record.out_path, storage_type)
+
+    # 如果删除的是 raw_convert 直转 run（无算法处理），清除文件表的 default_run_id
+    if run_record.params_json == RAW_CONVERT_MARKER:
+        file_record = (
+            await async_session.exec(
+                select(FileInDB).where(FileInDB.file_id == run_record.source_file_id)
+            )
+        ).first()
+        if file_record and file_record.default_run_id == run_record.id:
+            file_record.default_run_id = None
+            async_session.add(file_record)
+            logger.info(
+                "cleared default_run_id for file_id=%s (deleting raw_convert run_id=%s)",
+                run_record.source_file_id, run_record.id,
+            )
 
     # 扣除用户已处理配额（原子操作，防止并发丢失更新；GREATEST 保证不低于 0）
     if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:

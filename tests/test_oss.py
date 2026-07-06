@@ -3,7 +3,7 @@ OSS 测试集合（与本地上传测试区分开）
 
 TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
 TestOss.test_file_metadata              [oss]   GET /files/{file_id}/metadata（公开接口，不依赖回调）
-TestOss.test_simulate_fc_callback       [oss]   模拟回调 → 轮询 download_raw 等待 FC 解压（最长 120s）
+TestOss.test_simulate_fc_callback       [oss]   轮询 OSS 等待 FC 解压 → 模拟回调
 TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（回调后直接验证）
 TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理 OSS 文件 + DB 记录 + 临时 zip
 
@@ -26,6 +26,7 @@ import pytest
 from httpx import AsyncClient
 
 from tools.cal_hash import compute_imzml_md5
+from storage_backend.storage import OssStorage
 from .conftest import logger
 from .helpers.oss import upload_file_to_oss
 from .helpers.uploads import (
@@ -129,15 +130,15 @@ class TestOss:
 
     @pytest.mark.oss
     async def test_simulate_fc_callback(self, admin_login: Tuple[AsyncClient, str, str]):
-        """模拟 FC 回调 → 轮询 download_raw 等待 FC 解压完成
+        """等待 FC 解压完成 → 模拟 FC 回调
 
         OSS 路径规则：
           zip       → data/{stem}.zip
           imzML/ibd → origin/{stem}/{stem}.imzML / origin/{stem}/{stem}.ibd
 
         流程：
-          1. 模拟 FC 回调，将 origin 文件路径写入 DB
-          2. 轮询 GET /files/{file_id}/download_raw，直到 FC 解压完成（origin 文件就绪）
+          1. 轮询 OSS 检查 origin 文件是否存在，等待 FC 解压完成
+          2. 模拟 FC 回调，将 origin 文件路径写入 DB
           3. 最长等待 120 秒，超时直接报错
         """
         if TestOss._uploaded_file_id is None:
@@ -151,7 +152,32 @@ class TestOss:
         imzml_path = f"origin/{stem}/{stem}.imzML"
         ibd_path = f"origin/{stem}/{stem}.ibd"
 
-        # 1. 模拟 FC 回调：将 origin 文件路径写入 DB（此时 FC 可能还在解压中）
+        # 1. 轮询 OSS 等待 FC 解压完成（origin 文件就绪），再发回调
+        FC_POLL_INTERVAL = 5   # 轮询间隔（秒）
+        FC_MAX_WAIT = 120      # 最长等待时间（秒）
+
+        logger.info("polling OSS for FC unzip (max %ds, interval %ds)...",
+                    FC_MAX_WAIT, FC_POLL_INTERVAL)
+        start = time.monotonic()
+        while time.monotonic() - start < FC_MAX_WAIT:
+            imzml_ready = await OssStorage.check_file_exist(imzml_path)
+            ibd_ready = await OssStorage.check_file_exist(ibd_path)
+            if imzml_ready and ibd_ready:
+                elapsed = time.monotonic() - start
+                logger.info("FC unzip complete after %.1fs", elapsed)
+                break
+            logger.info("FC unzip pending (%.1fs elapsed, imzml=%s, ibd=%s)...",
+                        time.monotonic() - start, imzml_ready, ibd_ready)
+            await asyncio.sleep(FC_POLL_INTERVAL)
+        else:
+            elapsed = time.monotonic() - start
+            raise AssertionError(
+                f"FC unzip did not complete within {FC_MAX_WAIT}s "
+                f"(elapsed={elapsed:.1f}s). "
+                f"Expected origin files at {imzml_path} / {ibd_path}"
+            )
+
+        # 2. 模拟 FC 回调：将 origin 文件路径写入 DB（此时 origin 文件已就绪）
         callback_body = {
             "filename": TEST_FILENAME,
             "file_path": TestOss._oss_path,
@@ -178,30 +204,6 @@ class TestOss:
         assert body["file_id"] == file_id
         assert body["status"] == "completed"
         logger.info("callback registered, file_id=%s status=completed", file_id)
-
-        # 2. 轮询 download_raw 等待 FC 解压完成（origin 文件实际就绪于 OSS）
-        FC_POLL_INTERVAL = 5   # 轮询间隔（秒）
-        FC_MAX_WAIT = 120      # 最长等待时间（秒）
-
-        logger.info("polling download_raw for FC unzip (max %ds, interval %ds)...",
-                    FC_MAX_WAIT, FC_POLL_INTERVAL)
-        start = time.monotonic()
-        while time.monotonic() - start < FC_MAX_WAIT:
-            rs = await client.get(f"/files/{file_id}/download_raw", headers=auth)
-            if rs.status_code == 200:
-                elapsed = time.monotonic() - start
-                logger.info("FC unzip complete after %.1fs", elapsed)
-                break
-            logger.info("FC unzip pending (%.1fs elapsed, status=%d)...",
-                        time.monotonic() - start, rs.status_code)
-            await asyncio.sleep(FC_POLL_INTERVAL)
-        else:
-            elapsed = time.monotonic() - start
-            raise AssertionError(
-                f"FC unzip did not complete within {FC_MAX_WAIT}s "
-                f"(elapsed={elapsed:.1f}s). "
-                f"Expected origin files at {imzml_path} / {ibd_path}"
-            )
 
         logger.info("test_simulate_fc_callback passed: file_id=%s", file_id)
 

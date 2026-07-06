@@ -77,6 +77,10 @@ jobs:
             echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
             docker compose -f docker-compose.prod.yml -p kawaru-prod pull app worker beat
             docker compose -f docker-compose.prod.yml -p kawaru-prod up -d --wait --wait-timeout 300
+            # 部署成功后才执行：本地 latest 标签指向本次部署的镜像（与 GHCR 的 latest 同 digest）
+            docker tag "$APP_IMAGE" "${APP_IMAGE%:*}:latest"
+            # 清理无容器引用且超过 7 天的旧镜像（历史 sha-<sha> / dangling）；GHCR 仍保留全部 tag，可随时回拉
+            docker image prune -af --filter "until=168h"
             docker logout ghcr.io
         env:
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}

@@ -104,7 +104,6 @@ class ExperimentProcessRunBase(SQLModel):
     params_json: str | None = Field(default=None, max_length=4096, description="算法参数 JSON 字符串")
     status: str = Field(default=ProcessingStatus.PROCESSING, max_length=32, description="运行状态")
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
-    started_at: datetime | None = Field(default=None, description="开始执行时间")
     finished_at: datetime | None = Field(default=None, description="结束时间")
 
 
