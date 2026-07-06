@@ -66,7 +66,6 @@ async def create_process_run(
         user_id=user_id,
         params_json=algorithms_config.model_dump_json(),
         status=ProcessingStatus.PROCESSING,
-        started_at=utc_time(),
     )
     async_session.add(run_record)
     await async_session.flush()
