@@ -99,8 +99,10 @@ async def create_raw_convert_task(
     run_record = None
     try:
         # 1. 查文件归属 + 就绪 origin，同时获取文件名和元数据
+        #    allow_public=True：公开文件允许任何登录用户直转
         origin, filename, metadata = await get_origin_for_processing(
             async_session, body.file_id, current_user,
+            allow_public=True,
         )
 
         assert current_user.id is not None
