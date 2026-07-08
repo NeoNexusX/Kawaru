@@ -54,9 +54,6 @@ PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
-FC_LOGSTORE_NAME = config.oss.fc_logstore_name
-FC_LOG_PROJECT_NAME = config.oss.fc_log_project_name
-FC_UNZIP_TIMEOUT_SECONDS = config.oss.fc_unzip_timeout_seconds
 FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
 FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
 FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
@@ -90,7 +87,6 @@ __all__ = [
     "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
     "OSS_ORIGIN_STORAGE_ROOT",
-    "FC_UNZIP_TIMEOUT_SECONDS",
     "FC_PACKUP_ENDPOINT",
     "FC_PACKUP_TIMEOUT_SECONDS",
     "FC_ALGORITHM_ENDPOINT",
@@ -102,8 +98,6 @@ __all__ = [
     "FC_RAW_CONVERT_ENDPOINT",
     "FC_RAW_CONVERT_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
-    "FC_LOGSTORE_NAME",
-    "FC_LOG_PROJECT_NAME",
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
 ]

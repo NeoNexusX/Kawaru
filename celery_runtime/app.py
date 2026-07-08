@@ -15,7 +15,6 @@ CELERY_MODULE_IMPORTS = [
     "background.experiment_background",
     "background.experiment_background_helper",
     "background.processing_background",
-    "storage_backend.oss_log_helper",
 ]
 
 

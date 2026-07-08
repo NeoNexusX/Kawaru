@@ -73,7 +73,7 @@ services:
       redis:   { condition: service_healthy }
     env_file: [ .env ]
     command: ["celery", "-A", "celery_runtime.entrypoint:celery_app", "worker",
-              "-Q", "default", "--pool", "prefork", "--concurrency", "2",
+              "-Q", "default", "--pool", "threads", "--concurrency", "10",
               "--without-gossip", "--loglevel", "INFO"]
     volumes:
       - ./dev-config.yaml:/app/config/dev-config.yaml:ro
