@@ -296,7 +296,7 @@ async def get_origin_for_processing(
     file_id: int,
     current_user: UserInDB,
     allow_public: bool = False,
-) -> tuple[OriginImzMLInDB, str, dict]:
+) -> tuple[OriginImzMLInDB, str, dict, int | None]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
 
@@ -304,7 +304,7 @@ async def get_origin_for_processing(
         allow_public: 若为 True 且文件已公开，跳过所有权校验（用于公开文件的 raw_convert）
 
     Returns:
-        (origin, filename)
+        (origin, filename, metadata, default_run_id)
 
     Raises:
         invalid_process_request_exception
@@ -341,7 +341,7 @@ async def get_origin_for_processing(
         "pixel_size_vertical": file_record.pixel_size_vertical or 0.0,      # Zarr: 垂直像素尺寸 (μm)
         "polarity": file_record.polarity or "",                 # Zarr: 极性（positive / negative）
     }
-    return origin, file_record.filename, metadata
+    return origin, file_record.filename, metadata, file_record.default_run_id
 
 
 async def get_storage_type_by_source_file_id(
