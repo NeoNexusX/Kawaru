@@ -12,12 +12,14 @@ from api_services.file_service import (
 )
 from api_helpers.file_helper import delete_file_by_storage
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
+from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_UPLOAD_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
 from models.file_models import FileInDB
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
+from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus
 
 from celery_runtime.state import get_celery_app
 
@@ -241,6 +243,84 @@ async def cleanup_failed_experiments(
             logger.error("failed to  cleanup changes error=%s", e)
 
     return cleaned
+
+
+@celery_app.task()  # type: ignore
+async def cleanup_stale_process_runs(
+    timeout_minutes: int = STALE_PROCESS_RUN_TIMEOUT_MINUTES,
+    batch_size: int = 100,
+) -> int:
+    """
+    清理僵尸算法/转换 run：将超过 timeout 仍为 processing 的记录标记为 failed。
+
+    FC 函数异步执行后通过回调更新状态，若 FC 超时/崩溃/回调丢失，
+    run 会永久卡在 processing。此任务定期扫描并标记为 failed。
+    """
+    async with get_standalone_async_session() as session:
+        now = utc_time()
+        cutoff_time = now - timedelta(minutes=timeout_minutes)
+        total_cleaned = 0
+
+        records = (await session.exec(
+            select(ExperimentProcessRunInDB).where(
+                ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
+                ExperimentProcessRunInDB.created_at < cutoff_time,).limit(batch_size)
+            .with_for_update(skip_locked=True))).all()
+
+        for run_record in records:
+            run_record.status = ProcessingStatus.FAILED
+            run_record.error_message = "FC task timeout: no callback received"
+            run_record.finished_at = now
+            session.add(run_record)
+            total_cleaned += 1
+            logger.info(
+                "marked stale process run as failed run_id=%s created_at=%s",
+                run_record.id, run_record.created_at,
+            )
+
+        if total_cleaned:
+            await session.commit()
+
+        logger.info("cleanup_stale_process_runs completed, marked %d as failed", total_cleaned)
+    return total_cleaned
+
+
+@celery_app.task()  # type: ignore
+async def cleanup_stale_uploads(
+    timeout_minutes: int = STALE_UPLOAD_TIMEOUT_MINUTES,
+    batch_size: int = 100,
+) -> int:
+    """
+    清理僵尸上传记录：将超过 timeout 仍为 uploading 的文件标记为 failed。
+
+    OSS 上传后由 FC 解压并通过回调更新状态，若回调丢失，
+    文件会永久卡在 uploading。此任务定期扫描并标记为 failed。
+    """
+    async with get_standalone_async_session() as session:
+        now = utc_time()
+        cutoff_time = now - timedelta(minutes=timeout_minutes)
+        total_cleaned = 0
+
+        records = (await session.exec(
+            select(FileInDB).where(
+                FileInDB.status == "uploading",
+                FileInDB.uploaded_at < cutoff_time,).limit(batch_size)
+            .with_for_update(skip_locked=True))).all()
+
+        for file_record in records:
+            file_record.status = "failed"
+            session.add(file_record)
+            total_cleaned += 1
+            logger.info(
+                "marked stale upload as failed file_id=%s filename=%s uploaded_at=%s",
+                file_record.file_id, file_record.filename, file_record.uploaded_at,
+            )
+
+        if total_cleaned:
+            await session.commit()
+
+        logger.info("cleanup_stale_uploads completed, marked %d as failed", total_cleaned)
+    return total_cleaned
 
 
 @celery_app.task()

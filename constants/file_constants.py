@@ -45,6 +45,14 @@ CLEANUP_PREFLIGHTS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_prefl
 DOWNLOAD_ZIP_TTL_MINUTES = int(getattr(storage_config, "download_zip_ttl_minutes", 30))
 CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_download_zip_interval_minutes", 60))
 
+# 僵尸 process_run 清理策略（FC 算法/转换超时无回调）
+STALE_PROCESS_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_process_run_timeout_minutes", 60))
+CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_stale_process_runs_interval_minutes", 15))
+
+# 僵尸上传记录清理策略（OSS 上传后 FC 解压无回调）
+STALE_UPLOAD_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_upload_timeout_minutes", 60))
+CLEANUP_STALE_UPLOADS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_stale_uploads_interval_minutes", 15))
+
 # 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
 SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
 PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
@@ -83,6 +91,10 @@ __all__ = [
     "CLEANUP_PREFLIGHTS_INTERVAL_MINUTES",
     "DOWNLOAD_ZIP_TTL_MINUTES",
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",
+    "STALE_PROCESS_RUN_TIMEOUT_MINUTES",
+    "CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES",
+    "STALE_UPLOAD_TIMEOUT_MINUTES",
+    "CLEANUP_STALE_UPLOADS_INTERVAL_MINUTES",
     "SIGNED_URL_EXPIRE_SECONDS",
     "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
