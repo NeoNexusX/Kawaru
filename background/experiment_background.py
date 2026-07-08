@@ -205,7 +205,7 @@ async def process_imzml_experiment_background_task(
 
             # 删除原始zip，清理记录的file的path信息
             if source_file:
-                async with AsyncSession(get_async_engine()) as async_session:
+                async with AsyncSession(get_async_engine(standalone=True)) as async_session:
                     await delete_source_file_and_clear_path(async_session, source_file_id)
                     await async_session.commit()
 
@@ -220,7 +220,7 @@ async def process_imzml_experiment_background_task(
 
             # 删除原始zip，清理记录的file的path信息
             if source_file:
-                async with AsyncSession(get_async_engine()) as async_session:
+                async with AsyncSession(get_async_engine(standalone=True)) as async_session:
                     await delete_source_file_and_clear_path(async_session, source_file_id)
                     await async_session.commit()
 
