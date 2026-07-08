@@ -6,7 +6,7 @@ from models.file_models import FilePublic, PartUploadStatus, FileOssUploadRespon
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, RawDownloadDep, PreflightDep,PartPublic,
+    DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
     OssUploadDep, ImageUrlDep, FileMetadataDep, SetFilePublicDep
 )
@@ -40,7 +40,14 @@ async def list_user_files(files: ListFilesDep):
 
 @file_router.get("/{file_id}/download_raw")
 async def download_file_raw(file_meta: RawDownloadDep):
-    """RAW 直链下载——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    asyncio.create_task(incr_visit())
+    return file_meta
+
+
+@file_router.get("/{file_id}/download_raw_noauth")
+async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
+    """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
 

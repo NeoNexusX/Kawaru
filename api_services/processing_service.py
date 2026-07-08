@@ -81,7 +81,7 @@ async def create_raw_convert_run(
     """
     创建 raw_convert 类型的处理 run（无算法，直转 spectra_zarr）
 
-    防重复：若同文件同用户已有 processing 状态的 raw_convert run，直接返回已有 run。
+    防重复：若同文件已有 processing 状态的 raw_convert run，直接返回已有 run（不限用户）。
 
     Returns:
         (run_record, is_existing) — is_existing=True 表示返回的是已有记录（防重复命中）
@@ -90,15 +90,14 @@ async def create_raw_convert_run(
         await async_session.exec(
             select(ExperimentProcessRunInDB).where(
                 ExperimentProcessRunInDB.source_file_id == file_id,
-                ExperimentProcessRunInDB.user_id == user_id,
                 ExperimentProcessRunInDB.params_json == RAW_CONVERT_MARKER,
                 ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
             )
         )
     ).first()
     if existing:
-        logger.info("raw_convert run already exists for file_id=%s user_id=%s run_id=%s",
-                     file_id, user_id, existing.id)
+        logger.info("raw_convert run already exists for file_id=%s run_id=%s",
+                     file_id, existing.id)
         return existing, True
 
     run = ExperimentProcessRunInDB(
@@ -296,12 +295,16 @@ async def get_origin_for_processing(
     async_session: AsyncSession,
     file_id: int,
     current_user: UserInDB,
-) -> tuple[OriginImzMLInDB, str, dict]:
+    allow_public: bool = False,
+) -> tuple[OriginImzMLInDB, str, dict, int | None]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
 
+    Args:
+        allow_public: 若为 True 且文件已公开，跳过所有权校验（用于公开文件的 raw_convert）
+
     Returns:
-        (origin, filename)
+        (origin, filename, metadata, default_run_id)
 
     Raises:
         invalid_process_request_exception
@@ -314,9 +317,12 @@ async def get_origin_for_processing(
     if not file_record:
         logger.warning("file not found file_id=%s user=%s", file_id, current_user.id)
         raise invalid_process_request_exception
-    if not await assert_file_owner(async_session, file_record, current_user):
-        logger.warning("file permission denied file_id=%s user=%s", file_id, current_user.id)
-        raise invalid_process_request_exception
+
+    skip_ownership = allow_public and file_record.is_public
+    if not skip_ownership:
+        if not await assert_file_owner(async_session, file_record, current_user):
+            logger.warning("file permission denied file_id=%s user=%s", file_id, current_user.id)
+            raise invalid_process_request_exception
 
     origin = await get_origin_imzml_by_file_id(async_session, file_id)
     if not origin:
@@ -335,7 +341,7 @@ async def get_origin_for_processing(
         "pixel_size_vertical": file_record.pixel_size_vertical or 0.0,      # Zarr: 垂直像素尺寸 (μm)
         "polarity": file_record.polarity or "",                 # Zarr: 极性（positive / negative）
     }
-    return origin, file_record.filename, metadata
+    return origin, file_record.filename, metadata, file_record.default_run_id
 
 
 async def get_storage_type_by_source_file_id(
@@ -422,11 +428,21 @@ async def assert_zarr_folder_access(
     if not run_record:
         raise process_run_not_found_exception
 
-    # 2. 权限校验
+    # 2. 权限校验：管理员 / 记录所有者 / 公开文件的 raw_convert run
     is_authorized = (
         current_user.identity == "admin"
         or run_record.user_id == current_user.id
     )
+    if not is_authorized and run_record.params_json == RAW_CONVERT_MARKER:
+        # 公开文件的 raw_convert run 允许任何登录用户查看
+        file_record = (
+            await async_session.exec(
+                select(FileInDB).where(FileInDB.file_id == run_record.source_file_id)
+            )
+        ).first()
+        if file_record and file_record.is_public:
+            is_authorized = True
+
     if not is_authorized:
         raise process_run_permission_denied_exception
 
