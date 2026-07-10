@@ -43,7 +43,6 @@ def load_constants():
         CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES,
         CLEANUP_PREFLIGHTS_INTERVAL_MINUTES,
         CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES,
-        CLEANUP_STALE_UPLOADS_INTERVAL_MINUTES,
     )
     from constants.experiment_constants import CLEANUP_FAILED_EXPERIMENTS_INTERVAL_MINUTES # pylint: disable=import-outside-toplevel
     # 后续可在此添加更多常量导入
@@ -53,7 +52,6 @@ def load_constants():
         'cleanup_stale_preflights_interval_seconds': CLEANUP_PREFLIGHTS_INTERVAL_MINUTES * 60,
         'cleanup_failed_experiments_interval_seconds': CLEANUP_FAILED_EXPERIMENTS_INTERVAL_MINUTES * 60,
         'cleanup_stale_process_runs_interval_seconds': CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES * 60,
-        'cleanup_stale_uploads_interval_seconds': CLEANUP_STALE_UPLOADS_INTERVAL_MINUTES * 60,
     }
 
 

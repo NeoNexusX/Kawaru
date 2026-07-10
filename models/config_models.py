@@ -92,8 +92,6 @@ class StorageSettings(BaseModel):
     failed_experiment_ttl_minutes: int
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
     cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")
-    stale_upload_timeout_minutes: int = Field(default=60, description="上传超过此时间无回调则标记失败")
-    cleanup_stale_uploads_interval_minutes: int = Field(default=15, description="清理僵尸上传的定时间隔")
 
 
 class OSSSettings(BaseModel):

@@ -77,8 +77,6 @@ storage:
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
   cleanup_stale_process_runs_interval_minutes: 30
-  stale_upload_timeout_minutes: 60
-  cleanup_stale_uploads_interval_minutes: 30
 
 oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）

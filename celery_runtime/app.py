@@ -72,12 +72,6 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "args": (),
             "kwargs": {},
         },
-        "cleanup_stale_uploads": {
-            "task": "background.file_background.cleanup_stale_uploads",
-            "schedule": const_kwargs["cleanup_stale_uploads_interval_seconds"],
-            "args": (),
-            "kwargs": {},
-        },
     }
 
 
