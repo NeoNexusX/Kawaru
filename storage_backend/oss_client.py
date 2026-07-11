@@ -109,8 +109,6 @@ def check_oss_config(config: OSSSettings):
     """检查 oss 配置"""
     if config.bucket_name is None:
         raise ValueError("oss bucket_name is empty")
-    if config.fc_logstore_name is None:
-        raise ValueError("oss fc_logstore_name is empty")
     if config.region_id is None:
         raise ValueError("oss region_id is empty")
     if config.oss_zip_storage_root is None:
@@ -121,8 +119,6 @@ def check_oss_config(config: OSSSettings):
         raise ValueError("oss oss_upload_sts_token_expire_minutes is empty")
     if config.oss_download_sts_token_expire_minutes is None:
         raise ValueError("oss oss_download_sts_token_expire_minutes is empty")
-    if config.fc_log_project_name is None:
-        raise ValueError("oss fc_log_project_name is empty")
 
 
 def init_oss_summary(client: oss_aio.AsyncClient | None):

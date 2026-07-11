@@ -15,7 +15,6 @@ CELERY_MODULE_IMPORTS = [
     "background.experiment_background",
     "background.experiment_background_helper",
     "background.processing_background",
-    "storage_backend.oss_log_helper",
 ]
 
 
@@ -64,6 +63,12 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
         "cleanup_failed_experiments": {
             "task": "background.file_background.cleanup_failed_experiments",
             "schedule": const_kwargs["cleanup_failed_experiments_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "cleanup_stale_process_runs": {
+            "task": "background.file_background.cleanup_stale_process_runs",
+            "schedule": const_kwargs["cleanup_stale_process_runs_interval_seconds"],
             "args": (),
             "kwargs": {},
         },

@@ -49,7 +49,7 @@ async def start_embedded_celery():
         # --- default worker ---
         celery_cfg = cfg.celery
         pool = celery_cfg.worker_pool
-        if pool not in ("prefork", "gevent", "eventlet", "solo"):
+        if pool not in ("prefork", "gevent", "eventlet", "solo", "threads"):
             logger.warning("Invalid worker pool %s, defaulting to prefork", pool)
             pool = "prefork"
 
