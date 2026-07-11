@@ -28,7 +28,6 @@ from api_helpers.file_helper import (
     delete_file_by_storage,
 )
 from storage_backend.storage import OssStorage, LocalStorage
-from storage_backend.oss_log_helper import get_fc_invoke_logs_by_request_id_in_background
 
 from celery_runtime.result import wait_for_result
 from background.file_background_helper import build_zip_file_background
@@ -923,8 +922,6 @@ async def _handle_packup_status_check(
         logger.error("packup failed, filename=%s", file_record.filename)
         fc_request_id = packup.get("fc_request_id")
         await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
-        if fc_request_id is not None:
-            get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore
         raise file_content_missing_exception
 
     else:
@@ -949,9 +946,6 @@ async def _prepare_download_url_for_completed_packup(
 
     await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
-
-    if fc_request_id is not None:
-        get_fc_invoke_logs_by_request_id_in_background.delay(fc_request_id)  # type: ignore
 
     file_record.path = zip_path
     file_record.size = zip_size  # type: ignore
