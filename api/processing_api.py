@@ -56,7 +56,7 @@ async def create_algorithm_task(
             raise invalid_process_request_exception
 
         # 2. 查文件归属 + 就绪 origin，同时获取文件名和元数据
-        origin, filename, metadata = await get_origin_for_processing(async_session, body.file_id, current_user)
+        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user)
 
         assert current_user.id is not None
         run_record = await create_process_run(
@@ -98,14 +98,24 @@ async def create_raw_convert_task(
     """创建 raw_convert 直转任务 — 写 DB + 异步触发 FC fc-raw-convert"""
     run_record = None
     try:
-        # 1. 查文件归属 + 就绪 origin，同时获取文件名和元数据
-        origin, filename, metadata = await get_origin_for_processing(
+        # 1. 查文件归属 + 就绪 origin，同时获取文件名、元数据和 default_run_id
+        #    allow_public=True：公开文件允许任何登录用户直转
+        origin, filename, metadata, default_run_id = await get_origin_for_processing(
             async_session, body.file_id, current_user,
+            allow_public=True,
         )
 
         assert current_user.id is not None
 
-        # 2. 创建 raw_convert run（含防重复，experiment_id 必须在此设置）
+        # 2. 已有完成的直转 Zarr，直接复用（default_run_id 由算法回调写入）
+        if default_run_id is not None:
+            run_record = await get_process_run_by_id(async_session, default_run_id)
+            if run_record:
+                return ExperimentProcessRunPublic(
+                    **run_record.model_dump(), filename=filename,
+                )
+
+        # 3. 创建 raw_convert run（含 PROCESSING 防重复）
         run_record, is_existing = await create_raw_convert_run(
             file_id=body.file_id,
             user_id=current_user.id,

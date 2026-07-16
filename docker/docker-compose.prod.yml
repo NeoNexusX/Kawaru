@@ -5,7 +5,7 @@
 #   - 镜像 tag 为 latest（dev 是 dev-latest）；
 #   - mariadb / redis 只绑定 127.0.0.1（不对公网开放），dev 为便于外部检测才暴露到 0.0.0.0。
 #
-# prod-cd 只负责：构建镜像 + 同步本文件 + pull + up；不写 .env / prod-config.yaml。
+# prod-cd 只负责：构建镜像 + 同步本文件 + pull + up + 刷新本地 latest 标签 + 清理旧镜像；不写 .env / prod-config.yaml。
 # 配置与密钥由人一次性准备在服务器固定目录（compose 自动读取同目录 .env）。
 #
 # 服务器布局（/opt/kawaru-prod/）：
@@ -78,7 +78,7 @@ services:
       redis:   { condition: service_healthy }
     env_file: [ .env ]
     command: ["celery", "-A", "celery_runtime.entrypoint:celery_app", "worker",
-              "-Q", "default", "--pool", "prefork", "--concurrency", "2",
+              "-Q", "default", "--pool", "threads", "--concurrency", "10",
               "--without-gossip", "--loglevel", "INFO"]
     volumes:
       - ./prod-config.yaml:/app/config/prod-config.yaml:ro

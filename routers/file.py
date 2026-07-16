@@ -6,7 +6,7 @@ from models.file_models import FilePublic, PartUploadStatus, FileOssUploadRespon
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, RawDownloadDep, PreflightDep,PartPublic,
+    DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,PartPublic,
     PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
     OssUploadDep, ImageUrlDep, FileMetadataDep, SetFilePublicDep
 )
@@ -40,7 +40,14 @@ async def list_user_files(files: ListFilesDep):
 
 @file_router.get("/{file_id}/download_raw")
 async def download_file_raw(file_meta: RawDownloadDep):
-    """RAW 直链下载——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    asyncio.create_task(incr_visit())
+    return file_meta
+
+
+@file_router.get("/{file_id}/download_raw_noauth")
+async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
+    """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
 
@@ -107,18 +114,3 @@ async def get_file_metadata(metadata: FileMetadataDep):
 async def set_file_public(result: SetFilePublicDep):
     """将文件设为公开"""
     return result
-
-
-# @file_router.post("/test_api")
-# async def test_api(request_id: str):
-#     """测试接口仅供开发过程中快速测试功能使用"""
-#     from background.experiment_background import get_fc_invoke_instance_id_by_request_id # pylint: disable=import-outside-toplevel
-#     from background.experiment_background import get_fc_invoke_logs_by_request_id # pylint: disable=import-outside-toplevel
-#     from background.experiment_background import get_fc_invoke_status  # pylint: disable=import-outside-toplevel
-#     from background.experiment_background import parse_fc_invoke_logs # pylint: disable=import-outside-toplevel
-
-#     instance_id = await get_fc_invoke_instance_id_by_request_id(request_id)
-#     invoke_logs = await get_fc_invoke_logs_by_request_id(request_id)
-#     invoke_status = await get_fc_invoke_status(request_id)
-#     final_imzml_path, final_ibd_path = parse_fc_invoke_logs(invoke_logs)
-#     return {"instance_id": instance_id, "invoke_logs": invoke_logs, "invoke_status": invoke_status, "final_imzml_path": final_imzml_path, "final_ibd_path": final_ibd_path}

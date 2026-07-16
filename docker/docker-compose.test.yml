@@ -98,7 +98,7 @@ services:
       - "celery_runtime.entrypoint:celery_app"
       - "worker"
       - "--pool"
-      - "prefork"
+      - "threads"
       - "--loglevel"
       - "INFO"
       - "--logfile"
@@ -107,7 +107,7 @@ services:
       - "default"
       - "--without-gossip"
       - "--concurrency"
-      - "2"
+      - "10"
     # 不加 healthcheck：
     # 1) `celery inspect ping` 每次都冷启动 python + 重新加载 task 列表，10s 超时内回不来；
     # 2) compose --wait 对无 healthcheck 的 service 只要求 Started，不要求 Healthy；

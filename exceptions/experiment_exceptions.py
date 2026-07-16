@@ -57,12 +57,6 @@ imzml_validation_failed_exception = HTTPException(
     detail=format_exception_detail("imzML file validation failed")
 )
 
-# oss上传后自动触发的函数调用ID为空异常
-oss_fc_request_id_empty_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("oss fc_request_id is required")
-)
-
 # process_run 不存在异常
 process_run_not_found_exception = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
@@ -134,7 +128,6 @@ __all__ = [
     "processing_quota_exceeded_exception",
     "invalid_process_request_exception",
     "origin_file_not_found_on_disk_exception",
-    "oss_fc_request_id_empty_exception",
     "origin_type_not_supported_exception",
     "process_run_not_completed_exception",
     "zarr_folder_not_found_exception",
