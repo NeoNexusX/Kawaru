@@ -50,7 +50,7 @@ git rebase origin/test   # recommended, keeps linear history
 
 ### 4. Merge Upward
 
-After testing passes: test → dev → main, all via Create a merge commit PR.
+After testing passes: test → dev → main, all via Create a merge commit PR. Pushing to `dev` / `main` triggers automatic deployment (see [Deployment Guide](DEPLOYMENT.md)).
 
 ## Commit Message Conventions
 
@@ -70,12 +70,55 @@ Model naming: `UserBase` (shared fields), `UserInDB` (database), `UserPublic` (r
 
 All function parameters and return values must have type annotations. Use Python 3.10+ syntax (`|` instead of `Union`).
 
-## Code Checks
+## CI and Code Checks
+
+Pushing to `test` triggers CI ([.github/workflows/ci.yml](../../.github/workflows/ci.yml)) in three stages:
+
+1. **Static checks** (GitHub runner): `uv sync --frozen` verifies the lockfile → `compileall` syntax check → `uvx ruff check .` lint (currently non-blocking; will become mandatory once existing lint debt is cleared)
+2. **Build image**: builds a test image and pushes it to GHCR
+3. **Integration test**: spins up the full test stack on the GitHub runner via [docker/docker-compose.test.yml](../../docker/docker-compose.test.yml) (app on 9001 + celery-worker + celery-beat + mariadb + redis), then runs `pytest -m "oss or perf_concurrent or password_reset"` inside the container (requires OSS / SMTP secrets)
+
+Before submitting a PR, run at least:
 
 ```bash
-uv run pylint api/ models/ database/   # max line length 130
-uv run pytest                           # run tests
+uvx ruff check .    # lint, same as CI
 ```
+
+> pylint is not part of CI; if you run it locally, note that [.pylintrc](../../.pylintrc) sets max-line-length to 150.
+
+## Running Tests
+
+The tests are end-to-end (they need a running server + MariaDB + Redis + celery worker). Two ways to run them.
+
+### Option 1: Actions on your own repo's `test` branch (recommended)
+
+Pushing your feature branch to the `test` branch of **your own fork** triggers the exact same CI as upstream — no local environment needed; watch the results on your repo's Actions page:
+
+```bash
+# Push the feature branch to your fork's test branch (origin = your fork)
+git push origin feature/<topic>:test
+```
+
+> The integration test requires four secrets in your repo's **Settings → Secrets and variables → Actions**: `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` / `SMTP_PASSWORD` (see [secrets.example.yaml](../../secrets.example.yaml) for what each value is). Without them the integration-test stage fails fast (static checks and the image build still run; the image is pushed to GHCR under your own account).
+
+### Option 2: Run locally
+
+The suite must connect to a **running** server (URL from `.env` `BASE_URL`, default `http://127.0.0.1:8000`):
+
+1. Start the local stack per the README (including a celery worker, otherwise email tasks never execute)
+2. Set `TEST_USER` / `TEST_PWD` in `.env`; if left empty, conftest parses the first-boot admin credentials printed in `kawaru_logs/api.log`
+3. Run `uv run pytest` (filter with markers like `-m oss`; marker definitions in [pytest.ini](../../pytest.ini))
+
+Alternatively, run the full test stack (same as CI, port 9001, destroyed afterwards):
+
+```bash
+docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build --wait
+docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
+docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent" -q
+docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
+```
+
+> External dependencies per marker: `oss` needs OSS credentials (`OSS_ACCESS_KEY_ID` etc.); `perf_concurrent` / `password_reset` need a working `SMTP_PASSWORD` (registration / reset go through the real email path).
 
 ## PR Review Checklist
 
