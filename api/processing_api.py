@@ -56,7 +56,7 @@ async def create_algorithm_task(
             raise invalid_process_request_exception
 
         # 2. 查文件归属 + 就绪 origin，同时获取文件名和元数据
-        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user)
+        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user, allow_public=True)
 
         assert current_user.id is not None
         run_record = await create_process_run(
