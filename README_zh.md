@@ -14,6 +14,7 @@ Kawaru 是一个基于 FastAPI 的后端服务器项目，为 SpatialXomics 提�
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) 包管理器
+- 可连接的 MariaDB 与 Redis 实例（本地安装或 Docker 均可）
 
 ## macOS 额外依赖
 
@@ -74,40 +75,62 @@ source .venv/bin/activate
 .venv\Scripts\activate
 ```
 
-### 3. 配置环境变量
+### 3. 准备 MariaDB 与 Redis
 
-创建 `.env` 文件并配置以下内容：
+应用启动时需要连接 MariaDB 和 Redis。本地没有实例的话，可以用 Docker 起临时实例：
+
+```bash
+docker run -d --name kawaru-mariadb -p 13306:3306 \
+  -e MARIADB_ROOT_PASSWORD=your_db_password mariadb:11.4
+
+docker run -d --name kawaru-redis -p 16379:6379 \
+  redis:8.4-alpine redis-server --requirepass your_redis_password
+```
+
+连接参数（host / port / 库名）在 `config.yaml` 的 `database:` / `redis:` 段配置，密码在 `.env` 中（见下一步）。
+
+### 4. 配置环境变量
 
 ```bash
 # 复制示例文件
 cp .env_example .env
 ```
 
-编辑 `.env` 文件，配置 SMTP 邮件服务等：
+启动时会校验必需环境变量（缺失会直接报错退出）。关键项：
 
-```env
-# SMTP 配置
-LAST_SMTP_PORT=465
-LAST_SMTP_USERNAME=your_email@example.com
-LAST_SMTP_PASSWORD=your_password
-LAST_SMTP_FROM_EMAIL=your_email@example.com
-LAST_SMTP_SERVER=smtp.example.com
-```
+| 变量 | 用途 |
+|------|------|
+| `DATABASE_PASSWORD` | MariaDB 密码（以 root 连接） |
+| `REDIS_PASSWORD` | Redis 密码 |
+| `SMTP_PASSWORD` | SMTP 登录密码（服务器 / 端口 / 账号 / 发件人在 `config.yaml` 的 `email:` 段配置） |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | 阿里云 OSS 凭证（`storage.allowed_storage_types` 含 `oss` 时必需） |
+| `OSS_FC_*_TOKEN` / `FC_CALLBACK_TOKEN` | 函数计算（FC）触发与回调令牌 |
+| `CONFIG_PATH` | 应用配置文件路径（默认 `config.yaml`） |
+| `LOG_DIR` / `LOG_LEVEL` | 日志目录与级别 |
+| `BASE_URL` / `TEST_USER` / `TEST_PWD` | 仅本地直接跑 pytest 时使用（见 [贡献指南](docs/zh/贡献指南.md)） |
 
-### 4. 配置服务器参数
-
-复制 `config_example.yaml` 为 `config.yaml`：
+### 5. 配置服务器参数
 
 ```bash
 cp config_example.yaml config.yaml
 ```
 
-编辑 `config.yaml` 文件，配置服务器基本信息。
+编辑 `config.yaml`，重点核对：
 
-### 5. 运行项目
+- `database:` / `redis:` — 指向第 3 步准备好的实例
+- `email:` — SMTP 服务器、端口、账号、发件人
+- `oss:` — bucket、region、FC 端点；不使用 OSS 时把 `storage.allowed_storage_types` 改为 `["local"]`
+
+### 6. 运行项目
 
 ```bash
 uv run main.py
+```
+
+开发时开启代码变更自动重载：
+
+```bash
+UVICORN_RELOAD=true uv run main.py
 ```
 
 或使用 uvicorn 直接运行：
@@ -119,6 +142,62 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 服务启动后，访问以下地址：
 - API 文档 (Swagger): `http://localhost:8000/docs`
 - API 文档 (ReDoc): `http://localhost:8000/redoc`
+
+### 7. 后台任务（Celery）
+
+邮件发送、文件处理、定时清理等都作为 Celery 任务执行，只启动 API 进程不会运行它们。本地开发有两种方式：
+
+**方式 A — 内嵌模式（最简单）**：在 `config.yaml` 中设置 `celery.enable_embedded_celery: true`，`uv run main.py` 会由 API 进程托管 worker + beat 子进程，随应用一起启停。
+
+**方式 B — 独立进程**（与生产部署一致，保持 `enable_embedded_celery: false`）：
+
+```bash
+# worker（消费 default 队列）
+uv run celery -A celery_runtime.entrypoint:celery_app worker \
+  -Q default --pool threads --concurrency 10 --without-gossip --loglevel INFO
+
+# beat（定时任务调度）
+uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
+```
+
+> 生产环境 worker / beat 运行在独立容器中（分离模式），详见 [部署指南](docs/zh/部署指南.md)。
+
+## 项目结构
+
+分层调用方向：`routers/` → `api/` → `api_services/` / `api_helpers/` → `database/` / `models/`；后台任务在 `background/`。
+
+| 目录 | 职责 |
+|------|------|
+| `routers/` | FastAPI 路由定义 |
+| `api/` | 接口处理逻辑 |
+| `api_services/` | 业务服务层 |
+| `api_helpers/` | api 层共享辅助函数 |
+| `background/` | Celery 任务定义 |
+| `celery_runtime/` | Celery 应用构建、worker / beat 入口、内嵌启动器 |
+| `boot/` | 启动引导：env / config / logging / celery / OSS 初始化 |
+| `models/` | Pydantic / SQLModel 模型 |
+| `database/` | 数据库引擎、建表、Redis 客户端 |
+| `storage_backend/` | 本地 / OSS 存储抽象 |
+| `constants/`、`exceptions/`、`tools/` | 常量、异常定义、日志等工具 |
+| `docker/` | Dockerfile 与 dev / prod / test compose 栈 |
+| `tests/` | 端到端 pytest 套件（需连接运行中的服务，见贡献指南） |
+| `.github/` | CI / CD GitHub Actions 工作流 |
+| `docs/` | 贡献指南与部署指南 |
+
+顶层文件：
+
+| 文件 | 用途 |
+|------|------|
+| `main.py` | 应用入口：FastAPI 实例、路由注册、生命周期（建表、创建管理员、内嵌 celery 启停） |
+| `config_example.yaml` | 应用配置模板，复制为 `config.yaml` 后使用 |
+| `.env_example` | 环境变量模板，复制为 `.env` 后使用 |
+| `secrets.example.yaml` | GitHub Secrets 配置清单（fork 仓库跑 CI 前对照填写） |
+| `pyproject.toml` / `uv.lock` | 依赖声明与锁定（uv） |
+| `pytest.ini` | pytest 配置与 marker 定义 |
+| `.pylintrc` | pylint 配置（仅本地使用，不在 CI 中；行宽 150） |
+| `.python-version` | Python 版本固定（3.12） |
+| `.gitignore` / `.dockerignore` | git / Docker 构建忽略规则 |
+| `LICENSE` | GPLv3 许可证 |
 
 ## 文档
 

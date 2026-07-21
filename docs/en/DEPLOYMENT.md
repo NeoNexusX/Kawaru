@@ -1,6 +1,6 @@
 # Deployment Guide (dev / prod)
 
-After pushing to `dev` / `main`, CI automatically: **Build image → Push to GHCR → SSH to server → `pull && up -d --wait`**.
+After pushing to `dev` / `main`, CI automatically: **Build image → Push to GHCR → SSH to server and sync the compose file → `pull && up -d --wait` → retag the local `dev-latest` / `latest` image and prune images older than 7 days**. On deployment failure, CI dumps the status and log tails of all 5 services — no manual SSH log digging needed.
 
 CI **only builds and deploys**; it does not generate secrets or config. `.env` and `{dev,prod}-config.yaml` are prepared and maintained by a human on the server.
 
@@ -22,7 +22,9 @@ redis   ──┼─ app(8000)
 - **dev**: mariadb/redis ports exposed (`13306`/`16379`) for external access
 - **prod**: mariadb/redis bind to loopback `127.0.0.1` only; external access requires SSH tunnel
 
-dev container panel: <https://testpanel.neonexus.top/containers/container>
+dev container panel: <https://testpanel.neonexus.top/panel>
+
+prod container panel: <https://panel.bionet.pro/login>
 
 ---
 
@@ -147,7 +149,7 @@ Business credentials (DB/Redis/SMTP) are in the server's `.env`, **not in GitHub
 
 ---
 
-## 6. Dev / Prod Comparison
+## 7. Dev / Prod Comparison
 
 | Dimension | Dev | Prod |
 |-----------|-----|------|
