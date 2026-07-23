@@ -13,10 +13,10 @@ from storage_backend.storage import OssStorage
 
 from api_services.file_service import get_file_by_filename
 from api_services.experiment_service import create_origin_record, mark_origin, delete_source_file_and_clear_path
-from api_services.processing_service import get_process_run_by_id, mark_process_run
+from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
-from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback, ClusteringCallback
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
@@ -148,7 +148,7 @@ async def oss_upload_callback(
         async_session.add(source_file)
         async_session.add(origin_record)
 
-        # 标记OSS文件为持久化
+        # 标记OSS文件为持久化，在OSS端有配置生命周期，如果没有打上标签，在生命周期到期后会被删除
         is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
         is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
         is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
@@ -416,6 +416,71 @@ async def feature_callback(
         raise internal_server_error_exception from e
 
 
+async def clustering_callback(
+    callback_info: ClusteringCallback,
+    async_session: AsyncSessionDep,
+) -> ExperimentProcessRunInDB:
+    """
+    FC 聚类分析完成回调。
+
+    更新 run 记录的聚类状态和输出路径。
+    """
+    run_id = callback_info.run_id
+    is_success = callback_info.is_success
+    out_path = callback_info.out_path
+    output_size = callback_info.output_size
+    error_type = callback_info.error_type
+    error_message = callback_info.error_message
+
+    try:
+        run_record = await get_process_run_by_id(async_session, run_id)
+        if not run_record:
+            logger.error("process run not found for clustering callback run_id=%s", run_id)
+            raise invalid_process_request_exception
+
+        # 处理失败
+        if not is_success:
+            await mark_clustering_run(
+                async_session, run_record,
+                status=ProcessingStatus.FAILED,
+                error_message=error_message or error_type or "FC clustering processing failed",
+            )
+            await async_session.commit()
+            await async_session.refresh(run_record)
+            logger.info("clustering callback failed run_id=%s error=%s", run_id, error_message)
+            return run_record
+
+        # 校验回调数据完整性
+        if not out_path or not output_size or output_size <= 0:
+            logger.error("clustering callback data incomplete run_id=%s", run_id)
+            raise file_content_missing_exception
+
+        # 更新聚类状态
+        await mark_clustering_run(
+            async_session, run_record,
+            status=ProcessingStatus.COMPLETED,
+            out_path=out_path,
+            output_size=output_size,
+        )
+
+        await async_session.commit()
+        await async_session.refresh(run_record)
+
+        logger.info(
+            "clustering callback success run_id=%s out_path=%s output_size=%s",
+            run_id, out_path, output_size,
+        )
+        return run_record
+
+    except HTTPException:
+        await async_session.rollback()
+        raise
+    except Exception as e:
+        await async_session.rollback()
+        logger.error("clustering callback error run_id=%s error=%s", run_id, e)
+        raise internal_server_error_exception from e
+
+
 async def verify_fc_callback_token(
     x_fc_token: str | None = Header(None, alias="X-FC-Token"),
 ) -> None:
@@ -436,4 +501,5 @@ OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
 AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
 FeatureCallbackDep = Annotated[FileInDB, Depends(feature_callback)]
+ClusteringCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(clustering_callback)]
 OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]
