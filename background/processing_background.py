@@ -20,6 +20,8 @@ from constants.file_constants import (
     FC_FEATURE_TIMEOUT_SECONDS,
     FC_RAW_CONVERT_ENDPOINT,
     FC_RAW_CONVERT_TIMEOUT_SECONDS,
+    FC_CLUSTERING_ENDPOINT,
+    FC_CLUSTERING_TIMEOUT_SECONDS,
 )
 from tools.fc_client import invoke_fc
 from tools.logger import get_logger
@@ -47,6 +49,11 @@ FC_FEATURE_TOKEN = os.getenv("OSS_FC_FEATURE_TOKEN")
 FC_RAW_CONVERT_URL = FC_RAW_CONVERT_ENDPOINT
 FC_RAW_CONVERT_TIMEOUT = FC_RAW_CONVERT_TIMEOUT_SECONDS
 FC_RAW_CONVERT_TOKEN = os.getenv("OSS_FC_RAW_CONVERT_TOKEN")
+
+# ---- fc-clustering（UMAP/KMeans 聚类分析，输出 zarr）----
+FC_CLUSTERING_URL = FC_CLUSTERING_ENDPOINT
+FC_CLUSTERING_TIMEOUT = FC_CLUSTERING_TIMEOUT_SECONDS
+FC_CLUSTERING_TOKEN = os.getenv("OSS_FC_CLUSTERING_TOKEN")
 
 
 @celery_app.task()
@@ -135,3 +142,30 @@ async def trigger_fc_raw_convert_task(
         logger.info("trigger fc raw_convert success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc raw_convert failed run_id=%s", run_id)
+
+
+@celery_app.task()
+async def trigger_fc_clustering_task(
+    run_id: int,
+    source_zarr_path: str,
+    output_path: str,
+    n_clusters: int,
+    sample_ratio: float,
+) -> None:
+    """触发 fc-clustering 执行 UMAP/KMeans 聚类分析（异步调用）"""
+    event = {
+        "run_id": run_id,
+        "source_zarr_path": source_zarr_path,
+        "output_path": output_path,
+        "n_clusters": n_clusters,
+        "sample_ratio": sample_ratio,
+    }
+    logger.info("trigger fc clustering run_id=%s source_zarr=%s n_clusters=%s",
+                run_id, source_zarr_path, n_clusters)
+    request_id = await invoke_fc(
+        FC_CLUSTERING_URL, FC_CLUSTERING_TOKEN, event, FC_CLUSTERING_TIMEOUT,
+    )
+    if request_id is not None:
+        logger.info("trigger fc clustering success run_id=%s request_id=%s", run_id, request_id)
+    else:
+        logger.error("trigger fc clustering failed run_id=%s", run_id)

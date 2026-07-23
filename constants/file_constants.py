@@ -68,6 +68,8 @@ FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
 FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
 FC_RAW_CONVERT_ENDPOINT = config.oss.fc_raw_convert_endpoint
 FC_RAW_CONVERT_TIMEOUT_SECONDS = config.oss.fc_raw_convert_timeout_seconds
+FC_CLUSTERING_ENDPOINT = config.oss.fc_clustering_endpoint
+FC_CLUSTERING_TIMEOUT_SECONDS = config.oss.fc_clustering_timeout_seconds
 
 
 __all__ = [
@@ -103,6 +105,8 @@ __all__ = [
     "FC_FEATURE_TIMEOUT_SECONDS",
     "FC_RAW_CONVERT_ENDPOINT",
     "FC_RAW_CONVERT_TIMEOUT_SECONDS",
+    "FC_CLUSTERING_ENDPOINT",
+    "FC_CLUSTERING_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",

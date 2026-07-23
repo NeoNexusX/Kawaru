@@ -115,6 +115,8 @@ class OSSSettings(BaseModel):
     fc_feature_timeout_seconds: int | None = Field(default=60, description="FC 特征分析调用超时时间，单位秒")
     fc_raw_convert_endpoint: str | None = Field(default=None, description="FC raw_convert 直转函数HTTP触发地址")
     fc_raw_convert_timeout_seconds: int | None = Field(default=120, description="FC raw_convert 调用超时时间，单位秒")
+    fc_clustering_endpoint: str | None = Field(default=None, description="FC 聚类分析函数HTTP触发地址")
+    fc_clustering_timeout_seconds: int | None = Field(default=180, description="FC 聚类分析调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):

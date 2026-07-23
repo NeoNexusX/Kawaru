@@ -4,6 +4,7 @@ from fastapi import status
 from api.callback_api import (GetExpectHashDep, GetConfigDep,
                               OssUploadCallbackDep, AlgorithmCallbackDep,
                               TicCallbackDep, FeatureCallbackDep,
+                              ClusteringCallbackDep,
                               OssPackupCallbackDep, verify_fc_callback_token)
 
 callback_router = APIRouter(
@@ -49,6 +50,12 @@ async def tic_callback(file_record: TicCallbackDep):
 async def feature_callback(file_record: FeatureCallbackDep):
     """FC UMAP/KMeans 特征分析回调"""
     return file_record
+
+
+@callback_router.post("/clustering_callback", response_model=ClusteringCallbackDep)
+async def clustering_callback(run_record: ClusteringCallbackDep):
+    """FC 聚类分析完成回调"""
+    return run_record
 
 
 @callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)

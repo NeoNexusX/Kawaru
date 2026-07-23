@@ -130,6 +130,10 @@ async def delete_process_run(
     if run_record.out_path:
         await cleanup_output_dir(run_record.out_path, storage_type)
 
+    # 清理聚类分析结果文件
+    if run_record.clustering_out_path:
+        await cleanup_output_dir(run_record.clustering_out_path, storage_type)
+
     # 如果删除的是 raw_convert 直转 run（无算法处理），清除文件表的 default_run_id
     if run_record.params_json == RAW_CONVERT_MARKER:
         file_record = (
@@ -190,6 +194,25 @@ async def mark_process_run(
     run_record.out_path = out_path
     run_record.output_size = output_size
     run_record.error_message = error_message
+
+    async_session.add(run_record)
+
+
+async def mark_clustering_run(
+    async_session: AsyncSession,
+    run_record: ExperimentProcessRunInDB,
+    *,
+    status: str = ProcessingStatus.COMPLETED,
+    out_path: str | None = None,
+    output_size: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """更新聚类分析运行记录状态"""
+    run_record.clustering_status = status
+    run_record.clustering_out_path = out_path
+    run_record.clustering_output_size = output_size
+    if error_message:
+        run_record.error_message = error_message
 
     async_session.add(run_record)
 
@@ -289,6 +312,48 @@ async def validate_process_request(
         return False
 
     return True
+
+
+async def validate_clustering_request(
+    async_session: AsyncSession,
+    run_id: int,
+    current_user: UserInDB,
+) -> ExperimentProcessRunInDB:
+    """
+    校验聚类分析请求，返回通过校验的 run_record。
+
+    校验链：
+    1. run 记录存在
+    2. 权限：管理员或记录所有者
+    3. 算法处理已完成
+    4. 算法输出路径不为空
+    5. 聚类未在处理中
+
+    Raises:
+        invalid_process_request_exception
+    """
+    run_record = await get_process_run_by_id(async_session, run_id)
+    if not run_record:
+        logger.warning("run not found for clustering run_id=%s", run_id)
+        raise invalid_process_request_exception
+
+    if not (current_user.identity == "admin" or run_record.user_id == current_user.id):
+        logger.warning("clustering permission denied run_id=%s user=%s", run_id, current_user.id)
+        raise invalid_process_request_exception
+
+    if run_record.status != ProcessingStatus.COMPLETED:
+        logger.warning("clustering run not completed run_id=%s status=%s", run_id, run_record.status)
+        raise invalid_process_request_exception
+
+    if not run_record.out_path:
+        logger.warning("clustering run out_path empty run_id=%s", run_id)
+        raise invalid_process_request_exception
+
+    if run_record.clustering_status == ProcessingStatus.PROCESSING:
+        logger.info("clustering already in progress run_id=%s", run_id)
+        return run_record
+
+    return run_record
 
 
 async def get_origin_for_processing(
@@ -403,6 +468,7 @@ async def assert_zarr_folder_access(
     async_session: AsyncSession,
     run_id: int,
     current_user: UserInDB,
+    zarr_type: str = "algorithm",
 ) -> ExperimentProcessRunInDB:
     """
     校验 zarr 文件夹访问权限。
@@ -410,8 +476,11 @@ async def assert_zarr_folder_access(
     校验链：
     1. run 记录存在
     2. 权限：管理员 / 公开记录 / 记录所有者
-    3. 状态必须为 COMPLETED
+    3. 状态必须为 COMPLETED（algorithm 看 status，clustering 看 clustering_status）
     4. 输出路径不为空
+
+    Args:
+        zarr_type: "algorithm" 或 "clustering"，决定校验哪个字段
 
     Returns:
         通过校验的 run_record
@@ -422,6 +491,7 @@ async def assert_zarr_folder_access(
         process_run_not_completed_exception
         zarr_folder_not_found_exception
     """
+    is_clustering = (zarr_type == "clustering")
 
     # 1. 查询 run 记录
     run_record = await get_process_run_by_id(async_session, run_id)
@@ -446,12 +516,17 @@ async def assert_zarr_folder_access(
     if not is_authorized:
         raise process_run_permission_denied_exception
 
-    # 3. 状态校验
-    if run_record.status != ProcessingStatus.COMPLETED:
-        raise process_run_not_completed_exception
+    # 3. 状态校验：聚类看 clustering_status，算法看 status
+    if is_clustering:
+        if run_record.clustering_status != ProcessingStatus.COMPLETED:
+            raise process_run_not_completed_exception
+    else:
+        if run_record.status != ProcessingStatus.COMPLETED:
+            raise process_run_not_completed_exception
 
-    # 4. 输出路径校验
-    if not run_record.out_path:
+    # 4. 输出路径校验：聚类看 clustering_out_path，算法看 out_path
+    target_path = run_record.clustering_out_path if is_clustering else run_record.out_path
+    if not target_path:
         raise zarr_folder_not_found_exception
 
     return run_record
