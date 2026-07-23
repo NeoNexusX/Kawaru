@@ -148,7 +148,7 @@ async def oss_upload_callback(
         async_session.add(source_file)
         async_session.add(origin_record)
 
-        # 标记OSS文件为持久化
+        # 标记OSS文件为持久化，在OSS端有配置生命周期，如果没有打上标签，在生命周期到期后会被删除
         is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
         is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
         is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
