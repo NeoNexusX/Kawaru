@@ -39,3 +39,13 @@ class FeatureCallback(BaseModel):
     image_path: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+
+
+class ClusteringCallback(BaseModel):
+    """FC 聚类分析完成回调模型"""
+    run_id: int
+    is_success: bool
+    out_path: str | None = None
+    output_size: int | None = None
+    error_type: str | None = None
+    error_message: str | None = None

@@ -105,6 +105,7 @@ class ExperimentProcessRunBase(SQLModel):
     status: str = Field(default=ProcessingStatus.PROCESSING, max_length=32, description="运行状态")
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     finished_at: datetime | None = Field(default=None, description="结束时间")
+    clustering_status: str | None = Field(default=None, max_length=32, description="聚类状态: processing/completed/failed，None 表示未执行")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
@@ -151,6 +152,13 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
         default=None,
         sa_column=Column(BigInteger, nullable=True),
         description="输出文件总大小(byte)"
+    )
+    # 聚类分析结果路径和大小（仅 DB 层存储）
+    clustering_out_path: str | None = Field(default=None, max_length=getattr(storage_config, 'max_path_length', 255), description="聚类分析结果 zarr 的 OSS 路径")
+    clustering_output_size: int | None = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True),
+        description="聚类结果文件总大小(byte)"
     )
 
     # ORM 层反向关系（对应 OriginImzMLInDB.process_runs）
