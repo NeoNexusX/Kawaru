@@ -87,6 +87,8 @@ oss:
   fc_algorithm_endpoint: ""
   fc_tic_endpoint: ""
   fc_feature_endpoint: ""
+  fc_raw_convert_endpoint: ""
+  fc_clustering_endpoint: ""
 
 admin_info:
   username: kawaru
