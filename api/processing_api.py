@@ -271,9 +271,8 @@ async def create_clustering_task(
     try:
         run_record = await validate_clustering_request(async_session, run_id, current_user)
 
-        # 聚类已在处理中，直接返回
-        if run_record.clustering_status == ProcessingStatus.PROCESSING:
-            await async_session.commit()
+        # 聚类已完成或处理中，直接返回
+        if run_record.clustering_status in (ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING):
             return ExperimentProcessRunPublic(**run_record.model_dump())
 
         # 标记聚类状态为 processing
