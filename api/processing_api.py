@@ -38,7 +38,7 @@ from models.processing_models import (
     ExperimentProcessRunRawConvert,
     ProcessingStatus,
 )
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 
 from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task, trigger_fc_clustering_task
 from tools.logger import get_logger

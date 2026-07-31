@@ -26,7 +26,7 @@ import pytest
 from httpx import AsyncClient
 
 from tools.cal_hash import compute_imzml_md5
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 from .conftest import logger
 from .helpers.oss import upload_file_to_oss
 from .helpers.uploads import (

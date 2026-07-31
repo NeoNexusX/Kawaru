@@ -15,7 +15,8 @@ import aiofiles
 from M2Crypto import RSA, BIO
 from httpx import AsyncClient
 
-from storage_backend.storage import LocalStorage, OssStorage
+from storage.local.local_storage import LocalStorage
+from storage.oss.oss_storage import OssStorage
 from background.file_background_helper import delete_oss_file_task
 from models.user_models import UserInDB
 from constants.file_constants import (

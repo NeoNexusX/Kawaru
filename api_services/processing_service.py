@@ -30,7 +30,7 @@ from api_helpers.processing_helper import (
     create_run_output_dir,
     validate_algorithms_config,
 )
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 from exceptions.experiment_exceptions import (
     invalid_process_request_exception,
     process_run_not_found_exception,

@@ -177,7 +177,7 @@ uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
 | `boot/` | 启动引导：env / config / logging / celery / OSS 初始化 |
 | `models/` | Pydantic / SQLModel 模型 |
 | `database/` | 数据库引擎、建表、Redis 客户端 |
-| `storage_backend/` | 本地 / OSS 存储抽象 |
+| `storage/` | 本地 / OSS 存储实现 |
 | `constants/`、`exceptions/`、`tools/` | 常量、异常定义、日志等工具 |
 | `docker/` | Dockerfile 与 dev / prod / test compose 栈 |
 | `tests/` | 端到端 pytest 套件（需连接运行中的服务，见贡献指南） |

@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 from api_helpers.file_helper import delete_multiple_files_by_storage
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB

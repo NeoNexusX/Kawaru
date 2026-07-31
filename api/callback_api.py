@@ -9,7 +9,7 @@ from sqlmodel import select
 from database.db import AsyncSessionDep, get_async_engine, AsyncSession
 from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 
 from api_services.file_service import get_file_by_filename
 from api_services.experiment_service import create_origin_record, mark_origin, delete_source_file_and_clear_path

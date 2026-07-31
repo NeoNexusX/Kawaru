@@ -27,7 +27,8 @@ from api_helpers.file_helper import (
     merge_files_and_get_hash,
     delete_file_by_storage,
 )
-from storage_backend.storage import OssStorage, LocalStorage
+from storage.local.local_storage import LocalStorage
+from storage.oss.oss_storage import OssStorage
 
 from celery_runtime.result import wait_for_result
 from background.file_background_helper import build_zip_file_background

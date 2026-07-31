@@ -64,7 +64,8 @@ from models.file_models import (
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
-from storage_backend.storage import LocalStorage, OssStorage
+from storage.local.local_storage import LocalStorage
+from storage.oss.oss_storage import OssStorage
 from tools import utc_time, get_logger
 
 logger = get_logger("api.file_api")

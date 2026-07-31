@@ -7,7 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from database.db import get_async_engine
 from celery_runtime.state import get_celery_app
 from celery_runtime.result import wait_for_result
-from storage_backend.storage import LocalStorage
+from storage.local.local_storage import LocalStorage
 from api_services.experiment_service import (
     create_origin_record, mark_origin, delete_source_file_and_clear_path
 )

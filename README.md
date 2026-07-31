@@ -177,7 +177,7 @@ Layering direction: `routers/` → `api/` → `api_services/` / `api_helpers/` �
 | `boot/` | Bootstrap: env / config / logging / celery / OSS initialization |
 | `models/` | Pydantic / SQLModel models |
 | `database/` | DB engine, table creation, Redis client |
-| `storage_backend/` | Local / OSS storage abstraction |
+| `storage/` | Local / OSS storage implementations |
 | `constants/`, `exceptions/`, `tools/` | Constants, exception definitions, logger and utilities |
 | `docker/` | Dockerfile and dev / prod / test compose stacks |
 | `tests/` | End-to-end pytest suite (requires a running server, see Contributing) |

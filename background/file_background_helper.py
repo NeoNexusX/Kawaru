@@ -26,7 +26,7 @@ from alibabacloud_tea_openapi import models as open_api_models
 
 from celery_runtime.state import get_celery_app
 
-from storage_backend.oss_client import create_oss_client_context, create_oss_sync_client
+from storage.oss.oss_client import create_oss_client_context, create_oss_sync_client
 
 from constants.file_constants import (
     CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, OSS_DEFAULT_TIMEOUT_SECONDS
