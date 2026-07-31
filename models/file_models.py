@@ -7,15 +7,13 @@ import httpx
 from sqlmodel import Field, SQLModel, Relationship
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Column, Integer, ForeignKey,BigInteger,Float
-from tools import utc_time,get_logger
+from tools import utc_time
 from boot.config import get_config
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from models.auth import OssStsToken
 
 
-# 获取服务器状态模块的日志器
-logger = get_logger("models.file_models")
 
 # 模型字段配置来自 config
 config = get_config()
@@ -30,6 +28,8 @@ class FileStatus(str, Enum): # TODO
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
 class PackupStatus(str, Enum):
     """文件打包状态"""
     PACKING = "packing"
@@ -83,6 +83,7 @@ class FileBase(SQLModel):
     mz: float = Field(default=0.0,description="质荷比 (m/z, Mass-to-Charge Ratio)",
                       sa_column=Column(Float, nullable=False, default=0.0),)
 
+
 class FileCreate(FileBase):
     """创建文件时的请求模型(普通上传和分片上传)"""
     total_parts: int | None = Field(default=None, description="分片总数(分片上传时必填)")
@@ -127,13 +128,6 @@ class FileOssUploadResponse(FilePublic):
     oss_bucket: str | None = Field(default=None, description="OSS存储桶(仅用于OSS存储类型)")
     oss_path: str | None = Field(default=None, description="OSS上传路径(仅用于OSS存储类型)")
     oss_region_id: str | None = Field(default=None, description="OSS区域ID(仅用于OSS存储类型)")
-
-
-class FileListResponse(SQLModel):
-    """文件列表响应模型"""
-    total: int = Field(description="文件总数")
-    files: list[FilePublic] = Field(description="文件列表")
-    user_id: int = Field(description="用户ID")
 
 
 class FileInDB(FileBase, table=True):

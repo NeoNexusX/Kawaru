@@ -1,5 +1,4 @@
 import os
-from typing import Union
 import secrets
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
@@ -14,18 +13,6 @@ class Token(BaseModel):
     """登录成功后返回的令牌模型。"""
     access_token: str
     token_type: str
-
-
-class TokenData(BaseModel):
-    """存储登录后用户的用户名信息。"""
-    username: Union[str, None] = None
-
-
-class FormData(BaseModel):
-    """登录表单字段，仅允许用户名和密码。"""
-    username: str
-    password: str
-    model_config = {"extra": "forbid"}
 
 class RedisLoginData(BaseModel):
     """用于Redis存储的登录信息字段，包括用户名和最近访问时间"""

@@ -232,34 +232,6 @@ async def get_process_run_by_id(
                 ExperimentProcessRunInDB.id == run_id))).first()
 
 
-async def get_process_runs_by_experiment_id(
-    async_session: AsyncSession,
-    experiment_id: int,
-) -> Sequence[ExperimentProcessRunInDB]:
-    """根据 experiment ID 查询所有 process_run"""
-    return (
-        await async_session.exec(
-            select(ExperimentProcessRunInDB)
-            .where(ExperimentProcessRunInDB.experiment_id == experiment_id))).all()
-
-
-async def list_user_runs(
-    async_session: AsyncSession,
-    user_id: int,
-    page: int = 1,
-    size: int = 10,
-) -> tuple[Sequence[ExperimentProcessRunInDB], int]:
-    """分页查询当前用户的所有 run"""
-    base_query = select(ExperimentProcessRunInDB).where(
-        ExperimentProcessRunInDB.user_id == user_id,
-    )
-    total = (await async_session.exec(
-        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
-    rows = (await async_session.exec(
-        base_query.offset((page - 1) * size).limit(size))).all()
-    return rows, total
-
-
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,

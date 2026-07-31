@@ -11,7 +11,8 @@ COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir --upgrade pip uv
 
 COPY . .
-RUN uv export --no-hashes --format requirements-txt > requirements.txt && \
+# --group dev：pytest 等测试工具已迁至 dev 依赖组，集成测试在容器内跑 pytest，故需显式导出该组
+RUN uv export --group dev --no-hashes --format requirements-txt > requirements.txt && \
     pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 

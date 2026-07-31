@@ -72,12 +72,6 @@ hash_size_validation_failed_exception = HTTPException(
 
 # 分片相关异常定义
 
-# 分片验证失败异常（哈希或大小不匹配）
-part_validation_failed_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("uploade part hash or size does not match expected values")
-)
-
 # 分片数据格式无效异常
 invalid_part_data_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
@@ -123,15 +117,8 @@ oss_client_create_failed_exception = HTTPException(
 )
 
 
-# OSS 打包回调异常定义
-oss_packup_callback_error_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("oss packup callback error: zip_path not provided")
-)
-
 
 __all__ = [
-    "oss_packup_callback_error_exception",
     "invalid_user_for_file_list_sync_exception",
     "file_not_found_exception",
     "permission_denied_exception",
@@ -143,7 +130,6 @@ __all__ = [
     "duplicate_file_exception",
     "user_download_limit_exception",
     "hash_size_validation_failed_exception",
-    "part_validation_failed_exception",
     "invalid_part_data_exception",
     "part_number_out_of_range_exception",
     "part_already_exists_exception",
