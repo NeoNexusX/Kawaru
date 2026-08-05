@@ -19,7 +19,6 @@ from api_services.processing_service import (
     rollback_process_run,
     validate_process_request,
     validate_clustering_request,
-    get_storage_type_by_source_file_id,
 )
 from api_helpers.processing_helper import assert_run_ownership
 from api.user_api import token_authen
@@ -206,8 +205,7 @@ async def delete_process_run_endpoint(
     if not assert_run_ownership(run_record.user_id, current_user.id):  # type: ignore
         raise invalid_process_request_exception
 
-    storage_type = await get_storage_type_by_source_file_id(async_session, run_record.source_file_id)
-    await delete_process_run(async_session, run_record, storage_type)
+    await delete_process_run(async_session, run_record)
     await async_session.commit()
 
     return {"run_id": run_id, "status": "deleted"}

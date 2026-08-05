@@ -34,7 +34,7 @@ jobs:
         run: >-
           uv run python -m compileall -q
           main.py api api_helpers api_services background boot celery_runtime
-          constants database exceptions models routers storage_backend tools tests
+          constants database exceptions models routers storage tools tests
 
       - name: Lint (ruff)
         run: uvx ruff check .     # uvx 临时拉取 ruff，不依赖项目环境（ruff 未在锁文件中声明）

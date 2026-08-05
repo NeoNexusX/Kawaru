@@ -1,11 +1,9 @@
 #########################
 # Processing Service - 业务逻辑层
-# 职责：算法处理运行记录的增删改查与磁盘结果清理。无 FastAPI 依赖。
+# 职责：算法处理运行记录的增删改查与 OSS 结果清理。无 FastAPI 依赖。
 #########################
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from typing import Sequence
 
 from sqlmodel import select, func, col
@@ -27,7 +25,6 @@ from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_helpers.processing_helper import (
     assert_origin_ready,
     check_processing_quota,
-    create_run_output_dir,
     validate_algorithms_config,
 )
 from storage.oss.oss_storage import OssStorage
@@ -119,7 +116,6 @@ async def create_raw_convert_run(
 async def delete_process_run(
     async_session: AsyncSession,
     run_record: ExperimentProcessRunInDB,
-    storage_type: str,
 ) -> None:
     """
     删除算法处理运行记录及磁盘结果文件
@@ -128,11 +124,11 @@ async def delete_process_run(
     在并发场景（同一用户并行删除多条 run 记录）下的丢失更新问题。
     """
     if run_record.out_path:
-        await cleanup_output_dir(run_record.out_path, storage_type)
+        await cleanup_output_dir(run_record.out_path)
 
     # 清理聚类分析结果文件
     if run_record.clustering_out_path:
-        await cleanup_output_dir(run_record.clustering_out_path, storage_type)
+        await cleanup_output_dir(run_record.clustering_out_path)
 
     # 如果删除的是 raw_convert 直转 run（无算法处理），清除文件表的 default_run_id
     if run_record.params_json == RAW_CONVERT_MARKER:
@@ -161,16 +157,13 @@ async def delete_process_run(
     logger.info("deleted process run id=%s", run_record.id)
 
 
-async def cleanup_output_dir(out_path: str, storage_type: str) -> None:
-    """清理输出目录及其文件"""
+async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
+    """清理 OSS 输出目录；storage_type 参数为兼容既有内部调用而保留。"""
+    if storage_type != "oss":
+        raise ValueError(f"invalid storage type: {storage_type}")
     try:
-        abs_path = Path(out_path)
-        if storage_type == "local" and abs_path.exists():
-            shutil.rmtree(abs_path)
-            logger.debug("cleaned up run directory path=%s", abs_path)
-        elif storage_type == "oss":
-            await OssStorage.delete_file(out_path)
-    except OSError as e:
+        await OssStorage.delete_file(out_path)
+    except Exception as e:
         logger.warning("failed to cleanup output path=%s error=%s", out_path, e)
 
 
@@ -381,26 +374,6 @@ async def get_origin_for_processing(
     return origin, file_record.filename, metadata, file_record.default_run_id
 
 
-async def get_storage_type_by_source_file_id(
-    async_session: AsyncSession,
-    source_file_id: int,
-) -> str:
-    """根据 source_file_id 查询存储类型，默认返回 local"""
-    result = await async_session.exec(
-        select(FileInDB).where(FileInDB.file_id == source_file_id)
-    )
-    file_record = result.first()
-    return file_record.storage_type if file_record else "local"
-
-
-def cleanup_output_files(run_id: int) -> None:
-    """清理 run 输出目录及文件（磁盘操作，无 DB 依赖）"""
-    output_dir = create_run_output_dir(run_id)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-        logger.debug("cleaned up run output dir path=%s", output_dir)
-
-
 async def rollback_process_run(
     async_session: AsyncSession,
     run_record: ExperimentProcessRunInDB | None,
@@ -409,8 +382,10 @@ async def rollback_process_run(
     算法处理运行失败时的统一回滚
 
     1. 回滚当前 DB 事务
-    2. 清理磁盘上的输出目录
-    3. 开新 session 删除 PROCESSING 状态的 run 记录
+    2. 开新 session 删除 PROCESSING 状态的 run 记录
+
+    FC 未正常回调时无法从 run 记录获得可靠对象键，未持久化的 OSS 输出由
+    bucket 生命周期规则清理。
     """
     if run_record is None:
         await async_session.rollback()
@@ -419,9 +394,6 @@ async def rollback_process_run(
     _run_id = run_record.id
 
     await async_session.rollback()
-
-    if _run_id is not None:
-        cleanup_output_files(_run_id)
 
     if _run_id is not None:
         async with AsyncSession(get_async_engine()) as cleanup_session:

@@ -98,7 +98,7 @@ def bootstrap():
     if CONFIG.config is None:
         raise RuntimeError("CONFIG.config is not initialized")
 
-    OSS_CLIENT =  init_oss() if "oss" in CONFIG.config.storage.allowed_storage_types else None# pylint: disable=C0103
+    OSS_CLIENT = init_oss()  # pylint: disable=C0103
     CELERY_APP = init_celery(CONSTANTS) # pylint: disable=C0103
 
     #log part

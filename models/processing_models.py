@@ -113,7 +113,7 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     __tablename__ = "experiment_process_run"  # type:ignore
 
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    # 一对多外键：级联删除（参考 PartInDB → FileInDB 模式）
+    # 一对多外键：数据库级联删除关联的处理记录
     experiment_id: int = Field(
         sa_column=Column(
             Integer,

@@ -32,7 +32,7 @@ RUN apt-get update && \
 COPY --from=builder /install /usr/local
 COPY . .
 
-RUN mkdir -p kawaru_logs data && chown -R appuser:appuser /app
+RUN mkdir -p kawaru_logs && chown -R appuser:appuser /app
 
 USER appuser
 

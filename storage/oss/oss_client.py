@@ -7,7 +7,7 @@ import alibabacloud_oss_v2.aio as oss_aio
 from alibabacloud_oss_v2 import GetBucketLocationRequest
 
 from boot.config import get_config
-from exceptions.file_exceptions import oss_client_create_failed_exception
+from exceptions.oss_exceptions import oss_client_create_failed_exception
 from models.config_models import OSSSettings
 from tools.logger import get_logger
 

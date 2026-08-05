@@ -5,24 +5,22 @@ from background.file_background_helper import (
     check_oss_file_exist_task,
     delete_oss_file_task,
     get_oss_file_size_task,
-    get_oss_packup_sts_token_task,
     get_oss_presigned_url_task,
     get_oss_upload_sts_token_task,
     get_zarr_read_sts_token_task,
     sign_url_task,
     tag_oss_file_task,
-    validate_oss_file_task,
 )
 from celery import group
 from celery.result import AsyncResult, GroupResult
 
 from celery_runtime.result import wait_for_result
-from constants.experiment_constants import OSS_ORIGIN_STORAGE_ROOT
 from constants.file_constants import (
     OSS_DEFAULT_TIMEOUT_SECONDS,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     OSS_ZIP_STORAGE_ROOT,
 )
+from exceptions.oss_exceptions import oss_timeout_exception
 from models.auth import OssStsToken
 from tools.logger import get_logger
 
@@ -36,11 +34,6 @@ class OssStorage:
     def prepare_storage_path(filename: str, file_type: str) -> str:
         """为 OSS 存储准备最终保存路径。"""
         return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"  # type: ignore
-
-    @staticmethod
-    def create_origin_directories(origin_id: int) -> str:
-        """创建并返回 origin 目录。"""
-        return f"{OSS_ORIGIN_STORAGE_ROOT.rstrip('/')}/org_{origin_id}"  # type: ignore
 
     @staticmethod
     async def get_upload_sts_token(file_path: str) -> OssStsToken | None:
@@ -58,56 +51,6 @@ class OssStorage:
             )
             return None
         return OssStsToken(**result)
-
-    @staticmethod
-    async def get_packup_sts_token(
-        packup_folder: str,
-        zip_file_path: str,
-    ) -> OssStsToken | None:
-        """获取 OSS 打包 STS Token。"""
-        res: AsyncResult = get_oss_packup_sts_token_task.delay(  # type: ignore
-            packup_folder,
-            zip_file_path,
-        )
-        result: dict = await wait_for_result(
-            res,
-            poll_interval=0.1,
-            timeout=10,
-        )  # type: ignore
-        if result is None:
-            logger.error(
-                "failed to get oss packup sts token due to server timeout: "
-                "from %s to %s",
-                packup_folder,
-                zip_file_path,
-            )
-            return None
-        return OssStsToken(**result)
-
-    @staticmethod
-    async def validate_file(
-        file_path: str,
-        size: int,
-        file_verify_code: str,
-    ) -> bool:
-        """检查 OSS 文件是否存在且大小与校验值匹配。"""
-        res: AsyncResult = validate_oss_file_task.delay(  # type: ignore
-            file_path,
-            size,
-            file_verify_code,
-        )
-        is_file_exist: bool = await wait_for_result(
-            res,
-            poll_interval=0.1,
-            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
-        )  # type: ignore
-        if is_file_exist is None:
-            logger.error(
-                "failed to validate oss file due to server timeout: %s",
-                file_path,
-            )
-            return False
-        return is_file_exist
 
     @staticmethod
     async def check_file_exist(file_path: str) -> bool:
@@ -144,8 +87,10 @@ class OssStorage:
         return size
 
     @staticmethod
-    async def delete_file(file_path: str) -> bool | None:
-        """删除 OSS 文件及对应的临时打包文件。"""
+    async def delete_file_and_packup(file_path: str) -> bool | None:
+        """删除 OSS 文件及对应的临时打包文件。
+
+        """
         if not file_path:
             logger.warning("empty path for deletion, skipping")
             return None
@@ -162,18 +107,37 @@ class OssStorage:
         delete_tasks: GroupResult = group(task_list).delay()  # type: ignore
         delete_results: Sequence[bool] | None = await wait_for_result(
             result=delete_tasks,
-            poll_interval=0.1,
-            timeout=20,
+            poll_interval=1,
+            timeout=10,
         )
 
         if delete_results is None:
-            logger.error(
-                "failed to delete oss file due to server timeout: %s",
-                file_path,
-            )
-            return False
+            logger.error(f"failed to delete oss file due to server timeout: {file_path}")
+            raise oss_timeout_exception
 
         return all(delete_results)
+
+    @staticmethod
+    async def delete_file(file_path: str) -> bool | None:
+        """
+        删除单个指定的 OSS 文件。
+        """
+        if not file_path:
+            logger.warning("empty path for deletion, skipping")
+            return None
+
+        res: AsyncResult = delete_oss_file_task.delay(file_path)  # type: ignore
+        delete_result: bool | None = await wait_for_result(
+            res,
+            poll_interval=1,
+            timeout=10,
+        )  # type: ignore
+
+        if delete_result is None:
+            logger.error(f"failed to delete oss file due to server timeout: {file_path}")
+            raise oss_timeout_exception
+
+        return delete_result
 
     @staticmethod
     async def tag_oss_file(file_path: str, tag: dict[str, str]) -> bool:

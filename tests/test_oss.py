@@ -12,7 +12,7 @@ TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理
   - tests/helpers/oss.py      upload_file_to_oss（STS 直传）
 
 运行方式:
-    uv run pytest -m oss            # 仅本地跑（需真实 OSS + FC，CI 不跑）
+    uv run pytest -m oss            # 本地或 CI（需真实 OSS、Bucket 事件与解包 FC）
 """
 from __future__ import annotations
 

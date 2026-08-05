@@ -30,7 +30,12 @@ async def get_config(config: GetConfigDep):
 
 @callback_router.post("/oss_upload_callback", response_model=OssUploadCallbackDep)
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
-    """OSS上传完成回调"""
+    """
+    OSS 上传完成回调。
+
+    回调到达但处理失败时会尽力删除本次 OSS 对象；FC 未回调产生的未标记
+    对象由 OSS 生命周期规则自动清理。
+    """
     return file_record
 
 
