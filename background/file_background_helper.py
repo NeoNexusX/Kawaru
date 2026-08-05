@@ -6,12 +6,10 @@ from __future__ import annotations
 
 import os
 import json
-import zipfile
 import hashlib
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-import aiofiles
 
 from alibabacloud_credentials.client import Client as CredentialClient
 from alibabacloud_credentials.models import Config as CredentialConfig
@@ -26,129 +24,16 @@ from alibabacloud_tea_openapi import models as open_api_models
 
 from celery_runtime.state import get_celery_app
 
-from storage_backend.oss_client import create_oss_client_context, create_oss_sync_client
+from storage.oss.oss_client import create_oss_client_context, create_oss_sync_client
 
 from constants.file_constants import (
-    CHUNK_BUFFER_SIZE, OSS_REGION_ID, OSS_BUCKET_NAME, OSS_DEFAULT_TIMEOUT_SECONDS
+    OSS_REGION_ID, OSS_BUCKET_NAME
 )
 
 from tools.logger import get_logger
 
 logger = get_logger("background.file_background")
 celery_app = get_celery_app()
-
-
-@celery_app.task()  # type: ignore
-async def build_zip_file_background(
-    files: list[tuple[str, str]],
-    output_path: str,
-    compression: int | None = None,
-) -> int:
-    """
-    后台创建ZIP文件任务
-
-    参数已转换为可序列化类型：
-      - files: list[tuple[file_path_str, arc_name]]
-      - output_path: str
-    """
-    if compression is None:
-        compression = zipfile.ZIP_DEFLATED
-
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    # 从可序列化参数转换为 Path
-    files_path = [(Path(fp), arc) for fp, arc in files]
-    output_str = str(output)
-
-    with zipfile.ZipFile(output_str, "w", compression) as zf:
-        for file_path, arc_name in files_path:
-            if not file_path.exists():
-                raise FileNotFoundError(f"Source file not found: {file_path}")
-            zf.write(file_path, arc_name)
-
-    logger.info(f"ZIP file created at {output_str}")
-    return output.stat().st_size
-
-
-@celery_app.task # type: ignore
-async def compute_upload_local_file_hash_task(file_path: str) -> tuple[str, int]:
-    """
-    计算上传文件元数据的本地版本(md值和大小)
-    分片读取指定本地路径的文件内容,避免一次性加载到内存
-    """
-    md5 = hashlib.md5()  # 使用MD5算法计算哈希值
-    size = 0
-    async with aiofiles.open(file=file_path, mode='rb') as file:
-        await file.seek(0)
-        while True:
-            chunk = await file.read(CHUNK_BUFFER_SIZE)
-            if not chunk:
-                break
-            md5.update(chunk)
-            size += len(chunk)
-    logger.info(f"computed hash={md5.hexdigest()} size={size} for file={file_path}")
-    return md5.hexdigest(), size
-
-
-@celery_app.task()
-async def validate_oss_file_task(file_path: str, size: int, file_verify_code: str) -> bool:
-    """验证OSS文件，存在且信息匹配返回True，不存在或信息不匹配则返回False"""
-    with create_oss_client_context() as oss_client:
-        try:
-            # 创建OSS客户端
-            if oss_client is None:
-                logger.error("oss client create failed")
-                return False
-
-            # 获取bucket名称
-            bucket_name = OSS_BUCKET_NAME
-            if not bucket_name:
-                logger.error("oss bucket name not set")
-                return False
-
-            # 发送请求
-            req = HeadObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-            meta = await oss_client.head_object(req)
-
-            # 检查文件是否存在
-            if meta.status_code != 200:
-                logger.warning(f"oss file {file_path} not exist")
-                return False
-
-            # 检查文件大小是否一致
-            actual_size = meta.content_length
-            if actual_size != size:
-                logger.warning(f"oss file {file_path} size not match, expect {size}, but actual {actual_size}")
-                return False
-
-            # 轮询获取oss端计算的file-verify-code
-            meta_dict = meta.headers
-            timeout_seconds = OSS_DEFAULT_TIMEOUT_SECONDS
-            assert timeout_seconds is not None
-            start_time = datetime.now()
-            while True:
-                await asyncio.sleep(1)
-                meta = await oss_client.head_object(req)
-                meta_dict = meta.headers
-                if "x-oss-meta-file-verify-code" in meta_dict:
-                    break
-                now_time = datetime.now()
-                if (now_time - start_time).total_seconds() > float(timeout_seconds):
-                    logger.warning(f"verification for oss {file_path} file verify code timeout after {timeout_seconds} seconds")
-                    return False
-
-            # 检查file-verify-code是否匹配
-            actual_verify_code = meta_dict["x-oss-meta-file-verify-code"]
-            if actual_verify_code != file_verify_code:
-                logger.warning(f"oss file {file_path} verify code not match, expect {file_verify_code}, but actual {actual_verify_code}")
-                return False
-
-            return True
-
-        except Exception as e: # pylint:disable = broad-exception-caught
-            logger.error(f"failed to validate oss file: {e}")
-            return False
 
 
 @celery_app.task()
@@ -305,55 +190,6 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     return result
 
 
-@celery_app.task()
-def get_oss_packup_sts_token_task(packup_folder: str, zip_file_path: str) -> dict:
-    """
-    获取OSS打包STS Token
-
-    :param experiment_folder: 要打包的oss文件夹路径（如"experiment/aaa/")
-    :param zip_file_path: 打包后的zip文件路径（如"data/aaa.zip")
-    """
-
-    # 构建STS策略
-    policy = {
-        "Version": "1",
-        "Statement": [
-            {
-                # 针对实验文件夹下的所有文件读取权限
-                "Effect": "Allow",
-                "Action": ["oss:GetObject"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{packup_folder.strip('/')}/*"]
-            },
-            {
-                # 针对Bucket的文件列举权限
-                "Effect": "Allow",
-                "Action": ["oss:ListObjects"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
-                "Condition": {
-                    "StringLike": {
-                        "oss:Prefix": [f"{packup_folder.strip('/')}/*"]
-                    }
-                }
-            },
-            {
-                # 针对zip文件写入权限
-                "Effect": "Allow",
-                "Action": ["oss:PutObject", "oss:GetObject"],
-                "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{zip_file_path.rstrip('/')}"]
-            }
-        ]
-    }
-
-    # 构建role_session_name
-    code = hashlib.md5(str(Path(packup_folder).stem).encode()).hexdigest()
-    role_session_name = f"packup-{code}-{datetime.now().timestamp()}"
-
-    # 调用STS API获取打包STS Token
-    result = _get_oss_sts_token(policy, role_session_name)
-
-    return result
-
-
 def _get_oss_sts_token(policy: dict, role_session_name: str,
                         duration_seconds: int = 3600) -> dict:
     # 从环境变量获取OSS角色权限相关配置
@@ -408,7 +244,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
     """
     with create_oss_client_context() as oss_client:
         try:
-            # 创建OSS客户端
+            # 判断oss客户端是否能正常使用
             if oss_client is None:
                 logger.error("oss client create failed")
                 return False
@@ -491,7 +327,7 @@ async def sign_url_task(file_path: str, expires: int) -> str | None:
     签名OSS文件下载URL
 
     :param file_path: OSS文件路径（如"folder/file.zip")
-    :param expires: 过期时间（秒），默认值为OSS_DEFAULT_TIMEOUT_SECONDS
+    :param expires: 过期时间（秒），由调用方传入
 
     :return: str 签名后的URL
     """

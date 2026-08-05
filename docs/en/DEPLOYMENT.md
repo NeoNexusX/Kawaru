@@ -37,14 +37,14 @@ Commands are structurally identical for dev / prod; only names differ. Run once 
 export ENV_NAME=dev   # or prod
 
 # 1) Create directories
-sudo mkdir -p /opt/kawaru-${ENV_NAME}/data/{mariadb,redis,app,logs/{app,worker,beat}}
+sudo mkdir -p /opt/kawaru-${ENV_NAME}/data/{mariadb,redis,logs/{app,worker,beat}}
 cd /opt/kawaru-${ENV_NAME}
 
 # 2) Hand over top-level to SSH user (CD uses this user to scp compose files)
 sudo chown -R "$USER":"$USER" /opt/kawaru-${ENV_NAME}
 
 # 3) app/worker/beat run as appuser (uid 1000)
-sudo chown -R 1000:1000 /opt/kawaru-${ENV_NAME}/data/app /opt/kawaru-${ENV_NAME}/data/logs
+sudo chown -R 1000:1000 /opt/kawaru-${ENV_NAME}/data/logs
 
 # 4) Place config files
 #    .env must contain CONFIG_PATH=/app/config/${ENV_NAME}-config.yaml
@@ -61,14 +61,13 @@ sudo chown -R 1000:1000 /opt/kawaru-${ENV_NAME}/data/app /opt/kawaru-${ENV_NAME}
 └── data/
     ├── mariadb/
     ├── redis/
-    ├── app/                # Local storage
     └── logs/
         ├── app/
         ├── worker/
         └── beat/
 ```
 
-After this, every push to `dev` / `main` triggers a rolling upgrade; data is preserved.
+After this, every push to `dev` / `main` triggers a rolling upgrade. Database, Redis, and log data remain on the host; business files remain in OSS.
 
 ---
 
@@ -78,14 +77,40 @@ After this, every push to `dev` / `main` triggers a rolling upgrade; data is pre
 |---------|---------------|-----------|
 | MariaDB | `/var/lib/mysql` | `data/mariadb` |
 | Redis (AOF) | `/data` | `data/redis` |
-| Local storage | `/app/data` | `data/app` |
 | Logs (per service) | `/app/kawaru_logs` | `data/logs/{app,worker,beat}` |
 
 Logs are split by service to avoid `RotatingFileHandler` conflicts from concurrent writes.
 
+Application containers do not mount a business-file directory. Uploaded ZIPs, extracted imZML/ibd files, images, download archives, and processing Zarr outputs are all stored in OSS.
+
 ---
 
-## 4. Common Operations
+## 4. OSS and FC Prerequisites
+
+The service is OSS-only. Complete this checklist before the first deployment:
+
+- In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the four object roots (`oss_zip_storage_root`, `oss_packup_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and all six FC endpoints/timeouts.
+- In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, all six `OSS_FC_*_TOKEN` values (packup, algorithm, TIC, feature, raw-convert, clustering), and `FC_CALLBACK_TOKEN`.
+- Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue the generated path-scoped upload/download STS policies to clients.
+- Configure the OSS upload event to invoke the extraction FC function. It must write imZML/ibd under the configured origin root and call `/callback/oss_upload_callback` with the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
+- Configure every other FC function to call its matching `/callback/*` route with `X-FC-Token`. The callback URL must be reachable from FC, and app/worker containers must have outbound access to OSS and all FC endpoints.
+- Configure an OSS lifecycle rule to remove abandoned objects that never receive the `persistent=true` tag. Do not expire tagged source/extracted objects with that rule.
+
+Default object placement is controlled by configuration rather than host directories:
+
+| Content | OSS location |
+|---------|--------------|
+| Uploaded ZIP | `oss_zip_storage_root` |
+| FC-created download ZIP | `oss_packup_zip_storage_root` |
+| Extracted imZML/ibd | `oss_origin_storage_root` |
+| Algorithm/raw-convert/clustering Zarr | `oss_processed_storage_root` |
+| TIC/feature images | `images/file_{file_id}/` |
+
+> A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, run one end-to-end smoke test: preflight → STS upload → extraction callback → RAW signed download. Also verify one processing callback and one packup callback if those features are enabled for clients.
+
+---
+
+## 5. Common Operations
 
 **Dev proxy note:** For dev, enable proxy before triggering tasks and disable after; then restart containers. Prod doesn't need this.
 See: <https://github.com/nelvko/clash-for-linux-install>
@@ -131,13 +156,13 @@ redis-cli -h 127.0.0.1 -p 16379 -a <REDIS_PASSWORD> ping
 
 ---
 
-## 5. Healthcheck
+## 6. Healthcheck
 
 Only `app` + `mariadb` + `redis` have healthchecks. worker/beat do not (beat doesn't respond to ping; worker ping cold-starts the entire app and times out). Both are kept alive by `restart: unless-stopped`.
 
 ---
 
-## 6. GitHub Secrets
+## 7. GitHub Secrets
 
 | Name | Purpose |
 |------|---------|
@@ -145,11 +170,11 @@ Only `app` + `mariadb` + `redis` have healthchecks. worker/beat do not (beat doe
 | `PROD_SSH_HOST/USER/KEY` | Prod server (separate) |
 | `GHCR_PULL_USER/TOKEN` | Pull private images from GHCR (shared) |
 
-Business credentials (DB/Redis/SMTP) are in the server's `.env`, **not in GitHub Secrets**.
+Business credentials (DB/Redis/SMTP/OSS/FC) are in the server's `.env`, **not in GitHub Secrets**.
 
 ---
 
-## 7. Dev / Prod Comparison
+## 8. Dev / Prod Comparison
 
 | Dimension | Dev | Prod |
 |-----------|-----|------|

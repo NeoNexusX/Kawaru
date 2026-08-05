@@ -20,7 +20,7 @@ async def login(token: UserLoginDep) -> Token:
     """
     User log in:
     Method:Post
-    Params(FormData):username, password
+    Params(OAuth2PasswordRequestForm): username, password
     """
     try:
         asyncio.create_task(incr_visit())

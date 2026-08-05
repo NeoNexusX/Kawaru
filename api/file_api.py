@@ -1,40 +1,32 @@
 #########################
 # File API - API入口层
 #########################
-import json
 from typing import Annotated, Any
 
-from fastapi import Depends, File, Form, Query, UploadFile, HTTPException
+from fastapi import Depends, Form, Query, HTTPException
 from sqlmodel import select, and_, or_, col
 
-from api.file_upload_io import save_upload_file, save_and_persist_part
 from api.user_api import token_authen
-from api_helpers.file_helper import delete_file_by_storage, prepare_part_temp_path
-from api_services.experiment_service import delete_origin_files, valid_file_uploaded
+from api_helpers.file_helper import delete_file_by_storage
+from api_services.composite_service import delete_origin_files
 from api_services.file_service import (
     assert_file_owner,
     delete_file_and_parts,
-    get_file_record_by_hash,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
-    prepare_download_file_local,
     prepare_download_raw_oss,
     rollback_simple_upload,
     get_reuse_file_by_hash,
     set_file_public_service,
     unlink_user_from_file,
     update_download_stats,
-    validate_and_merge_parts_business,
-    validate_part_upload,
     validate_simple_upload,
-    rollback_part_upload,
     validate_upload_request,
-    validate_hash_and_size,
     get_file_record_by_id,
+    update_file_record,
 )
 from api_services.user_service import count_items
-from background.experiment_background import trigger_experiment_extraction
 from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
@@ -42,30 +34,25 @@ from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     file_persist_failed_exception,
-    invalid_part_data_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
-    download_not_implemented_exception
+    download_not_implemented_exception,
 )
 from models.file_models import (
-    PartUploadStatus,
     FileCreate,
     FileDownloadMeta,
     FileInDB,
     FilePublic,
     FileOssUploadResponse,
-    PartCreate,
-    PartInDB,
-    PartPublic,
     FileStatus,
     RawDownloadResponse,
 )
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
-from storage_backend.storage import LocalStorage, OssStorage
-from tools import utc_time, get_logger
+from storage.oss.oss_storage import OssStorage
+from tools import get_logger
 
 logger = get_logger("api.file_api")
 
@@ -92,10 +79,6 @@ async def preflight_create_file(
     - 此时文件记录已创建,但用户的 file_ids 和统计信息尚未更新
     - 只有在后续上传接口中校验通过后,才会更新用户计数
     """
-    # 只有全局配置允许local存储时，才创建本地存储目录
-    if "local" in ALLOWED_STORAGE_TYPES:
-        LocalStorage.ensure_storage_dirs()
-
     # 参数验证
     if not await validate_upload_request(async_session, current_user, file_data):
         logger.error(f"validation failed user={current_user.id} filename={file_data.filename}")
@@ -135,277 +118,65 @@ async def preflight_create_file(
     return result # type: ignore
 
 
-async def upload_file_part(
-    part_data_json: Annotated[str, Form(alias="part_data_json")],
-    part: Annotated[UploadFile, File()],
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    async_session: AsyncSessionDep,
-) -> PartPublic:
-    """
-    【分片上传接口】
-
-    功能:上传单个文件分片,每次上传后验证并尝试合并
-    时机:在预检接口之后,逐个上传分片
-
-    请求格式:multipart/form-data
-    - part_data_json: JSON 字符串,包含分片元数据,对应模型为 PartCreate
-    - part: 分片文件内容
-
-    流程:
-    1. 解析分片元数据
-    2. 查询文件记录
-    3. 验证分片(编号范围、重复、哈希大小)
-    4. 保存分片并创建记录
-    5. 尝试合并,合并成功则触发后台任务
-    """
-    part_record = None
-    file_record = None
-    temp_path = None
-    # 1. 解析分片元数据
-    try:
-        # 只有全局配置允许local存储时，才创建本地存储目录
-        if "local" in ALLOWED_STORAGE_TYPES:
-            LocalStorage.ensure_storage_dirs()
-
-        part_data = PartCreate(**json.loads(part_data_json))
-        logger.info(f"part upload start user={current_user.id} file_hash={part_data.file_hash} part={part_data.part_number}")
-
-        # 2. 查询文件记录(业务层)
-        file_record = await get_file_record_by_hash(async_session, part_data.file_hash)
-
-        # 3. 统一验证(业务层:编号范围 + 重复)
-        await validate_part_upload(async_session, file_record, current_user, part_data)
-
-        # 4 获取保存路径
-        if not file_record.file_verify_code or not current_user.id or not file_record.file_id:
-            raise invalid_request_parameters_exception
-
-        temp_path = prepare_part_temp_path(current_user.id, file_record.file_verify_code, part_data.part_number)
-
-        # 4. 保存分片、校验哈希并持久化记录(业务层)
-        part_record = await save_and_persist_part(async_session, file_record, current_user, part_data, part, temp_path)
-        _, act_part_size = await validate_hash_and_size(part_data.part_hash, part_data.part_size, str(temp_path), "local")
-
-        logger.info(f"part saved user={current_user.id} file_id={file_record.file_id} "
-                    f"part={part_data.part_number} size={act_part_size}")
-
-        #5. 尝试合并
-        is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
-        if is_merged:
-            await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
-            file_record.status = FileStatus.PROCESSING
-        if not is_merged:
-            await async_session.refresh(part_record)
-        await async_session.commit()
-        await async_session.refresh(file_record)
-        await async_session.refresh(current_user)
-        logger.info(f"part upload completed user={current_user.id} file_id={file_record.file_id}")
-
-    except Exception as exc:
-        await rollback_part_upload(async_session, temp_path, file_record)
-        raise invalid_part_data_exception from exc
-
-    return part_record  # type: ignore
-
-
-async def validate_and_merge_parts(
-    file_id: int,
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    async_session: AsyncSessionDep,
-) -> dict[str, Any]:
-    """
-    【分片合并接口】
-
-    功能:前端在所有分片上传完成后显式触发分片完整性验证和合并。
-    """
-    file_record = await get_file_record_by_id(file_id, async_session)
-    if not await assert_file_owner(async_session, file_record, current_user):
-        raise permission_denied_exception
-
-    is_merged = await validate_and_merge_parts_business(async_session, file_record, current_user)
-    if is_merged:
-        await trigger_experiment_extraction(file_record, current_user, file_record.experiment_type)
-        file_record.status = FileStatus.PROCESSING
-
-    await async_session.commit()
-
-    return {"file_id": file_id, "merged": is_merged}
-
-
-async def get_part_upload_status(
-    file_id: int,
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
-) -> PartUploadStatus:
-    """
-    【分片上传状态查询接口】
-    
-    功能:查询分片上传的进度和状态
-    时机:前端可以定期调用此接口查询上传进度
-    
-    返回信息:
-    - file_hash: 文件哈希
-    - filename: 文件名
-    - total_parts: 总分片数
-    - uploaded_parts: 已上传的分片编号列表
-    - total_size: 文件总大小
-    - is_complete: 是否已完成上传
-    
-    判断逻辑:
-    - 如果文件ID在用户的 file_ids 中,说明已完成上传
-    - 否则查询已上传的分片记录
-    """
-    file_record = await get_file_record_by_id(file_id, session)
-
-    # 创建基础状态对象
-    status = PartUploadStatus(
-        file_hash=file_record.file_verify_code or "",
-        filename=file_record.filename,
-        total_parts=file_record.total_parts or 0,
-        uploaded_parts=[],
-        total_size=file_record.size,
-        is_complete=False,
-    )
-
-    # 检查文件是否已完成上传(复用 valid_file_uploaded,对 imzML 类型额外验证 origin 状态)
-    assert current_user.id is not None
-    user_file_ids = await get_user_file_ids(session, current_user.id)
-    if file_record.file_id in user_file_ids and await valid_file_uploaded(session, file_record):
-        status.is_complete = True
-        return status
-
-    # 查询已上传的分片
-    uploaded_parts = (
-        await session.exec(
-            select(PartInDB)
-            .where(and_(PartInDB.file_id == file_id, PartInDB.owner_id == current_user.id))
-            .order_by(PartInDB.part_number) # type: ignore
-        )
-    ).all()
-
-    status.uploaded_parts = [part.part_number for part in uploaded_parts]
-    return status
-
-
 async def upload_simple_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    storage_type: str = Form("local"),
+    storage_type: str = Form("oss"),
     pre_file_id: int = Form(...),
-    file: UploadFile | None = File(None),
     filename: str | None = Form(None),
 ) -> FileOssUploadResponse:
     """
-    【简单上传接口】
-    
-    功能:一次性接收完整文件,不做分片
-    时机:在预检接口之后调用
-    
-    流程:
-    1. 查询预检记录
-    2. 统一验证(存储类型、文件名、元数据、配额)
-    3. 保存文件到存储目录
-    4. 更新用户统计信息(file_ids、file_count、total_file_size)
-    5. 如果是 ZIP 文件,触发后台任务提取实验文件
-    
-    后台任务:
-    - 如果是 ZIP 文件,上传成功后会自动触发实验文件提取
-    
-    注意:
-    - 必须先调用预检接口获取 pre_file_id
-    - 文件哈希和大小必须与预检记录匹配,否则上传失败
-    - 上传失败时会清理预检记录
+    【OSS 简单上传接口】
+
+    查询预检记录并返回限定对象路径的 STS 临时凭证，文件内容由前端
+    通过 OSS SDK 直传。必须先调用预检接口获取 pre_file_id。
+
+    OSS 对象清理策略：
+    - 已收到失败回调，或回调在数据库成功提交前异常时，应用会尽力
+      主动删除 source/imzML/ibd 以及关联的 packup 对象。
+    - FC 完全没有回调时，应用只清理过期数据库记录；未写入
+      persistent=true 标签的孤儿对象由 OSS 生命周期规则自动回收。
     """
 
     pre_record = None
-    final_path = None
-    oss_path = None
-    oss_bucket = None
-    oss_sts_token = None
-    oss_region_id = None
 
     try:
-        # 只有全局配置允许local存储时，才创建本地存储目录
-        if "local" in ALLOWED_STORAGE_TYPES:
-            LocalStorage.ensure_storage_dirs()
+        if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
+            raise invalid_request_parameters_exception
 
-        # 查询预检记录
         pre_record = await get_file_record_by_id(pre_file_id, async_session)
+        if filename is None:
+            raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
 
-        # 根据存储类型动态处理不同的存储逻辑
-        if storage_type == "local":
-            if file is None:
-                raise HTTPException(status_code=400, detail="missing file parameter while storage_type is local")
+        logger.info(
+            "oss upload start user=%s filename=%s storage=%s",
+            current_user.id, filename, storage_type,
+        )
+        await validate_simple_upload(current_user, filename, pre_record, storage_type)
 
-            logger.info(f"simple upload start user={current_user.id}, filename={file.filename},storage={storage_type}")
+        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
+        oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
+        if not oss_sts_token or not oss_path:
+            raise internal_server_error_exception
 
-            # 统一验证(业务层)
-            await validate_simple_upload(current_user, file.filename, pre_record, storage_type)
-
-            # 如果是本地存储，保存文件并更新最终文件记录
-            final_path = LocalStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
-            await save_upload_file(file, final_path) # 保存文件 → 更新记录 → 提交,统一 try 保护
-
-            # 校验文件哈希和大小
-            assert pre_record.file_verify_code is not None
-            _, act_size = await validate_hash_and_size(pre_record.file_verify_code, pre_record.size, str(final_path), storage_type)
-
-            # 更新预检记录的路径和大小(预检时已建立用户关联)
-            pre_record.path = str(final_path)
-            pre_record.size = act_size
-            pre_record.uploaded_at = utc_time()
-            pre_record.last_downloaded_at = pre_record.uploaded_at
-            async_session.add(pre_record)
-
-            await async_session.commit()
-            await async_session.refresh(pre_record)
-            await async_session.refresh(current_user)
-            logger.info(f"simple upload completed user={current_user.id} user name = {current_user.username}\n"
-                        f"file_id={pre_record.file_id} filename={pre_record.filename} size={pre_record.size}")
-
-        elif storage_type == "oss":
-            if filename is None:
-                raise HTTPException(status_code=400, detail="missing filename parameter while storage_type is oss")
-
-            logger.info(f"simple upload start user={current_user.id}, filename={filename},storage={storage_type}")
-
-            # 统一验证(业务层)
-            await validate_simple_upload(current_user, filename, pre_record, storage_type)
-
-            # 如果是oss存储，向前端返回带oss_upload_path和oss_sts_token的FileOssUploadResponse模型，前端需要根据URL上传文件到oss
-            # 前端上传完毕后，oss自动回调通知后端oss_upload_complete接口,更新文件记录并触发实验文件提取任务
-            oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type) # oss 存储路径(如)
-            oss_bucket = OSS_BUCKET_NAME
-            oss_region_id = OSS_REGION_ID
-            oss_sts_token = await OssStorage.get_upload_sts_token(file_path = oss_path)
-            if not oss_sts_token or not oss_path:
-                raise internal_server_error_exception
-
-            # 标记文件进入上传中状态
-            pre_record.status = FileStatus.UPLOADING
-            async_session.add(pre_record)
-            await async_session.commit()
-            await async_session.refresh(pre_record)
+        await update_file_record(async_session, pre_record, status=FileStatus.UPLOADING)
+        await async_session.commit()
+        await async_session.refresh(pre_record)
 
     except Exception as exc:
-        logger.error(f"simple upload failed user={current_user.id} filename={filename if filename else file.filename} error={exc}") # type: ignore
-        await rollback_simple_upload(async_session, current_user, pre_record, final_path) #TODO 可能会传入空
+        logger.error(
+            "oss upload failed user=%s filename=%s error=%s",
+            current_user.id, filename, exc,
+        )
+        await rollback_simple_upload(async_session, current_user, pre_record)
         raise file_persist_failed_exception from exc
 
-    # 如果是本地存储，在此处触发实验文件提取任务
-    if storage_type == "local":
-        await trigger_experiment_extraction(pre_record, current_user, pre_record.experiment_type)
-        pre_record.status = FileStatus.PROCESSING
-
-    # 如果是oss存储，在此处将pre_record显式转换为FileOssUploadResponse模型，并设置oss_path和oss_sts_token（仅供返回前端）
-    if oss_path and oss_sts_token:
-        pre_record = FileOssUploadResponse.model_validate(pre_record)
-        pre_record.oss_path = oss_path
-        pre_record.oss_sts_token = oss_sts_token
-        pre_record.oss_bucket = oss_bucket
-        pre_record.oss_region_id = oss_region_id
-
-    return pre_record # type: ignore
+    response = FileOssUploadResponse.model_validate(pre_record)
+    response.oss_path = oss_path
+    response.oss_sts_token = oss_sts_token
+    response.oss_bucket = OSS_BUCKET_NAME
+    response.oss_region_id = OSS_REGION_ID
+    return response
 
 
 async def list_user_files(
@@ -519,8 +290,7 @@ async def delete_user_file(
     
     2. 如果文件只属于当前用户:
        - 删除 origin 相关文件(如果有,如 imzML、ibd)
-       - 删除文件物理文件
-       - 删除所有分片记录和物理文件
+       - 删除 OSS 源文件及关联的 packup 对象
        - 删除文件数据库记录
        - 更新当前用户的统计信息
        - 返回状态:deleted
@@ -554,8 +324,8 @@ async def delete_user_file(
             await delete_file_by_storage(file_record.image_path, file_record.storage_type)
             logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
 
-    # 删除文件、分片和数据库记录
-    await delete_file_and_parts(session, file_id, current_user)
+    # 删除 OSS 文件和数据库记录
+    await delete_file_and_parts(session, file_id, current_user.id)
 
     await session.commit()
     await session.refresh(current_user)
@@ -630,8 +400,6 @@ async def get_download_file_metadata(
     """
 
     file_record = await get_file_record_by_id(file_id, session)
-    storage_type = file_record.storage_type
-
     logger.debug(f"download request user={current_user.id} file_id={file_id}")
 
     # 下载次数限制检查
@@ -640,19 +408,12 @@ async def get_download_file_metadata(
         if used >= current_user.max_download_count:
             raise user_download_limit_exception
 
-    # 准备下载文件(业务层处理)
-    oss_download_url = None
-    if storage_type == "local":
-        await prepare_download_file_local(session, file_record)
-    elif storage_type == "oss":
-        oss_download_url = await prepare_download_file_oss(session, file_record)
-    else:
+    if file_record.storage_type != "oss":
         raise download_not_implemented_exception
 
-    # 更新下载统计(业务层处理)
-    if file_record.storage_type == "oss" and oss_download_url != "<PACKING>":
-        await update_download_stats(session, file_record, current_user)
-    elif file_record.storage_type == "local":
+    oss_download_url = await prepare_download_file_oss(session, file_record)
+
+    if oss_download_url != "<PACKING>":
         await update_download_stats(session, file_record, current_user)
 
     await session.commit()
@@ -665,7 +426,7 @@ async def get_download_file_metadata(
         logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
 
     file_download_meta = FileDownloadMeta.from_record(file_record)
-    file_download_meta.oss_download_url = oss_download_url if storage_type == "oss" else None
+    file_download_meta.oss_download_url = oss_download_url
 
     return file_download_meta
 
@@ -685,7 +446,7 @@ async def get_raw_download_metadata(
 
     与旧下载接口的区别：
     - 旧接口 GET /files/{id}/download：走 FC ZIP 打包，可能返回 <PACKING>
-    - 新接口 GET /files/{id}/download_raw：跳过打包，毫秒级返回两个直链 URL
+    - 新接口 GET /files/{id}/download_raw：跳过打包，返回两个直链 URL
 
     流程：
     1. 下载次数限制检查（非管理员用户）
@@ -1013,9 +774,6 @@ DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata
 RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata_noauth)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
-PartUploadDep = Annotated[PartPublic, Depends(upload_file_part)]
-PartStatusDep = Annotated[PartUploadStatus, Depends(get_part_upload_status)]
-ValidateAndMergeDep = Annotated[dict[str, Any], Depends(validate_and_merge_parts)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]

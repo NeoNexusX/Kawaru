@@ -20,7 +20,6 @@ internal_server_error_exception = HTTPException(
     detail=format_exception_detail("Internal server error")
 )
 
-
 __all__ = [
     "non_admin_operation_not_allowed_exception",
     "internal_server_error_exception",

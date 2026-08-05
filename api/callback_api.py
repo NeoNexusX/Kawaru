@@ -1,18 +1,19 @@
 from zipfile import BadZipFile
 import os
 from typing import Annotated
-
+from operator import attrgetter
 from fastapi import Depends, Header, HTTPException
 
 from sqlmodel import select
 
-from database.db import AsyncSessionDep, get_async_engine, AsyncSession
+from api_services.composite_service import failed_mark_origin_record_clean
+from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 
-from api_services.file_service import get_file_by_filename
-from api_services.experiment_service import create_origin_record, mark_origin, delete_source_file_and_clear_path
+from api_services.file_service import get_file_by_filename, update_file_record
+from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
@@ -27,7 +28,7 @@ from exceptions.file_exceptions import (
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
 )
-from exceptions.experiment_exceptions import invalid_zip_file_exception, invalid_process_request_exception
+from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.callback_exceptions import invalid_fc_callback_token_exception
 
@@ -75,15 +76,11 @@ async def oss_upload_callback(
 
     :return: FileInDB
     """
-    filename = callback_info.filename
-    file_path = callback_info.file_path
-    is_success = callback_info.is_success
-    imzml_path = callback_info.imzml_path
-    ibd_path = callback_info.ibd_path
-    imzml_size = callback_info.imzml_size
-    ibd_size = callback_info.ibd_size
-    act_hash = callback_info.act_hash
-    error_type = callback_info.error_type
+    # TODO: 这里怎么自动同步更新？
+    (filename, file_path, is_success, imzml_path, 
+     ibd_path, imzml_size, ibd_size, act_hash, error_type) = attrgetter(
+        "filename", "file_path", "is_success", "imzml_path", "ibd_path",
+        "imzml_size", "ibd_size", "act_hash", "error_type",)(callback_info)
 
     source_file = None
     source_file_id = None
@@ -92,14 +89,21 @@ async def oss_upload_callback(
         source_file = await get_file_by_filename(filename, async_session)
         source_file_id = source_file.file_id # type: ignore
 
+        # 已经存在不管什么状态直接返回
+        existing = await get_origin_imzml_by_file_id(async_session, source_file.file_id)  # type: ignore
+        if existing:
+            return source_file
+        
         # 验证存储类型是否为oss
         if source_file.storage_type != "oss":
             logger.error("file record storage_type not match to oss, filename=%s, storage_type=%s", filename, source_file.storage_type)
             raise storage_type_not_allowed_exception
 
+        ###以上为状态检查####
+
         # 创建实验记录
         origin_record = await create_origin_record(
-            source_file_id=source_file.file_id, # type: ignore
+            source_file_id=source_file_id, # type: ignore
             experiment_name=filename,
             async_session=async_session
         )
@@ -115,19 +119,16 @@ async def oss_upload_callback(
             logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
             raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=broad-exception-raised
 
-        # 验证路径是否为空
-        if not file_path or not imzml_path or not ibd_path:
-            logger.error("file path or imzml path or ibd path is empty, filename=%s", filename)
+        # 校验回调数据完整性
+        if (not file_path or not imzml_path or not ibd_path
+                or not callback_info.imzml_size or not callback_info.ibd_size
+                or callback_info.imzml_size <= 0 or callback_info.ibd_size <= 0):
             raise file_content_missing_exception
 
-        # 验证实验大小是否为空或0
-        if not imzml_size or not ibd_size or imzml_size <= 0 or ibd_size <= 0:
-            logger.error("imzml size or ibd size is empty or <= 0, filename=%s", filename)
-            raise file_content_missing_exception
-
-        # 验证文件哈希是否为空
-        if not act_hash:
-            logger.error("act hash is empty, filename=%s", filename)
+        # 哈希一致性校验
+        if not act_hash or act_hash != source_file.file_verify_code:
+            logger.error("hash check failed filename=%s expected=%s actual=%s",
+                         filename, source_file.file_verify_code, act_hash)
             raise hash_size_validation_failed_exception
 
         # 更新文件大小
@@ -137,18 +138,15 @@ async def oss_upload_callback(
             raise internal_server_error_exception
 
         # 更新文件路径和实验路径
-        source_file.path = file_path
-        source_file.uploaded_at = utc_time()
-        source_file.status = FileStatus.COMPLETED
-        origin_record.status = ExperimentStatus.COMPLETED
-        origin_record.imzml_path = imzml_path
-        origin_record.ibd_path = ibd_path
-        origin_record.imzml_size = imzml_size
-        origin_record.ibd_size = ibd_size
-        async_session.add(source_file)
-        async_session.add(origin_record)
+        await update_file_record(async_session, source_file, status=FileStatus.COMPLETED, 
+                                 path=file_path, uploaded_at=utc_time())
+        # 更新 origin 记录
+        await update_origin(async_session, origin_record,
+                            status=ExperimentStatus.COMPLETED,
+                            imzml_path=imzml_path, imzml_size=imzml_size,
+                            ibd_path=ibd_path, ibd_size=ibd_size)
 
-        # 标记OSS文件为持久化，在OSS端有配置生命周期，如果没有打上标签，在生命周期到期后会被删除
+        # 标记OSS文件为持久化
         is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
         is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
         is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
@@ -172,39 +170,25 @@ async def oss_upload_callback(
 
         return source_file
 
-    except (BadZipFile, FileNotFoundError) as e:
-        source_file.file_path = file_path # 此处更新文件路径，保持与oss记录一致，方便后续通过定时任务删除 # type: ignore
-        source_file.status = FileStatus.FAILED # type: ignore
-        async_session.add(source_file)
-        await mark_origin(
-            async_session = async_session,
-            origin=origin_record.id, # type:ignore
-            storage_type="oss", # type:ignore
-            error_message=str(e),
-            status=ExperimentStatus.FAILED
-        )
-        await async_session.commit()
-        await async_session.refresh(source_file)
-        await async_session.refresh(origin_record)
-
-        logger.error(f"invalid file ,origin id & file id is {origin_record.id} & {source_file.file_id}\nerror={e}") # type: ignore
-        raise invalid_zip_file_exception from e
-
-    except HTTPException:
-        await async_session.rollback()
-        raise
-
     except Exception as e:
-        # 针对其他的异常，回滚实验记录的修改，保持数据库一致性
+        #不直接删除的原因是考虑用户体验，他在时间段看到失败之后会主动删除，能看到失败。
         await async_session.rollback()
-
-        # 删除原始zip，清理记录的file的path信息
-        if source_file_id:
-            async with AsyncSession(get_async_engine()) as async_session:
-                await delete_source_file_and_clear_path(async_session, source_file_id) # type: ignore
-                await async_session.commit()
-
+        await failed_mark_origin_record_clean(async_session, 
+                                              origin_record, 
+                                              source_file, 
+                                              file_path, 
+                                              e,
+                                              f_status=FileStatus.FAILED, 
+                                              o_status=ExperimentStatus.FAILED)
+        await async_session.commit()
+        if origin_record:
+            await async_session.refresh(origin_record)
+            logger.error(f"origin id is {origin_record.id}")
+        if source_file:
+            await async_session.refresh(source_file)
+            logger.error(f"file id is {source_file.file_id}")
         logger.error("oss upload callback error, filename=%s, error=%s", filename, e)
+
         raise internal_server_error_exception from e
 
 
@@ -332,8 +316,7 @@ async def tic_callback(
                            file_id, callback_info.error_message)
             return file_record
 
-        file_record.image_path = image_path
-        async_session.add(file_record)
+        await update_file_record(async_session, file_record, image_path=image_path)
         await async_session.commit()
         await async_session.refresh(file_record)
 
@@ -399,8 +382,7 @@ async def feature_callback(
                            file_id, callback_info.error_message)
             return file_record
 
-        file_record.image_path = image_path
-        async_session.add(file_record)
+        await update_file_record(async_session, file_record, image_path=image_path)
         await async_session.commit()
         await async_session.refresh(file_record)
 

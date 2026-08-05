@@ -66,46 +66,7 @@ user_download_limit_exception = HTTPException(
 # 文件哈希和大小不匹配异常
 hash_size_validation_failed_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("file or part hash or size does not match expected values")
-)
-
-
-# 分片相关异常定义
-
-# 分片验证失败异常（哈希或大小不匹配）
-part_validation_failed_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("uploade part hash or size does not match expected values")
-)
-
-# 分片数据格式无效异常
-invalid_part_data_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("invalid part_data format")
-)
-
-# 分片编号超出范围异常
-part_number_out_of_range_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("part number exceeds total parts")
-)
-
-# 分片已存在异常
-part_already_exists_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("part already uploaded")
-)
-
-# 合并后文件hash不匹配异常
-merged_file_hash_mismatch_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("merged file hash does not match expected hash")
-)
-
-# 分片文件缺失异常
-part_file_missing_exception = HTTPException(
-    status_code=status.HTTP_404_NOT_FOUND,
-    detail=format_exception_detail("part file missing from storage")
+    detail=format_exception_detail("file hash or size does not match expected values")
 )
 
 
@@ -116,22 +77,7 @@ invalid_request_parameters_exception = HTTPException(
 )
 
 
-# OSS 相关异常定义
-oss_client_create_failed_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("failed to create oss client")
-)
-
-
-# OSS 打包回调异常定义
-oss_packup_callback_error_exception = HTTPException(
-    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    detail=format_exception_detail("oss packup callback error: zip_path not provided")
-)
-
-
 __all__ = [
-    "oss_packup_callback_error_exception",
     "invalid_user_for_file_list_sync_exception",
     "file_not_found_exception",
     "permission_denied_exception",
@@ -143,12 +89,5 @@ __all__ = [
     "duplicate_file_exception",
     "user_download_limit_exception",
     "hash_size_validation_failed_exception",
-    "part_validation_failed_exception",
-    "invalid_part_data_exception",
-    "part_number_out_of_range_exception",
-    "part_already_exists_exception",
-    "merged_file_hash_mismatch_exception",
-    "part_file_missing_exception",
     "invalid_request_parameters_exception",
-    "oss_client_create_failed_exception",
 ]

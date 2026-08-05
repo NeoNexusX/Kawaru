@@ -12,7 +12,7 @@
 #   docker-compose.prod.yml  ← prod-cd 同步
 #   .env                     ← 人准备：所有环境变量（compose 自动读取：变量替换 + env_file）
 #   prod-config.yaml         ← 人准备：应用配置（挂载进容器，可外部改）
-#   data/{mariadb,redis,app,logs/{app,worker,beat}}   ← 落盘
+#   data/{mariadb,redis,logs/{app,worker,beat}}   ← 数据库、Redis、日志落盘；业务文件在 OSS
 #
 # 常用命令（在 /opt/kawaru-prod 下）：
 #   docker compose -f docker-compose.prod.yml -p kawaru-prod pull
@@ -60,7 +60,6 @@ services:
     env_file: [ .env ]                          # 整个 .env 注入容器
     volumes:
       - ./prod-config.yaml:/app/config/prod-config.yaml:ro   # 配置挂载，可外部改（.env 里 CONFIG_PATH 指向此路径）
-      - ./data/app:/app/data                               # 落盘：本地存储 local/temp_chunks/origin/processed
       - ./data/logs/app:/app/kawaru_logs                   # 落盘：app 日志（按服务拆分）
     ports:
       - "8000:8000"
@@ -82,7 +81,6 @@ services:
               "--without-gossip", "--loglevel", "INFO"]
     volumes:
       - ./prod-config.yaml:/app/config/prod-config.yaml:ro
-      - ./data/app:/app/data                    # worker 也读写本地存储（打包/处理）
       - ./data/logs/worker:/app/kawaru_logs
     # 不设 healthcheck：inspect ping 每次会冷启动整套 app 而超时；存活由 restart 兜底
 

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -73,11 +75,8 @@ class EmailSettings(BaseModel):
 
 class StorageSettings(BaseModel):
     """文件存储配置模型"""
-    root: str
-    local_root: str
-    chunk_buffer_size_mb: int
     max_chunks_per_upload: int
-    allowed_storage_types: list[str]
+    allowed_storage_types: list[Literal["oss"]] = Field(min_length=1)
     allowed_file_types: list[str]
     allowed_experiment_types: list[str]
     max_path_length: int
