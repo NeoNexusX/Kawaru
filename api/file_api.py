@@ -733,7 +733,7 @@ async def get_file_image_url(
     """
     获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
     根据 storage_mode 返回不同的 URL 集合：
-    - continuous: 返回 {"urls": {"umap_image.jpg": "..."}, "storage_mode": "continuous"}
+    - continuous: 返回 {"urls": {"umap_image.png": "..."}, "storage_mode": "continuous"}
     - processed:  返回 {"urls": {"tic_image.png": "..."}, "storage_mode": "processed"}
     Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
@@ -743,7 +743,7 @@ async def get_file_image_url(
         raise file_content_missing_exception
 
     if file_record.storage_mode == "continuous":
-        file_names = ["umap_image.jpg"]
+        file_names = ["umap_image.png"]
     else:
         file_names = ["tic_image.png"]
 
