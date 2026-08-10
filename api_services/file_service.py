@@ -345,17 +345,34 @@ async def prepare_download_file_oss(
 
 
 async def validate_simple_upload(
+    async_session: AsyncSession,
     current_user: UserInDB,
     filename: str | None,
     pre_record: FileInDB,
     storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：包含名字、存储类型
+    验证简单上传的所有条件：归属、状态、名字、存储类型
 
     Raises:
-        HTTPException: 验证失败时抛出异常
+        file_not_found_exception: 预检记录不属于当前用户（对外隐藏存在性）
+        HTTPException: 其他验证失败时抛出异常
     """
+    # 归属校验：当前用户必须拥有该预检记录，防止越权签发 STS 覆盖他人对象
+    # 使用 404 而非 403，避免泄露该 pre_file_id 是否存在
+    if not await assert_file_owner(async_session, pre_record, current_user):
+        logger.warning(
+            f"unauthorized upload attempt user={current_user.id} pre_file_id={pre_record.file_id}"
+        )
+        raise file_not_found_exception
+
+    # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
+    if pre_record.status not in ("", FileStatus.UPLOADING):
+        logger.warning(
+            f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
+        )
+        raise invalid_request_parameters_exception
+
     # 存储类型检查
     if storage_type != pre_record.storage_type:
         logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")

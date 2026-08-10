@@ -18,10 +18,9 @@ sample_config = config.sample_info
 user_config = config.user
 
 
-class FileStatus(str, Enum): # TODO
+class FileStatus(str, Enum):
     """文件处理状态枚举"""
     UPLOADING = "uploading"
-    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
 

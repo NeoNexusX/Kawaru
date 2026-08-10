@@ -152,7 +152,7 @@ async def upload_simple_file(
             "oss upload start user=%s filename=%s storage=%s",
             current_user.id, filename, storage_type,
         )
-        await validate_simple_upload(current_user, filename, pre_record, storage_type)
+        await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
 
         oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
         oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)

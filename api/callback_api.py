@@ -41,7 +41,7 @@ logger = get_logger("api.callback_api")
 # FC 回调验证 Token（从环境变量读取，与 FC 控制台配置一致）
 FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
 
-# TODO: 针对此处每个api，需要验证签名
+# TODO: 针对此处每个api，需要验证签名，目前使用的是token验证，后续可以考虑使用签名验证，签名验证需要FC端配合
 
 async def get_expected_hash(
     filename: str,
@@ -77,7 +77,7 @@ async def oss_upload_callback(
     :return: FileInDB
     """
     # TODO: 这里怎么自动同步更新？
-    (filename, file_path, is_success, imzml_path, 
+    (filename, file_path, is_success, imzml_path,
      ibd_path, imzml_size, ibd_size, act_hash, error_type) = attrgetter(
         "filename", "file_path", "is_success", "imzml_path", "ibd_path",
         "imzml_size", "ibd_size", "act_hash", "error_type",)(callback_info)
@@ -121,8 +121,8 @@ async def oss_upload_callback(
 
         # 校验回调数据完整性
         if (not file_path or not imzml_path or not ibd_path
-                or not callback_info.imzml_size or not callback_info.ibd_size
-                or callback_info.imzml_size <= 0 or callback_info.ibd_size <= 0):
+                or not imzml_size or not ibd_size
+                or imzml_size <= 0 or ibd_size <= 0):
             raise file_content_missing_exception
 
         # 哈希一致性校验
