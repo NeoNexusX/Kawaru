@@ -39,7 +39,7 @@ celery_app = get_celery_app()
 @celery_app.task()
 async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
     """为OSS文件添加标签"""
-    with create_oss_client_context() as oss_client:
+    async with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -73,7 +73,7 @@ async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
 @celery_app.task()
 async def check_oss_file_exist_task(file_path: str) -> bool:
     """验证OSS文件或目录是否存在，存在返回True，不存在则返回False"""
-    with create_oss_client_context() as oss_client:
+    async with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -127,7 +127,7 @@ async def get_oss_file_size_task(file_path: str) -> int | None:
     :param file_path: OSS文件路径（如"folder/file.zip")
     :return: 文件大小
     """
-    with create_oss_client_context() as oss_client:
+    async with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端
             if oss_client is None:
@@ -242,7 +242,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
     :return: bool 是否删除成功
     """
-    with create_oss_client_context() as oss_client:
+    async with create_oss_client_context() as oss_client:
         try:
             # 判断oss客户端是否能正常使用
             if oss_client is None:
@@ -322,7 +322,7 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
 
 
 @celery_app.task()
-async def sign_url_task(file_path: str, expires: int) -> str | None:
+def sign_url_task(file_path: str, expires: int) -> str | None: #TODO：这个函数后续可以考虑和下面这个函数合并，减少重复代码
     """
     签名OSS文件下载URL
 
@@ -331,6 +331,8 @@ async def sign_url_task(file_path: str, expires: int) -> str | None:
 
     :return: str 签名后的URL
     """
+    # presign 为纯本地签名计算（SDK 内部使用 _nopHttpClient，不发网络请求），
+    # 因此本任务保持同步执行，不占用事件循环
     oss_client = create_oss_sync_client()
     try:
         # 创建OSS客户端

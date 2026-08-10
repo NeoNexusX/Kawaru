@@ -1,6 +1,6 @@
 import asyncio
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
 import alibabacloud_oss_v2 as oss
 import alibabacloud_oss_v2.aio as oss_aio
@@ -12,20 +12,20 @@ from models.config_models import OSSSettings
 from tools.logger import get_logger
 
 
-@contextmanager
-def create_oss_client_context():
-    """Create an OSS client with a context manager."""
+@asynccontextmanager
+async def create_oss_client_context():
+    """Create an async OSS client with an async context manager.
+
+    Must be used inside a coroutine (``async with``) so the client is
+    created, used and closed on the same running event loop.
+    """
     client = create_oss_client()
     if client is None:
         raise oss_client_create_failed_exception
     try:
         yield client
     finally:
-        try:
-            asyncio.run(client.close())
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            loop.create_task(client.close())
+        await client.close()
 
 
 def create_oss_client() -> oss_aio.AsyncClient | None:
