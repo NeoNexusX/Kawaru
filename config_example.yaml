@@ -74,6 +74,9 @@ storage:
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
   cleanup_stale_process_runs_interval_minutes: 30
+  ensure_persistent_tag_max_attempts: 12
+  ensure_persistent_tag_retry_seconds: 300
+  cleanup_persistent_tags_interval_minutes: 30
 
 oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）

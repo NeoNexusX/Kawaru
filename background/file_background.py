@@ -9,10 +9,16 @@ from api_services.file_service import (
     get_file_record_by_id,
     safe_cleanup_preflight_record,
     delete_file_and_parts,
+    update_file_record,
 )
 from api_helpers.file_helper import delete_file_by_storage
+from background.file_background_helper import tag_oss_file_task
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
+from constants.file_constants import (
+    ENSURE_PERSISTENT_TAG_MAX_ATTEMPTS,
+    ENSURE_PERSISTENT_TAG_RETRY_SECONDS,
+)
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
 from models.file_models import FileInDB, FileStatus
@@ -277,6 +283,134 @@ async def cleanup_stale_process_runs(
 
         logger.info("cleanup_stale_process_runs completed, marked %d as failed", total_cleaned)
     return total_cleaned
+
+
+def _collect_tag_target_paths(
+    file_record: FileInDB,
+    origin_record: OriginImzMLInDB | None,
+) -> list[str]:
+    """收集一个已完成文件需要打 persistent tag 的全部 OSS 对象路径。
+
+    路径以 DB 记录为准（OSS tag 操作幂等，可安全重放），仅覆盖当前回调流程
+    会产生的一组对象：源 zip + origin imzML/ibd。路径为空的跳过。
+    """
+    paths: list[str] = []
+    zip_path = (file_record.path or "").strip()
+    if zip_path:
+        paths.append(zip_path)
+    if origin_record:
+        for p in (origin_record.imzml_path, origin_record.ibd_path):
+            p = (p or "").strip()
+            if p:
+                paths.append(p)
+    return paths
+
+
+@celery_app.task()  # type: ignore
+async def ensure_persistent_tags(file_id: int, attempt: int = 0) -> bool:
+    """确保某文件的全部 OSS 对象打上 persistent tag（异步补打，失败续打直到成功或超限）。
+
+    上传回调先把 DB 标为 FINALIZING 并提交，再调用本任务打 tag。打 tag 失败
+    不再拖垮上传：对象在打上 tag 前不会被生命周期回收，可安全跨分钟级重试。
+
+    重试机制：任一对象打 tag 失败（子任务自身重试后仍失败抛异常）时，用
+    apply_async(countdown) 把「同一个任务、attempt+1」重新入队——并非函数递归自调，
+    而是向 broker 投一条新消息，由 worker 之后重新执行本函数，attempt 随消息传递。
+    达到 ENSURE_PERSISTENT_TAG_MAX_ATTEMPTS 后标 FAILED 并停止续打。
+    reconcile 兜底任务会以 attempt=0 重新触发，负责兜住 worker 崩溃/消息丢失的缝隙。
+    """
+    async with get_standalone_async_session() as session:
+        file_record = (
+            await session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id)
+            )
+        ).first()
+
+        if not file_record:
+            logger.warning("ensure_persistent_tags: file not found file_id=%s", file_id)
+            return True  # 记录已删，无需重试
+
+        # 已确认打好的不再重复（FINALIZING 才需要补打）
+        if file_record.status != FileStatus.FINALIZING:
+            return True
+
+        if not file_record.file_verify_code:
+            logger.error(
+                "ensure_persistent_tags: missing file_verify_code file_id=%s", file_id
+            )
+            await update_file_record(session, file_record, status=FileStatus.FAILED)
+            await session.commit()
+            return False
+
+        origin_record = (
+            await session.exec(
+                select(OriginImzMLInDB).where(
+                    OriginImzMLInDB.source_file_id == file_id
+                )
+            )
+        ).first()
+
+        paths = _collect_tag_target_paths(file_record, origin_record)
+        if not paths:
+            logger.error("ensure_persistent_tags: no paths to tag file_id=%s", file_id)
+            await update_file_record(session, file_record, status=FileStatus.FAILED)
+            await session.commit()
+            return False
+
+        tag = {"persistent": "true", "file_verify_code": file_record.file_verify_code}
+        # 逐个打 tag：任一子任务在自身重试后仍失败会抛异常 → 走下方续打分支
+        try:
+            for p in paths:
+                await tag_oss_file_task(p, tag)  # type: ignore
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if attempt + 1 >= ENSURE_PERSISTENT_TAG_MAX_ATTEMPTS:
+                await update_file_record(session, file_record, status=FileStatus.FAILED)
+                await session.commit()
+                logger.error(
+                    "ensure_persistent_tags give up file_id=%s after %s attempts, last error=%s",
+                    file_id, attempt + 1, exc,
+                )
+                return False
+            logger.warning(
+                "ensure_persistent_tags attempt %s failed file_id=%s error=%s, retry in %ss",
+                attempt + 1, file_id, exc, ENSURE_PERSISTENT_TAG_RETRY_SECONDS,
+            )
+            ensure_persistent_tags.apply_async(  # type: ignore
+                args=[file_id, attempt + 1], countdown=ENSURE_PERSISTENT_TAG_RETRY_SECONDS
+            )
+            return False
+
+        await update_file_record(session, file_record, status=FileStatus.COMPLETED)
+        await session.commit()
+        logger.info("ensure_persistent_tags done file_id=%s", file_id)
+        return True
+
+
+@celery_app.task()  # type: ignore
+async def reconcile_persistent_tags(
+    batch_size: int = 100,
+    stale_minutes: int = ENSURE_PERSISTENT_TAG_RETRY_SECONDS // 60 * 2,
+) -> int:
+    """reconciliation 兜底：扫描长期停留在 FINALIZING 的记录，重新触发补打 tag。
+
+    只挑 uploaded_at 早于 stale 阈值的记录，避免与正常进行中的 ensure_persistent_tags
+    自排程重试链叠加。覆盖"回调提交后但 ensure_persistent_tags 尚未触发/重试链中断"的缝隙。
+    """
+    async with get_standalone_async_session() as session:
+        cutoff_time = utc_time() - timedelta(minutes=stale_minutes)
+        records = (await session.exec(
+            select(FileInDB.file_id).where(
+                FileInDB.status == FileStatus.FINALIZING,
+                FileInDB.uploaded_at < cutoff_time,
+            ).limit(batch_size)
+        )).all()
+
+        for file_id in records:
+            ensure_persistent_tags.delay(file_id)  # type: ignore
+
+        if records:
+            logger.info("reconcile_persistent_tags re-triggered %d file(s)", len(records))
+    return len(records)
 
 
 @celery_app.task()
