@@ -7,7 +7,8 @@ class OssUploadCallback(BaseModel):
     file_id 后回调，后端按 file_id 定位文件记录。
     """
     file_id: int
-    file_path: str
+    # FC 超大文件跳过等失败场景下无文件路径，允许 None，否则 422 导致失败通知丢失
+    file_path: str | None = None
     is_success: bool
     act_hash: str | None = None
     imzml_path: str | None = None
@@ -36,8 +37,8 @@ class TicCallback(BaseModel):
     error_message: str | None = None
 
 
-class FeatureCallback(BaseModel):
-    """FC UMAP/KMeans 特征分析完成回调模型"""
+class UmapCallback(BaseModel):
+    """FC UMAP 图生成完成回调模型"""
     file_id: int
     is_success: bool
     image_path: str | None = None

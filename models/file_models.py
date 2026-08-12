@@ -121,7 +121,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1, description="兼容保留的总分片数字段")
-    image_path: str | None = Field(default=None, max_length=255, description="图像输出目录在 OSS 上的路径")
+    image_path: str | None = Field(default=None, max_length=255, description="预览图像(preview.jpg)在 OSS 上的完整对象键，由 FC 回调写入")
     default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
 
 class FileDownloadMeta(FileBase):

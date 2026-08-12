@@ -737,9 +737,8 @@ async def get_file_image_url(
 ) -> dict:
     """
     获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
-    根据 storage_mode 返回不同的 URL 集合：
-    - continuous: 返回 {"urls": {"umap_image.png": "..."}, "storage_mode": "continuous"}
-    - processed:  返回 {"urls": {"tic_image.png": "..."}, "storage_mode": "processed"}
+    image_path 由 FC 回调写入完整对象键（含 preview.jpg 文件名），直接签名返回：
+    返回 {"urls": {"preview.jpg": "..."}}
     Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
     """
     file_record = await get_file_record_by_id(file_id, session)
@@ -747,28 +746,20 @@ async def get_file_image_url(
     if not file_record.image_path or file_record.storage_type != "oss":
         raise file_content_missing_exception
 
-    if file_record.storage_mode == "continuous":
-        file_names = ["umap_image.png"]
+    name = file_record.image_path.rsplit("/", 1)[-1]
+    cache_key = f"image_url:{file_id}:{name}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        url = cached
     else:
-        file_names = ["tic_image.png"]
+        url = await OssStorage.get_presigned_download_url(
+            file_record.image_path, expires=SIGNED_URL_EXPIRE_SECONDS,
+        )
+        if not url:
+            raise file_content_missing_exception
+        await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
 
-    urls = {}
-    for name in file_names:
-        cache_key = f"image_url:{file_id}:{name}"
-        cached = await redis_client.get(cache_key)
-        if cached:
-            urls[name] = cached
-        else:
-            real_path = file_record.image_path + name
-            url = await OssStorage.get_presigned_download_url(
-                real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
-            )
-            if not url:
-                raise file_content_missing_exception
-            await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
-            urls[name] = url
-
-    return {"urls": urls, "storage_mode": file_record.storage_mode}
+    return {"urls": {name: url}}
 
 
 # 依赖注入类型别名

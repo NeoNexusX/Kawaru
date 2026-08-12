@@ -17,7 +17,7 @@ from api_services.experiment_service import create_origin_record, get_origin_imz
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
-from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, FeatureCallback, ClusteringCallback
+from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, UmapCallback, ClusteringCallback
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
@@ -294,7 +294,7 @@ async def tic_callback(
     """
     FC TIC 图像生成回调。
 
-    更新文件的 image_path 字段。
+    更新文件的 image_path 字段（完整对象键，含 preview.jpg 文件名）。
     """
     file_id = callback_info.file_id
     is_success = callback_info.is_success
@@ -355,14 +355,14 @@ async def oss_packup_callback(
         raise internal_server_error_exception from e
 
 
-async def feature_callback(
-    callback_info: FeatureCallback,
+async def umap_callback(
+    callback_info: UmapCallback,
     async_session: AsyncSessionDep,
 ) -> FileInDB:
     """
-    FC UMAP/KMeans 特征分析完成回调。
+    FC UMAP 图生成完成回调。
 
-    更新文件的 image_path 字段。
+    更新文件的 image_path 字段（完整对象键，含 preview.jpg 文件名）。
     """
     file_id = callback_info.file_id
     is_success = callback_info.is_success
@@ -373,11 +373,11 @@ async def feature_callback(
             await async_session.exec(
                 select(FileInDB).where(FileInDB.file_id == file_id))).first()
         if not file_record:
-            logger.error("feature callback: file not found file_id=%s", file_id)
+            logger.error("umap callback: file not found file_id=%s", file_id)
             raise file_content_missing_exception
 
         if not is_success:
-            logger.warning("feature analysis failed file_id=%s error=%s",
+            logger.warning("umap generation failed file_id=%s error=%s",
                            file_id, callback_info.error_message)
             return file_record
 
@@ -385,7 +385,7 @@ async def feature_callback(
         await async_session.commit()
         await async_session.refresh(file_record)
 
-        logger.info("feature callback success file_id=%s image_path=%s", file_id, image_path)
+        logger.info("umap callback success file_id=%s image_path=%s", file_id, image_path)
         return file_record
 
     except HTTPException:
@@ -393,7 +393,7 @@ async def feature_callback(
         raise
     except Exception as e:
         await async_session.rollback()
-        logger.error("feature callback error file_id=%s error=%s", file_id, e)
+        logger.error("umap callback error file_id=%s error=%s", file_id, e)
         raise internal_server_error_exception from e
 
 
@@ -481,6 +481,6 @@ GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
 AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
-FeatureCallbackDep = Annotated[FileInDB, Depends(feature_callback)]
+UmapCallbackDep = Annotated[FileInDB, Depends(umap_callback)]
 ClusteringCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(clustering_callback)]
 OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]
