@@ -1,8 +1,12 @@
 from pydantic import BaseModel
 
 class OssUploadCallback(BaseModel):
-    """OSS上传完成回调模型"""
-    filename: str
+    """OSS上传完成回调模型
+
+    FC 解压函数从 OSS 对象键（data/{file_id}/{file_verify_code}.zip）解析出
+    file_id 后回调，后端按 file_id 定位文件记录。
+    """
+    file_id: int
     file_path: str
     is_success: bool
     act_hash: str | None = None

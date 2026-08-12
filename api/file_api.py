@@ -154,7 +154,12 @@ async def upload_simple_file(
         )
         await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
 
-        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
+        # OSS 对象键使用唯一标识 data/{file_id}/{file_verify_code}.{file_type}，
+        # 不再使用文件名；FC 解压函数从对象键解析 file_id 后回调后端
+        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
+        oss_path = OssStorage.prepare_storage_path(
+            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
+        )
         oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
         if not oss_sts_token or not oss_path:
             raise internal_server_error_exception

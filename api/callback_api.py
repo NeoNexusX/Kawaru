@@ -12,7 +12,7 @@ from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment
 from storage.oss.oss_storage import OssStorage
 
-from api_services.file_service import get_file_by_filename, update_file_record
+from api_services.file_service import get_file_record_by_id, update_file_record
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
@@ -44,21 +44,21 @@ FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
 # TODO: 针对此处每个api，需要验证签名，目前使用的是token验证，后续可以考虑使用签名验证，签名验证需要FC端配合
 
 async def get_expected_hash(
-    filename: str,
+    file_id: int,
     async_session: AsyncSessionDep
 ) -> str:
     """
     获取文件的理论哈希
 
-    :param filename: 文件名
+    :param file_id: 文件ID（FC 从 OSS 对象键 data/{file_id}/{file_verify_code}.zip 解析）
     :param async_session: 异步会话依赖
     :return: 文件的理论哈希
     """
-    file_record = await get_file_by_filename(filename, async_session)
+    file_record = await get_file_record_by_id(file_id, async_session)
     if not file_record.file_verify_code:
-        logger.warning("file record not found file_verify_code filename=%s", filename)
+        logger.warning("file record not found file_verify_code file_id=%s", file_id)
         raise file_content_missing_exception
-    logger.info("get expected hash filename=%s, expected hash=%s", filename, file_record.file_verify_code)
+    logger.info("get expected hash file_id=%s, expected hash=%s", file_id, file_record.file_verify_code)
     return file_record.file_verify_code
 
 
@@ -70,33 +70,32 @@ async def oss_upload_callback(
     OSS上传完成回调
     作用是更新文件路径并创建实验记录(只针对数据库做操作，不涉及文件系统)
 
-    :param filename: 文件名
-    :param file_path: 文件路径
+    :param callback_info: 回调信息（file_id 由 FC 从 OSS 对象键解析）
     :param async_session: 异步会话依赖
 
     :return: FileInDB
     """
     # TODO: 这里怎么自动同步更新？
-    (filename, file_path, is_success, imzml_path,
+    (file_id, file_path, is_success, imzml_path,
      ibd_path, imzml_size, ibd_size, act_hash, error_type) = attrgetter(
-        "filename", "file_path", "is_success", "imzml_path", "ibd_path",
+        "file_id", "file_path", "is_success", "imzml_path", "ibd_path",
         "imzml_size", "ibd_size", "act_hash", "error_type",)(callback_info)
 
     source_file = None
     source_file_id = None
     origin_record = None
     try:
-        source_file = await get_file_by_filename(filename, async_session)
+        source_file = await get_file_record_by_id(file_id, async_session)
         source_file_id = source_file.file_id # type: ignore
 
         # 已经存在不管什么状态直接返回
         existing = await get_origin_imzml_by_file_id(async_session, source_file.file_id)  # type: ignore
         if existing:
             return source_file
-        
+
         # 验证存储类型是否为oss
         if source_file.storage_type != "oss":
-            logger.error("file record storage_type not match to oss, filename=%s, storage_type=%s", filename, source_file.storage_type)
+            logger.error("file record storage_type not match to oss, file_id=%s, storage_type=%s", file_id, source_file.storage_type)
             raise storage_type_not_allowed_exception
 
         ###以上为状态检查####
@@ -104,19 +103,19 @@ async def oss_upload_callback(
         # 创建实验记录
         origin_record = await create_origin_record(
             source_file_id=source_file_id, # type: ignore
-            experiment_name=filename,
+            experiment_name=source_file.filename,
             async_session=async_session
         )
 
         # 验证上传是否成功
         if not is_success:
             if error_type == "BadZipFile":
-                logger.error("oss upload not complete, filename = %s is not a valid zip file", filename)
+                logger.error("oss upload not complete, file_id = %s is not a valid zip file", file_id)
                 raise BadZipFile
             if error_type == "FileNotFoundError":
-                logger.error("oss upload not complete, filename = %s ZIP file must contain both .imzML and .ibd files", filename)
+                logger.error("oss upload not complete, file_id = %s ZIP file must contain both .imzML and .ibd files", file_id)
                 raise FileNotFoundError("ZIP file must contain both .imzML and .ibd files")
-            logger.error("oss upload not complete, filename = %s, error_type=%s", filename, error_type)
+            logger.error("oss upload not complete, file_id = %s, error_type=%s", file_id, error_type)
             raise Exception(f"oss upload not complete, error_type={error_type}") # pylint: disable=broad-exception-raised
 
         # 校验回调数据完整性
@@ -127,18 +126,18 @@ async def oss_upload_callback(
 
         # 哈希一致性校验
         if not act_hash or act_hash != source_file.file_verify_code:
-            logger.error("hash check failed filename=%s expected=%s actual=%s",
-                         filename, source_file.file_verify_code, act_hash)
+            logger.error("hash check failed file_id=%s expected=%s actual=%s",
+                         file_id, source_file.file_verify_code, act_hash)
             raise hash_size_validation_failed_exception
 
         # 更新文件大小
         source_file.size = await OssStorage.get_file_size(file_path)
         if not source_file.size or source_file.size <= 0:
-            logger.error("oss get file size failed, filename=%s", filename)
+            logger.error("oss get file size failed, file_id=%s", file_id)
             raise internal_server_error_exception
 
         # 更新文件路径和实验路径
-        await update_file_record(async_session, source_file, status=FileStatus.COMPLETED, 
+        await update_file_record(async_session, source_file, status=FileStatus.COMPLETED,
                                  path=file_path, uploaded_at=utc_time())
         # 更新 origin 记录
         await update_origin(async_session, origin_record,
@@ -152,7 +151,7 @@ async def oss_upload_callback(
         is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
 
         if not all([is_file_tagged, is_imzml_tagged, is_ibd_tagged]):
-            logger.error("oss tag file persistent failed, filename=%s", filename)
+            logger.error("oss tag file persistent failed, file_id=%s", file_id)
             raise internal_server_error_exception
 
         # 提交事务
@@ -187,7 +186,7 @@ async def oss_upload_callback(
         if source_file:
             await async_session.refresh(source_file)
             logger.error(f"file id is {source_file.file_id}")
-        logger.error("oss upload callback error, filename=%s, error=%s", filename, e)
+        logger.error("oss upload callback error, file_id=%s, error=%s", file_id, e)
 
         raise internal_server_error_exception from e
 

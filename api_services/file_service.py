@@ -141,29 +141,6 @@ async def get_file_record_by_id(
     return file_record
 
 
-async def get_file_by_filename(
-    filename: str,
-    async_session: AsyncSession,
-) -> FileInDB:
-    """
-    根据文件名查询文件记录
-
-    Returns:
-        文件记录对象
-    Raises:
-        file_not_found_exception: 文件记录不存在
-    """
-    statement = select(FileInDB).where(FileInDB.filename == filename)
-
-    file_record = (await async_session.exec(statement)).first()
-
-    if not file_record:
-        logger.warning("file record not found filename=%s", filename)
-        raise file_not_found_exception
-
-    return file_record
-
-
 #########################
 # File  - 增
 #########################
@@ -315,13 +292,13 @@ async def prepare_download_file_oss(
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
-        should_pack, zip_download_url, zip_path, fc_request_id = await _handle_packup_status_check(
+        should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
             file_record, packup, oss_packup_key, oss_packup_lock_key
         )
 
         if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
             zip_download_url = await _prepare_download_url_for_completed_packup(
-                file_record, zip_path, fc_request_id, oss_packup_key
+                file_record, zip_path, oss_packup_key
             )
 
         if should_pack:
@@ -484,6 +461,7 @@ async def delete_file_and_parts(
         file_record.path,
         file_record.storage_type,
         include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
+        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
     )
     logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
 
@@ -684,17 +662,16 @@ async def _handle_packup_status_check(
     packup: dict | None = None,
     oss_packup_key: str | None = None,
     oss_packup_lock_key: str | None = None,
-) -> tuple[bool, str | None, str | None, str | None]:
+) -> tuple[bool, str | None, str | None]:
     """
     检查Redis中的打包状态并处理相应逻辑
 
     Returns:
-        tuple: (should_pack, zip_download_url, zip_path, fc_request_id)
+        tuple: (should_pack, zip_download_url, zip_path)
     """
     should_pack = False
     zip_download_url = None
     zip_path = None
-    fc_request_id = None
 
     if not packup:
         if not await OssStorage.check_file_exist(file_record.path):
@@ -726,7 +703,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.COMPLETED:
         zip_path = packup.get("file_path")
-        fc_request_id = packup.get("fc_request_id")
         zip_download_url = packup.get("download_url")
         if not zip_path:
             logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
@@ -737,7 +713,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.FAILED:
         logger.error("packup failed, filename=%s", file_record.filename)
-        fc_request_id = packup.get("fc_request_id")
         await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
         raise file_content_missing_exception
 
@@ -745,13 +720,12 @@ async def _handle_packup_status_check(
         logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
         should_pack = True
 
-    return should_pack, zip_download_url, zip_path, fc_request_id
+    return should_pack, zip_download_url, zip_path
 
 
 async def _prepare_download_url_for_completed_packup(
     file_record: FileInDB,
     zip_path: str,
-    fc_request_id: str | None,
     oss_packup_key: str | None,
 ) -> str | None:
     """为已完成的打包生成下载URL"""
@@ -793,10 +767,11 @@ async def _execute_packup_flow(
     """
     origin_path = await get_origin_path_for_packup(session, file_record)
 
+    # packup zip 使用 file_id 命名，与原始文件名解耦（同名文件秒传复用场景不冲突）
     fc_request_id = await packup_oss_file(
         filename=file_record.filename,
         packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip",  # type: ignore
+        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
     )
 
     if fc_request_id is None:

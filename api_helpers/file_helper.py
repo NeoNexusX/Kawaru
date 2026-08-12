@@ -58,6 +58,7 @@ async def delete_file_by_storage(
     storage_type: str,
     *,
     include_packup: bool = False,
+    file_id: int | None = None,
 ) -> None:
     """
     删除 OSS 文件。保留 storage_type 参数以维持既有 service 调用契约。
@@ -67,6 +68,8 @@ async def delete_file_by_storage(
             仅删除用户上传的原始文件时需要——打包 zip 由下载流程产生、无独立
             DB 记录，不连带删除会残留为 OSS 孤儿对象；
             删除算法输出/图像目录/下载 zip 等场景不需要。
+        file_id: include_packup=True 时用于推导 packup zip 路径
+            （packup/{file_id}.zip）。
 
     异常处理：不捕获,让异常传播到调用方
 
@@ -78,7 +81,7 @@ async def delete_file_by_storage(
         raise NotImplementedError(f"Unsupported storage type: {storage_type}")
 
     if include_packup:
-        res = await OssStorage.delete_file_and_packup(str(path))
+        res = await OssStorage.delete_file_and_packup(str(path), file_id=file_id)
     else:
         res = await OssStorage.delete_file(str(path))
     if res is None:
