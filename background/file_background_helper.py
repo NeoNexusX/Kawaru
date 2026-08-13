@@ -36,9 +36,9 @@ logger = get_logger("background.file_background")
 celery_app = get_celery_app()
 
 
-@celery_app.task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+@celery_app.task()
 async def tag_oss_file_task(file_path: str, tags: dict[str, str]) -> bool:
-    """为OSS文件添加标签（打 tag 幂等，失败自动重试，超过次数返回 False 由调用方兜底）"""
+    """为OSS文件添加标签"""
     async with create_oss_client_context() as oss_client:
         try:
             # 创建OSS客户端

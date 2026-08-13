@@ -41,12 +41,6 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_dow
 STALE_PROCESS_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_process_run_timeout_minutes", 60))
 CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_stale_process_runs_interval_minutes", 15))
 
-# OSS persistent tag 重试策略（上传回调后异步补打标签，见 file_background.ensure_persistent_tags）
-# 生命周期规则按 persistent tag 保留对象，打完 tag 前对象不会被回收，因此可安全跨分钟级重试
-ENSURE_PERSISTENT_TAG_MAX_ATTEMPTS = storage_config.ensure_persistent_tag_max_attempts
-ENSURE_PERSISTENT_TAG_RETRY_SECONDS = storage_config.ensure_persistent_tag_retry_seconds
-CLEANUP_PERSISTENT_TAGS_INTERVAL_MINUTES = storage_config.cleanup_persistent_tags_interval_minutes
-
 # 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
 SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
 PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
@@ -85,9 +79,6 @@ __all__ = [
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",
     "STALE_PROCESS_RUN_TIMEOUT_MINUTES",
     "CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES",
-    "ENSURE_PERSISTENT_TAG_MAX_ATTEMPTS",
-    "ENSURE_PERSISTENT_TAG_RETRY_SECONDS",
-    "CLEANUP_PERSISTENT_TAGS_INTERVAL_MINUTES",
     "SIGNED_URL_EXPIRE_SECONDS",
     "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",

@@ -16,7 +16,6 @@ from api_services.file_service import get_file_record_by_id, update_file_record
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
-from background.file_background import ensure_persistent_tags
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, UmapCallback, ClusteringCallback
 from models.config_models import Config
@@ -137,11 +136,8 @@ async def oss_upload_callback(
             logger.error("oss get file size failed, file_id=%s", file_id)
             raise internal_server_error_exception
 
-        # 更新文件路径和实验路径。
-        # 文件先落 FINALIZING：DB 是事实来源，路径提交后由 ensure_persistent_tags
-        # 异步补打 persistent tag 成功后才转 COMPLETED。打 tag 是外部副作用、可能失败，
-        # 不再让它决定 DB 成败，避免"对象已持久化但 DB 标 FAILED"造成的永久孤儿。
-        await update_file_record(async_session, source_file, status=FileStatus.FINALIZING,
+        # 更新文件路径和实验路径
+        await update_file_record(async_session, source_file, status=FileStatus.COMPLETED,
                                  path=file_path, uploaded_at=utc_time())
         # 更新 origin 记录
         await update_origin(async_session, origin_record,
@@ -149,14 +145,20 @@ async def oss_upload_callback(
                             imzml_path=imzml_path, imzml_size=imzml_size,
                             ibd_path=ibd_path, ibd_size=ibd_size)
 
-        # 提交事务（此时路径已在 DB，打 tag 可据此安全重放）
+        # 提交事务（路径已落库），再打 persistent tag
         await async_session.commit()
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        # 异步补打 persistent tag（幂等，失败自动重试，见 ensure_persistent_tags）。
-        # 放在提交之后触发，保证 worker 读到的路径一定已落库。
-        ensure_persistent_tags.delay(source_file.file_id)  # type: ignore
+        # 标记OSS文件为持久化。失败则抛异常进 except：failed_mark_origin_record_clean
+        # 会保留三个路径并标 FAILED，由 cleanup_failed_experiments 按路径删除对象，避免孤儿。
+        is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
+        is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
+        is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
+
+        if not all([is_file_tagged, is_imzml_tagged, is_ibd_tagged]):
+            logger.error("oss tag file persistent failed, file_id=%s", file_id)
+            raise internal_server_error_exception
 
         # 根据 storage_mode 分发到不同的 FC 函数
         # continuous → fc-feature (UMAP/KMeans 特征分析，大内存)
@@ -171,13 +173,15 @@ async def oss_upload_callback(
     except Exception as e:
         #不直接删除的原因是考虑用户体验，他在时间段看到失败之后会主动删除，能看到失败。
         await async_session.rollback()
-        await failed_mark_origin_record_clean(async_session, 
-                                              origin_record, 
-                                              source_file, 
-                                              file_path, 
+        await failed_mark_origin_record_clean(async_session,
+                                              origin_record,
+                                              source_file,
+                                              file_path,
                                               e,
-                                              f_status=FileStatus.FAILED, 
-                                              o_status=ExperimentStatus.FAILED)
+                                              f_status=FileStatus.FAILED,
+                                              o_status=ExperimentStatus.FAILED,
+                                              imzml_path=imzml_path,
+                                              ibd_path=ibd_path)
         await async_session.commit()
         if origin_record:
             await async_session.refresh(origin_record)

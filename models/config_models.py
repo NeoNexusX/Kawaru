@@ -91,9 +91,6 @@ class StorageSettings(BaseModel):
     failed_experiment_ttl_minutes: int
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
     cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")
-    ensure_persistent_tag_max_attempts: int = Field(default=12, description="persistent tag 补打最大尝试次数，超过则标记文件失败")
-    ensure_persistent_tag_retry_seconds: int = Field(default=300, description="persistent tag 补打重试间隔，单位秒")
-    cleanup_persistent_tags_interval_minutes: int = Field(default=30, description="reconcile 卡 FINALIZING 记录的定时间隔")
 
 
 class OSSSettings(BaseModel):

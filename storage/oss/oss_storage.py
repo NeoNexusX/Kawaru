@@ -8,6 +8,7 @@ from background.file_background_helper import (
     get_oss_upload_sts_token_task,
     get_zarr_read_sts_token_task,
     sign_url_task,
+    tag_oss_file_task,
 )
 from celery import group
 from celery.result import AsyncResult, GroupResult
@@ -142,6 +143,23 @@ class OssStorage:
             raise oss_timeout_exception
 
         return delete_result
+
+    @staticmethod
+    async def tag_oss_file(file_path: str, tag: dict[str, str]) -> bool:
+        """给 OSS 文件打标签。"""
+        res: AsyncResult = tag_oss_file_task.delay(file_path, tag)  # type: ignore
+        is_tagged: bool = await wait_for_result(
+            res,
+            poll_interval=0.1,
+            timeout=10,
+        )  # type: ignore
+        if is_tagged is None:
+            logger.error(
+                "failed to tag oss file due to server timeout: %s",
+                file_path,
+            )
+            return False
+        return is_tagged
 
     @staticmethod
     async def sign_download_url(file_path: str, expires: int) -> str | None:

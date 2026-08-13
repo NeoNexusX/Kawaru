@@ -21,7 +21,6 @@ user_config = config.user
 class FileStatus(str, Enum):
     """文件处理状态枚举"""
     UPLOADING = "uploading"
-    FINALIZING = "finalizing"  # 回调已验证、路径已落库，等待异步补打 persistent tag
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -89,7 +88,7 @@ class FilePublic(FileBase):
     """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）"""
 
     file_id: int
-    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, finalizing, completed, failed")
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed")
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
@@ -114,7 +113,7 @@ class FileInDB(FileBase, table=True):
     is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
-    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, finalizing, completed, failed")
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed")
     first_uploaded_by: str | None = Field(default=None, max_length=user_config.max_username_length, description="首次上传该文件的用户名")
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)

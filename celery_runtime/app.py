@@ -71,12 +71,6 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "args": (),
             "kwargs": {},
         },
-        "reconcile_persistent_tags": {
-            "task": "background.file_background.reconcile_persistent_tags",
-            "schedule": const_kwargs["cleanup_persistent_tags_interval_seconds"],
-            "args": (),
-            "kwargs": {},
-        },
     }
 
 
