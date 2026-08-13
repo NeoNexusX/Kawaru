@@ -215,7 +215,6 @@ async def get_zarr_folder_access(
     run_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    zarr_type: str = Query("algorithm", regex="^(algorithm|clustering)$", description="zarr 类型: algorithm 或 clustering"),
 ) -> ZarrFolderAccess:
     """
     【zarr 文件夹访问接口】
@@ -223,18 +222,14 @@ async def get_zarr_folder_access(
     返回文件夹路径和 OSS STS Token，前端凭此通过 OSS SDK 直连读取，
     无需逐个文件签名，支持 Range 请求和 zarr 随机分块读取。
 
-    zarr_type=algorithm: 返回算法处理结果 zarr
-    zarr_type=clustering: 返回聚类分析结果 zarr
+    聚类结果写回算法处理结果 zarr 内部，统一返回 run_record.out_path。
     """
-    is_clustering = (zarr_type == "clustering")
+    run_record = await assert_zarr_folder_access(async_session, run_id, current_user)
 
-    run_record = await assert_zarr_folder_access(async_session, run_id, current_user, zarr_type=zarr_type)
+    target_path = run_record.out_path
 
-    # 根据类型选择正确的路径
-    target_path = run_record.clustering_out_path if is_clustering else run_record.out_path
-
-    # Redis 缓存：同一 run_id + zarr_type 组合复用同一个 STS Token
-    cache_key = f"zarr_sts:{run_id}:{zarr_type}"
+    # Redis 缓存：同一 run_id 复用同一个 STS Token
+    cache_key = f"zarr_sts:{run_id}"
     cached = await redis_client.get(cache_key)  # type: ignore
     if cached:
         return ZarrFolderAccess(**json.loads(cached))
@@ -262,10 +257,7 @@ async def create_clustering_task(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunPublic:
-    """创建聚类分析任务 — 对已完成的算法 run 执行 UMAP/KMeans 聚类"""
-    n_clusters = 10
-    sample_ratio = 0.1
-
+    """创建聚类分析任务 — 对已完成的算法 run 执行 UMAP/KMeans 聚类，结果写回源 zarr"""
     try:
         run_record = await validate_clustering_request(async_session, run_id, current_user)
 
@@ -275,19 +267,13 @@ async def create_clustering_task(
 
         # 标记聚类状态为 processing
         await mark_clustering_run(async_session, run_record, status=ProcessingStatus.PROCESSING)
-
-        # 构造 OSS 输出路径并提交
-        oss_clustering_output_path = f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{run_id}_clustering.zarr/"  # type: ignore
         await async_session.commit()
         await async_session.refresh(run_record)
 
-        # 异步触发 FC 聚类函数
+        # 异步触发 FC 聚类函数（聚类结果写回 run_record.out_path 内部）
         trigger_fc_clustering_task.delay(  # type: ignore
             run_id=run_id,
             source_zarr_path=run_record.out_path,
-            output_path=oss_clustering_output_path,
-            n_clusters=n_clusters,
-            sample_ratio=sample_ratio,
         )
 
         return ExperimentProcessRunPublic(**run_record.model_dump())

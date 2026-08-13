@@ -47,10 +47,8 @@ class UmapCallback(BaseModel):
 
 
 class ClusteringCallback(BaseModel):
-    """FC 聚类分析完成回调模型"""
+    """FC 聚类分析完成回调模型（聚类结果写回源 zarr，回调只携带状态）"""
     run_id: int
     is_success: bool
-    out_path: str | None = None
-    output_size: int | None = None
     error_type: str | None = None
     error_message: str | None = None

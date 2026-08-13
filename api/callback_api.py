@@ -407,12 +407,10 @@ async def clustering_callback(
     """
     FC 聚类分析完成回调。
 
-    更新 run 记录的聚类状态和输出路径。
+    聚类结果写回源 zarr，回调只更新 run 记录的聚类状态。
     """
     run_id = callback_info.run_id
     is_success = callback_info.is_success
-    out_path = callback_info.out_path
-    output_size = callback_info.output_size
     error_type = callback_info.error_type
     error_message = callback_info.error_message
 
@@ -434,26 +432,16 @@ async def clustering_callback(
             logger.info("clustering callback failed run_id=%s error=%s", run_id, error_message)
             return run_record
 
-        # 校验回调数据完整性
-        if not out_path or not output_size or output_size <= 0:
-            logger.error("clustering callback data incomplete run_id=%s", run_id)
-            raise file_content_missing_exception
-
         # 更新聚类状态
         await mark_clustering_run(
             async_session, run_record,
             status=ProcessingStatus.COMPLETED,
-            out_path=out_path,
-            output_size=output_size,
         )
 
         await async_session.commit()
         await async_session.refresh(run_record)
 
-        logger.info(
-            "clustering callback success run_id=%s out_path=%s output_size=%s",
-            run_id, out_path, output_size,
-        )
+        logger.info("clustering callback success run_id=%s", run_id)
         return run_record
 
     except HTTPException:
