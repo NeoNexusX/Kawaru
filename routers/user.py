@@ -91,12 +91,13 @@ async def reset_password(user: ResetPasswordDep):
     return user
 
 
-@user_router.delete("/user_delete/{user_id}",response_model=UserPublic)
+@user_router.delete("/user_delete/{user_id}")
 async def del_user(user: UserDeleDep):
     """
     Delete user by ID (admin only):
     Method:Delete
     Params:path user_id
+    Returns: {"user_id": ..., "status": "deleted"}
     """
     return user
 

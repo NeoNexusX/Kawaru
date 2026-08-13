@@ -364,8 +364,13 @@ async def del_user(
     user_id: int,
     current_admin: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> UserPublic:
-    """删除指定用户（仅管理员可操作）"""
+) -> dict[str, int | str]:
+    """删除指定用户（仅管理员可操作）
+
+    不返回 UserPublic：用户行删除并 commit 后 ORM 对象属性已过期，
+    在异步会话外序列化会触发懒加载导致 500，且对已删除行 refresh 也会失败。
+    与其他删除端点保持一致，返回被删资源标识与状态。
+    """
 
     if current_admin.identity != "admin":
         raise non_admin_operation_not_allowed_exception
@@ -386,7 +391,7 @@ async def del_user(
         task = clean_user_all_task.delay(file_ids, user_id)  # type: ignore
         await wait_for_result(task, poll_interval=1.0)
 
-    return user # type:ignore
+    return {"user_id": user_id, "status": "deleted"}
 
 
 async def create_admin_user():
@@ -552,7 +557,7 @@ UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用�
 AdminCreateDep = Annotated[UserPublic, Depends(create_admin_user_api)]  # 新增（管理员用户）
 UserUpdateDep = Annotated[UserPublic, Depends(update_user)]  # 更新当前用户信息
 ResetPasswordDep = Annotated[UserPublic, Depends(reset_password)]  # 忘记密码：凭邮箱验证码重置
-UserDeleDep = Annotated[UserPublic, Depends(del_user)]  # 根据用户 ID 删除指定用户
+UserDeleDep = Annotated[dict[str, int | str], Depends(del_user)]  # 根据用户 ID 删除指定用户
 TokenDep = Annotated[UserInDB, Depends(token_authen)]  # 通过解析 JWT Token 返回当前登录用户
 ListUsersDep = Annotated[ListDataResponse, Depends(get_user_list)]  # 获取用户列表依赖
 UserQuotaDep = Annotated[UserQuotaPublic, Depends(get_user_quota)]  # 获取用户配额
