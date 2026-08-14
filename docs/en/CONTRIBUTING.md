@@ -35,7 +35,7 @@ git checkout -b feature/<topic>
 ### 2. Submit PR
 
 - **feature → test**: Squash and merge, delete feature branch after merge
-- Title follows Conventional Commits: `feat(file): support chunked upload`
+- Title follows Conventional Commits: `feat(file): support oss upload`
 - Description includes key changes, impact scope, `Closes #<id>`
 
 ### 3. Sync During Collaboration
@@ -81,8 +81,12 @@ Pushing to `test` triggers CI ([.github/workflows/ci.yml](../../.github/workflow
 Before submitting a PR, run at least:
 
 ```bash
-uvx ruff check .    # lint, same as CI
+uv run python -m compileall -q .
+uv run pytest --collect-only -q
+uvx ruff check .
 ```
+
+Run the relevant test marker as well when the required external services are available.
 
 > pylint is not part of CI; if you run it locally, note that [.pylintrc](../../.pylintrc) sets max-line-length to 150.
 
@@ -114,11 +118,16 @@ Alternatively, run the full test stack (same as CI, port 9001, destroyed afterwa
 ```bash
 docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build --wait
 docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
-docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent" -q
+docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent or password_reset" -q
 docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 ```
 
-> External dependencies per marker: `oss` needs OSS credentials (`OSS_ACCESS_KEY_ID` etc.); `perf_concurrent` / `password_reset` need a working `SMTP_PASSWORD` (registration / reset go through the real email path).
+External dependencies per marker:
+
+- `oss` uses the real bucket and covers preflight → scoped STS → direct OSS upload → wait for event-triggered FC extraction → simulated authenticated upload callback → RAW signed download with MD5 verification → cleanup. It requires OSS credentials, the configured bucket event, and a working extraction FC function. The test simulates the callback after extraction instead of waiting for FC to call the API itself.
+- `perf_concurrent` / `password_reset` need a working `SMTP_PASSWORD` because registration and password reset use the real email path.
+
+The current OSS test does not validate automatic callback delivery, TIC/feature callback output, ZIP packup, algorithm/raw-convert/clustering runs, failure/retry behavior, or multi-user races. Add focused coverage when changing any of those paths; a green `oss` marker alone does not prove the entire OSS/FC deployment is operational.
 
 ## PR Review Checklist
 

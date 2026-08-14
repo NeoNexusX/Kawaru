@@ -77,7 +77,7 @@ def init_celery(const_kwargs: dict):
 
 def init_oss():
     """显式初始化 oss 客户端"""
-    import storage_backend.oss_client as oss_client # pylint: disable=import-outside-toplevel
+    import storage.oss.oss_client as oss_client  # pylint: disable=import-outside-toplevel
 
     client = oss_client.create_oss_client()
 
@@ -98,13 +98,13 @@ def bootstrap():
     if CONFIG.config is None:
         raise RuntimeError("CONFIG.config is not initialized")
 
-    OSS_CLIENT =  init_oss() if "oss" in CONFIG.config.storage.allowed_storage_types else None# pylint: disable=C0103
+    OSS_CLIENT = init_oss()  # pylint: disable=C0103
     CELERY_APP = init_celery(CONSTANTS) # pylint: disable=C0103
 
     #log part
     from tools.logger import get_logger, LOG_LEVELS   # pylint: disable=import-outside-toplevel
     from celery_runtime.runtime import celery_summary # pylint: disable=import-outside-toplevel
-    from storage_backend.oss_client import init_oss_summary  # pylint: disable=import-outside-toplevel
+    from storage.oss.oss_client import init_oss_summary  # pylint: disable=import-outside-toplevel
 
     logger = get_logger("watchfiles")
     logger.setLevel(LOG_LEVELS['warning'])  # watchfiles 监控文件变化时会输出大量日志，提升到 warning 级别以上以减少干扰

@@ -3,7 +3,7 @@ from fastapi import status
 
 from api.callback_api import (GetExpectHashDep, GetConfigDep,
                               OssUploadCallbackDep, AlgorithmCallbackDep,
-                              TicCallbackDep, FeatureCallbackDep,
+                              TicCallbackDep, UmapCallbackDep,
                               ClusteringCallbackDep,
                               OssPackupCallbackDep, verify_fc_callback_token)
 
@@ -30,7 +30,12 @@ async def get_config(config: GetConfigDep):
 
 @callback_router.post("/oss_upload_callback", response_model=OssUploadCallbackDep)
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
-    """OSS上传完成回调"""
+    """
+    OSS 上传完成回调。
+
+    回调到达但处理失败时会尽力删除本次 OSS 对象；FC 未回调产生的未标记
+    对象由 OSS 生命周期规则自动清理。
+    """
     return file_record
 
 
@@ -46,9 +51,9 @@ async def tic_callback(file_record: TicCallbackDep):
     return file_record
 
 
-@callback_router.post("/feature_callback", response_model=FeatureCallbackDep)
-async def feature_callback(file_record: FeatureCallbackDep):
-    """FC UMAP/KMeans 特征分析回调"""
+@callback_router.post("/umap_callback", response_model=UmapCallbackDep)
+async def umap_callback(file_record: UmapCallbackDep):
+    """FC UMAP图生成回调"""
     return file_record
 
 

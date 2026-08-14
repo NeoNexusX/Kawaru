@@ -148,20 +148,13 @@ async def trigger_fc_raw_convert_task(
 async def trigger_fc_clustering_task(
     run_id: int,
     source_zarr_path: str,
-    output_path: str,
-    n_clusters: int,
-    sample_ratio: float,
 ) -> None:
-    """触发 fc-clustering 执行 UMAP/KMeans 聚类分析（异步调用）"""
+    """触发 fc-clustering 执行 UMAP/KMeans 聚类分析（异步调用，结果写回源 zarr）"""
     event = {
         "run_id": run_id,
         "source_zarr_path": source_zarr_path,
-        "output_path": output_path,
-        "n_clusters": n_clusters,
-        "sample_ratio": sample_ratio,
     }
-    logger.info("trigger fc clustering run_id=%s source_zarr=%s n_clusters=%s",
-                run_id, source_zarr_path, n_clusters)
+    logger.info("trigger fc clustering run_id=%s source_zarr=%s", run_id, source_zarr_path)
     request_id = await invoke_fc(
         FC_CLUSTERING_URL, FC_CLUSTERING_TOKEN, event, FC_CLUSTERING_TIMEOUT,
     )

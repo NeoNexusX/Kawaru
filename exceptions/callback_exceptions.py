@@ -1,7 +1,4 @@
-"""
-FC 回调异常模块
-定义 FC 回调身份验证相关的 HTTP 异常
-"""
+"""FC 回调异常模块：回调身份验证等直接返回客户端的 HTTP 异常。"""
 from starlette import status
 from fastapi import HTTPException
 from exceptions.utils_exception import format_exception_detail

@@ -2,7 +2,7 @@
 
 Beat 只负责按 beat_schedule 往 broker 投递任务名（字符串），自身不执行任务，
 因此**不需要** import 任何 task 模块（不设 ``imports``），也就不会拉入 FastAPI /
-SQLAlchemy / OSS SDK / aliyun.log 等重型依赖。
+SQLAlchemy / OSS SDK 等重型依赖。
 
 这样 beat 子进程内存可从 ~128MB 降到 ~40MB。Worker 仍走 ``entrypoint:celery_app``
 （保留 ``imports``）以便加载并执行任务。

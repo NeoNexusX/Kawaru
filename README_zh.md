@@ -15,6 +15,7 @@ Kawaru 是一个基于 FastAPI 的后端服务器项目，为 SpatialXomics 提�
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) 包管理器
 - 可连接的 MariaDB 与 Redis 实例（本地安装或 Docker 均可）
+- 阿里云 OSS Bucket、可签发受限 STS 凭证的 RAM 角色，以及配置中对应的函数计算（FC）函数
 
 ## macOS 额外依赖
 
@@ -96,15 +97,16 @@ docker run -d --name kawaru-redis -p 16379:6379 \
 cp .env_example .env
 ```
 
-启动时会校验必需环境变量（缺失会直接报错退出）。关键项：
+启动时会校验核心运行变量，OSS 初始化与回调路由还依赖各自凭证。各业务 FC 的令牌在对应任务执行时才会使用，因此服务健康启动不代表每个 FC 集成都已配置完成。关键项：
 
 | 变量 | 用途 |
 |------|------|
 | `DATABASE_PASSWORD` | MariaDB 密码（以 root 连接） |
 | `REDIS_PASSWORD` | Redis 密码 |
 | `SMTP_PASSWORD` | SMTP 登录密码（服务器 / 端口 / 账号 / 发件人在 `config.yaml` 的 `email:` 段配置） |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | 阿里云 OSS 凭证（`storage.allowed_storage_types` 含 `oss` 时必需） |
-| `OSS_FC_*_TOKEN` / `FC_CALLBACK_TOKEN` | 函数计算（FC）触发与回调令牌 |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | 阿里云 OSS 凭证，以及用于签发受限上传/下载 STS 凭证的 RAM 角色 |
+| `OSS_FC_PACKUP_TOKEN` / `OSS_FC_ALGORITHM_TOKEN` / `OSS_FC_TIC_TOKEN` / `OSS_FC_FEATURE_TOKEN` / `OSS_FC_RAW_CONVERT_TOKEN` / `OSS_FC_CLUSTERING_TOKEN` | worker 调用配置中各 FC 函数时使用的令牌 |
+| `FC_CALLBACK_TOKEN` | 所有 `/callback/*` 请求必须通过 `X-FC-Token` 携带的统一回调令牌 |
 | `CONFIG_PATH` | 应用配置文件路径（默认 `config.yaml`） |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录与级别 |
 | `BASE_URL` / `TEST_USER` / `TEST_PWD` | 仅本地直接跑 pytest 时使用（见 [贡献指南](docs/zh/贡献指南.md)） |
@@ -119,7 +121,9 @@ cp config_example.yaml config.yaml
 
 - `database:` / `redis:` — 指向第 3 步准备好的实例
 - `email:` — SMTP 服务器、端口、账号、发件人
-- `oss:` — bucket、region、FC 端点；不使用 OSS 时把 `storage.allowed_storage_types` 改为 `["local"]`
+- `oss:` — 必填的 bucket、region、存储目录和 FC 端点；文件存储仅支持 OSS
+
+应用使用的 OSS 身份必须能扮演配置的 RAM 角色并完成所需对象操作，RAM 角色需支持向客户端签发的受限上传/下载策略。还需为上传 ZIP 的解包函数配置 OSS 事件触发器，并配置生命周期规则：回收未带 `persistent=true` 标签的遗留临时对象，保留已标记的源文件和解包文件。
 
 ### 6. 运行项目
 
@@ -162,6 +166,29 @@ uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
 
 > 生产环境 worker / beat 运行在独立容器中（分离模式），详见 [部署指南](docs/zh/部署指南.md)。
 
+## 当前 OSS 业务流程
+
+Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传链路已移除；客户端通过短期 STS 凭证把 ZIP 文件直传 OSS。
+
+1. 调用 `POST /files/preflight` 提交文件元数据、MD5、`storage_type=oss`、`spectrum_mode` 与 `storage_mode`。响应预留 `file_id`，并可通过 `is_reuse` 表示哈希复用。
+2. 新对象调用 `POST /files/upload`（或兼容接口 `POST /files/upload_simple`），传入 `pre_file_id` 与 `filename`；响应包含受限 STS 凭证、Bucket、Region 和对象路径。
+3. 客户端将 ZIP 直传 OSS。解包 FC 把 imZML/ibd 写入配置的 origin 根目录，并携带 `X-FC-Token` 回调 `POST /callback/oss_upload_callback`。
+4. 后端校验哈希与路径后持久化元数据，给对象添加 `persistent=true` 标签，并分发图像任务：`storage_mode=continuous` 触发 feature/UMAP-KMeans，其他模式触发 TIC。图像回调记录 `images/file_{file_id}/` 下的结果路径。
+5. 算法处理（`POST /processes`）、RAW 直转（`POST /processes/raw-convert`）和聚类（`POST /processes/{run_id}/clustering`）均由 FC 异步执行，Zarr 结果保存在 OSS；`GET /processes/{run_id}/zarr` 为已完成结果返回受限 STS 访问凭证。
+6. `GET /files/{file_id}/download_raw` 直接返回 imZML 与 ibd 的签名 URL。`GET /files/{file_id}/download` 启动或查询异步 ZIP 打包，在 FC 回调完成前可能返回 `<PACKING>`。
+
+配置中的对象根目录为 `oss_zip_storage_root`、`oss_packup_zip_storage_root`、`oss_origin_storage_root` 和 `oss_processed_storage_root`。Celery beat 会定期清理过期预检记录、下载 ZIP、失败实验和超时处理任务；完全未收到 FC 回调的遗留上传对象仍由 OSS 生命周期规则负责回收。
+
+## 主要 API 范围
+
+| 范围 | 主要路由 |
+|------|----------|
+| 文件上传与访问 | `/files/preflight`、`/files/upload`、`/files/{file_id}/metadata`、`/files/{file_id}/images`、`/files/{file_id}/download_raw`、`/files/{file_id}/download` |
+| 处理任务 | `POST /processes`、`POST /processes/raw-convert`、`POST /processes/{run_id}/clustering`、`GET /processes/{run_id}/zarr`、`GET /processes/mine`、`DELETE /processes/{run_id}` |
+| FC 回调 | `/callback/oss_upload_callback`、`/callback/algorithm_callback`、`/callback/tic_callback`、`/callback/feature_callback`、`/callback/clustering_callback`、`/callback/oss_packup_callback` |
+
+所有 `/callback/*` 路由都要求 `X-FC-Token`。完整请求与响应模型请以 `/docs` 的 Swagger 文档为准。
+
 ## 项目结构
 
 分层调用方向：`routers/` → `api/` → `api_services/` / `api_helpers/` → `database/` / `models/`；后台任务在 `background/`。
@@ -177,7 +204,7 @@ uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
 | `boot/` | 启动引导：env / config / logging / celery / OSS 初始化 |
 | `models/` | Pydantic / SQLModel 模型 |
 | `database/` | 数据库引擎、建表、Redis 客户端 |
-| `storage_backend/` | 本地 / OSS 存储抽象 |
+| `storage/` | OSS 存储实现 |
 | `constants/`、`exceptions/`、`tools/` | 常量、异常定义、日志等工具 |
 | `docker/` | Dockerfile 与 dev / prod / test compose 栈 |
 | `tests/` | 端到端 pytest 套件（需连接运行中的服务，见贡献指南） |

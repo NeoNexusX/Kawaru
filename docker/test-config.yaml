@@ -54,11 +54,8 @@ celery:
   large_file_poll_time: 1000
 
 storage:
-  root: /app/data        # Dockerfile 已建并 chown appuser，可写
-  local_root: local
-  chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
-  allowed_storage_types: ["local", "oss"]
+  allowed_storage_types: ["oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
   max_path_length: 255

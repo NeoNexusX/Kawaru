@@ -20,7 +20,7 @@ async def login(token: UserLoginDep) -> Token:
     """
     User log in:
     Method:Post
-    Params(FormData):username, password
+    Params(OAuth2PasswordRequestForm): username, password
     """
     try:
         asyncio.create_task(incr_visit())
@@ -91,12 +91,13 @@ async def reset_password(user: ResetPasswordDep):
     return user
 
 
-@user_router.delete("/user_delete/{user_id}",response_model=UserPublic)
+@user_router.delete("/user_delete/{user_id}")
 async def del_user(user: UserDeleDep):
     """
     Delete user by ID (admin only):
     Method:Delete
     Params:path user_id
+    Returns: {"user_id": ..., "status": "deleted"}
     """
     return user
 
