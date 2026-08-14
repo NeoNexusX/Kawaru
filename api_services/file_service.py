@@ -292,6 +292,7 @@ async def prepare_download_file_oss(
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
+        # 返回值已无 fc_request_id：FC 日志回捞链路已删除
         should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
             file_record, packup, oss_packup_key, oss_packup_lock_key
         )
@@ -778,7 +779,8 @@ async def _execute_packup_flow(
         logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
         raise internal_server_error_exception
 
-    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
+    # 不再把 fc_request_id 写入 Redis：FC 日志回捞链路已删除，此处仅用于判断触发是否成功
+    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
     return "<PACKING>"

@@ -82,14 +82,14 @@ async def oss_upload_callback(
         "imzml_size", "ibd_size", "act_hash", "error_type",)(callback_info)
 
     source_file = None
-    source_file_id = None
     origin_record = None
     try:
         source_file = await get_file_record_by_id(file_id, async_session)
-        source_file_id = source_file.file_id # type: ignore
+        source_file_id = source_file.file_id
+        experiment_name = source_file.filename
 
         # 已经存在不管什么状态直接返回
-        existing = await get_origin_imzml_by_file_id(async_session, source_file.file_id)  # type: ignore
+        existing = await get_origin_imzml_by_file_id(async_session, source_file_id) #type: ignore
         if existing:
             return source_file
 
@@ -102,9 +102,9 @@ async def oss_upload_callback(
 
         # 创建实验记录
         origin_record = await create_origin_record(
-            source_file_id=source_file_id, # type: ignore
-            experiment_name=source_file.filename,
-            async_session=async_session
+            async_session=async_session,
+            experiment_name=experiment_name,
+            source_file_id=source_file_id, #type: ignore
         )
 
         # 验证上传是否成功
@@ -150,8 +150,9 @@ async def oss_upload_callback(
         await async_session.refresh(source_file)
         await async_session.refresh(origin_record)
 
-        # 标记OSS文件为持久化。失败则抛异常进 except：failed_mark_origin_record_clean
-        # 会保留三个路径并标 FAILED，由 cleanup_failed_experiments 按路径删除对象，避免孤儿。
+        # 标记OSS文件为持久化。失败则抛异常进 except：三个路径已在上面第一次 commit 时落库，
+        # rollback 不会抹掉，failed_mark_origin_record_clean 只需标 FAILED，
+        # 由 cleanup_failed_experiments 按 DB 中已落库的路径删除对象，避免孤儿。
         is_file_tagged = await OssStorage.tag_oss_file(file_path, {"persistent": "true", "file_verify_code": act_hash})
         is_imzml_tagged = await OssStorage.tag_oss_file(imzml_path, {"persistent": "true", "file_verify_code": act_hash})
         is_ibd_tagged = await OssStorage.tag_oss_file(ibd_path, {"persistent": "true", "file_verify_code": act_hash})
@@ -176,12 +177,9 @@ async def oss_upload_callback(
         await failed_mark_origin_record_clean(async_session,
                                               origin_record,
                                               source_file,
-                                              file_path,
                                               e,
                                               f_status=FileStatus.FAILED,
-                                              o_status=ExperimentStatus.FAILED,
-                                              imzml_path=imzml_path,
-                                              ibd_path=ibd_path)
+                                              o_status=ExperimentStatus.FAILED)
         await async_session.commit()
         if origin_record:
             await async_session.refresh(origin_record)

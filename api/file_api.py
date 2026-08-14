@@ -731,37 +731,6 @@ async def oss_upload_file(
     )
 
 
-async def get_file_image_url(
-    file_id: int,
-    session: AsyncSessionDep,
-) -> dict:
-    """
-    获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
-    image_path 由 FC 回调写入完整对象键（含 preview.jpg 文件名），直接签名返回：
-    返回 {"urls": {"preview.jpg": "..."}}
-    Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
-    """
-    file_record = await get_file_record_by_id(file_id, session)
-
-    if not file_record.image_path or file_record.storage_type != "oss":
-        raise file_content_missing_exception
-
-    name = file_record.image_path.rsplit("/", 1)[-1]
-    cache_key = f"image_url:{file_id}:{name}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        url = cached
-    else:
-        url = await OssStorage.get_presigned_download_url(
-            file_record.image_path, expires=SIGNED_URL_EXPIRE_SECONDS,
-        )
-        if not url:
-            raise file_content_missing_exception
-        await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
-
-    return {"urls": {name: url}}
-
-
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FileOssUploadResponse, Depends(upload_simple_file)]
@@ -772,6 +741,5 @@ RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_m
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
-ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]

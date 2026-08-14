@@ -239,6 +239,29 @@ class LoggerManager:
         return self.loggers[name]
 
 
+    def set_level(self, level):
+        """dynamic change logger level"""
+        if isinstance(level, str):
+            level = LOG_LEVELS.get(level.lower(), logging.INFO)
+
+        # update logger level
+        self.log_level = level
+
+        # update root logger level
+        root_logger = logging.getLogger()
+        root_logger.setLevel(level)
+
+        # update root handler
+        for handler in root_logger.handlers:
+            handler.setLevel(level)
+
+        # update all logger
+        for logger in self.loggers.values():
+            logger.setLevel(level)
+            # update all handlers for this logger
+            for handler in logger.handlers:
+                handler.setLevel(level)
+
 # 获取日志器的便捷函数
 def get_logger(name="app") -> logging.Logger:
     """Get logger by name."""
