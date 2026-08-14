@@ -3,7 +3,7 @@ from fastapi import status
 
 from api.callback_api import (GetExpectHashDep, GetConfigDep,
                               OssUploadCallbackDep, AlgorithmCallbackDep,
-                              TicCallbackDep, FeatureCallbackDep,
+                              TicCallbackDep, UmapCallbackDep,
                               ClusteringCallbackDep,
                               OssPackupCallbackDep, verify_fc_callback_token)
 
@@ -51,9 +51,9 @@ async def tic_callback(file_record: TicCallbackDep):
     return file_record
 
 
-@callback_router.post("/feature_callback", response_model=FeatureCallbackDep)
-async def feature_callback(file_record: FeatureCallbackDep):
-    """FC UMAP/KMeans 特征分析回调"""
+@callback_router.post("/umap_callback", response_model=UmapCallbackDep)
+async def umap_callback(file_record: UmapCallbackDep):
+    """FC UMAP图生成回调"""
     return file_record
 
 

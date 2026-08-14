@@ -147,18 +147,16 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     created_at: datetime = Field(default_factory=utc_time, description="创建时间")
 
     # 输出路径和大小仅 DB 层存储，不对外暴露
-    out_path: str | None = Field(default=None, max_length=getattr(storage_config, 'max_path_length', 255), description="结果输出路径")
+    # 聚类结果直接写回该 zarr 内部，不单独记录路径
+    out_path: str | None = Field(
+        default=None,
+        max_length=getattr(storage_config, 'max_path_length', 255),
+        description="结果输出路径",
+    )
     output_size: int | None = Field(
         default=None,
         sa_column=Column(BigInteger, nullable=True),
         description="输出文件总大小(byte)"
-    )
-    # 聚类分析结果路径和大小（仅 DB 层存储）
-    clustering_out_path: str | None = Field(default=None, max_length=getattr(storage_config, 'max_path_length', 255), description="聚类分析结果 zarr 的 OSS 路径")
-    clustering_output_size: int | None = Field(
-        default=None,
-        sa_column=Column(BigInteger, nullable=True),
-        description="聚类结果文件总大小(byte)"
     )
 
     # ORM 层反向关系（对应 OriginImzMLInDB.process_runs）

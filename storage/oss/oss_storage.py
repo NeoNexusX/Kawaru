@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Sequence
 
 from background.file_background_helper import (
@@ -31,9 +30,13 @@ class OssStorage:
     """OSS 存储相关操作。"""
 
     @staticmethod
-    def prepare_storage_path(filename: str, file_type: str) -> str:
-        """为 OSS 存储准备最终保存路径。"""
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{filename}.{file_type}"  # type: ignore
+    def prepare_storage_path(file_id: int, file_verify_code: str, file_type: str) -> str:
+        """为 OSS 存储准备最终保存路径。
+
+        对象键使用唯一标识而非文件名：data/{file_id}/{file_verify_code}.{file_type}
+        file_id 随对象键经 OSS 事件传给解压 FC，FC 解析后用 file_id 回调后端。
+        """
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{file_id}/{file_verify_code}.{file_type}"  # type: ignore
 
     @staticmethod
     async def get_upload_sts_token(file_path: str) -> OssStsToken | None:
@@ -87,9 +90,11 @@ class OssStorage:
         return size
 
     @staticmethod
-    async def delete_file_and_packup(file_path: str) -> bool | None:
+    async def delete_file_and_packup(file_path: str, file_id: int | None = None) -> bool | None:
         """删除 OSS 文件及对应的临时打包文件。
 
+        packup zip 命名为 packup/{file_id}.zip（见 file_service._execute_packup_flow），
+        无法从 file_path 推导，需调用方传入 file_id。
         """
         if not file_path:
             logger.warning("empty path for deletion, skipping")
@@ -97,9 +102,9 @@ class OssStorage:
 
         task_list = [delete_oss_file_task.si(file_path)]  # type: ignore
 
-        if not file_path.endswith("/"):
+        if not file_path.endswith("/") and file_id is not None:
             potential_packup_path = (
-                f"{OSS_PACKUP_ZIP_STORAGE_ROOT.rstrip('/')}/{Path(file_path).name}"  # type: ignore
+                f"{OSS_PACKUP_ZIP_STORAGE_ROOT.rstrip('/')}/{file_id}.zip"  # type: ignore
             )
             if await OssStorage.check_file_exist(potential_packup_path):
                 task_list.append(delete_oss_file_task.si(potential_packup_path))  # type: ignore

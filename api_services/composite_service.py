@@ -97,7 +97,6 @@ async def failed_mark_origin_record_clean(
     async_session: AsyncSession,
     origin_record: OriginImzMLInDB | None,
     source_file: FileInDB | None,
-    file_path: None | str = None,
     e: None | Exception = None,
     f_status: FileStatus = FileStatus.FAILED,
     o_status: ExperimentStatus = ExperimentStatus.FAILED,
@@ -108,11 +107,17 @@ async def failed_mark_origin_record_clean(
     同时更新 file 与 origin 两条记录为 FAILED，并在同一事务内提交、刷新。
     跨 file_service / experiment_service 的编排逻辑集中在此，避免在
     experiment_service 内反向 import file_service 造成循环依赖。
+
+    当下架构中，三个 OSS 路径在成功分支的第一次 commit 时已落库；
+    即使后续步骤（如打 persistent tag）失败触发 rollback，已提交的路径也不会被抹掉。
+    因此兜底只需标 FAILED，无需再传路径参数，由 cleanup_failed_experiments
+    按 DB 中已落库的路径删除 OSS 对象，避免孤儿。
     """
     # update file status to failed
     assert async_session is not None
     if source_file:
-        await update_file_record(async_session, source_file, status=f_status, path=file_path)
+        await update_file_record(async_session, source_file, status=f_status)
     # update origin status to failed
     if origin_record:
-        await update_origin(async_session, origin_record, status=o_status, error_message=str(e))
+        await update_origin(async_session, origin_record, status=o_status,
+                            error_message=str(e))

@@ -208,6 +208,13 @@ async def cleanup_failed_experiments(
                 # 查询关联的文件记录
                 file_record = (await session.exec(
                     select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
+                if not file_record:
+                    # 关联文件记录缺失（理论上被级联/手动删过），无法定位 OSS 对象，跳过
+                    logger.warning(
+                        "cleanup_failed_experiments: file record missing for origin exp_id=%s source_file_id=%s, skip",
+                        exp.id, exp.source_file_id,
+                    )
+                    continue
 
                 # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
                 user_ids = (await session.exec(
@@ -224,7 +231,27 @@ async def cleanup_failed_experiments(
                         logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
                             user_record.total_file_size,)
 
-                # 2. 仅删除文件表记录；OSS 异常对象由回调清理或生命周期兜底。
+                # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
+                #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
+                #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。
+                for obj_path in (
+                    (file_record.path or "").strip() if file_record else "",
+                    (exp.imzml_path or "").strip(),
+                    (exp.ibd_path or "").strip(),
+                ):
+                    if not obj_path:
+                        continue
+                    try:
+                        await delete_file_by_storage(
+                            obj_path, (file_record.storage_type if file_record else "oss")
+                        )
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        logger.warning(
+                            "cleanup_failed_experiments delete oss object failed path=%s error=%s",
+                            obj_path, exc,
+                        )
+
+                # 3. 删除文件表记录。
                 # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 OriginImzMLInDB 记录
                 await session.delete(file_record)
                 cleaned += 1

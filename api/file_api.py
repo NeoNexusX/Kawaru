@@ -152,9 +152,14 @@ async def upload_simple_file(
             "oss upload start user=%s filename=%s storage=%s",
             current_user.id, filename, storage_type,
         )
-        await validate_simple_upload(current_user, filename, pre_record, storage_type)
+        await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
 
-        oss_path = OssStorage.prepare_storage_path(pre_record.filename, pre_record.file_type)
+        # OSS 对象键使用唯一标识 data/{file_id}/{file_verify_code}.{file_type}，
+        # 不再使用文件名；FC 解压函数从对象键解析 file_id 后回调后端
+        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
+        oss_path = OssStorage.prepare_storage_path(
+            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
+        )
         oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
         if not oss_sts_token or not oss_path:
             raise internal_server_error_exception
@@ -726,46 +731,6 @@ async def oss_upload_file(
     )
 
 
-async def get_file_image_url(
-    file_id: int,
-    session: AsyncSessionDep,
-) -> dict:
-    """
-    获取文件图像 OSS 下载 URL（公开接口，无需鉴权）。
-    根据 storage_mode 返回不同的 URL 集合：
-    - continuous: 返回 {"urls": {"umap_image.jpg": "..."}, "storage_mode": "continuous"}
-    - processed:  返回 {"urls": {"tic_image.png": "..."}, "storage_mode": "processed"}
-    Redis 缓存，TTL 取 PACKUP_CACHE_TTL_SECONDS。
-    """
-    file_record = await get_file_record_by_id(file_id, session)
-
-    if not file_record.image_path or file_record.storage_type != "oss":
-        raise file_content_missing_exception
-
-    if file_record.storage_mode == "continuous":
-        file_names = ["umap_image.jpg"]
-    else:
-        file_names = ["tic_image.png"]
-
-    urls = {}
-    for name in file_names:
-        cache_key = f"image_url:{file_id}:{name}"
-        cached = await redis_client.get(cache_key)
-        if cached:
-            urls[name] = cached
-        else:
-            real_path = file_record.image_path + name
-            url = await OssStorage.get_presigned_download_url(
-                real_path, expires=SIGNED_URL_EXPIRE_SECONDS,
-            )
-            if not url:
-                raise file_content_missing_exception
-            await redis_client.set(cache_key, url, ex=PACKUP_CACHE_TTL_SECONDS)
-            urls[name] = url
-
-    return {"urls": urls, "storage_mode": file_record.storage_mode}
-
-
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
 SimpleUploadDep = Annotated[FileOssUploadResponse, Depends(upload_simple_file)]
@@ -776,6 +741,5 @@ RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_m
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
-ImageUrlDep = Annotated[dict, Depends(get_file_image_url)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]

@@ -27,6 +27,7 @@ from httpx import AsyncClient
 
 from tools.cal_hash import compute_imzml_md5
 from storage.oss.oss_storage import OssStorage
+from constants.file_constants import OSS_ORIGIN_STORAGE_ROOT
 from .conftest import logger
 from .helpers.oss import upload_file_to_oss
 from .helpers.uploads import (
@@ -133,8 +134,9 @@ class TestOss:
         """等待 FC 解压完成 → 模拟 FC 回调
 
         OSS 路径规则：
-          zip       → data/{stem}.zip
-          imzML/ibd → origin/{stem}/{stem}.imzML / origin/{stem}/{stem}.ibd
+          zip       → data/{file_id}/{file_verify_code}.zip
+          imzML/ibd → origin/{file_id}/{file_verify_code}/{stem}.imzML / .ibd
+          （stem 为 zip 内 imzML/ibd 文件名 stem，与测试 zip 文件名一致）
 
         流程：
           1. 轮询 OSS 检查 origin 文件是否存在，等待 FC 解压完成
@@ -149,8 +151,9 @@ class TestOss:
         file_id = TestOss._uploaded_file_id
 
         stem = Path(TEST_FILENAME).stem  # "test_oss_100MB_2"
-        imzml_path = f"origin/{stem}/{stem}.imzML"
-        ibd_path = f"origin/{stem}/{stem}.ibd"
+        origin_root = OSS_ORIGIN_STORAGE_ROOT.rstrip("/")
+        imzml_path = f"{origin_root}/{file_id}/{TestOss._file_verify_code}/{stem}.imzML"
+        ibd_path = f"{origin_root}/{file_id}/{TestOss._file_verify_code}/{stem}.ibd"
 
         # 1. 轮询 OSS 等待 FC 解压完成（origin 文件就绪），再发回调
         FC_POLL_INTERVAL = 5   # 轮询间隔（秒）
@@ -179,7 +182,7 @@ class TestOss:
 
         # 2. 模拟 FC 回调：将 origin 文件路径写入 DB（此时 origin 文件已就绪）
         callback_body = {
-            "filename": TEST_FILENAME,
+            "file_id": file_id,
             "file_path": TestOss._oss_path,
             "is_success": True,
             "act_hash": TestOss._file_verify_code,

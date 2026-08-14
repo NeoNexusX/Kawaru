@@ -15,6 +15,7 @@ storage_config = config.storage
 
 OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
 OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
+OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 
 
 # 单次上传最大允许分片数限制
@@ -81,6 +82,7 @@ __all__ = [
     "SIGNED_URL_EXPIRE_SECONDS",
     "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
+    "OSS_ORIGIN_STORAGE_ROOT",
     "FC_PACKUP_ENDPOINT",
     "FC_PACKUP_TIMEOUT_SECONDS",
     "FC_ALGORITHM_ENDPOINT",

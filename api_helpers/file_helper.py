@@ -19,7 +19,6 @@ from models.user_models import UserInDB
 from constants.file_constants import (
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
-    ALLOWED_STORAGE_TYPES,
     MAX_PARTS_PER_UPLOAD,
 )
 
@@ -58,6 +57,7 @@ async def delete_file_by_storage(
     storage_type: str,
     *,
     include_packup: bool = False,
+    file_id: int | None = None,
 ) -> None:
     """
     删除 OSS 文件。保留 storage_type 参数以维持既有 service 调用契约。
@@ -67,6 +67,8 @@ async def delete_file_by_storage(
             仅删除用户上传的原始文件时需要——打包 zip 由下载流程产生、无独立
             DB 记录，不连带删除会残留为 OSS 孤儿对象；
             删除算法输出/图像目录/下载 zip 等场景不需要。
+        file_id: include_packup=True 时用于推导 packup zip 路径
+            （packup/{file_id}.zip）。
 
     异常处理：不捕获,让异常传播到调用方
 
@@ -78,7 +80,7 @@ async def delete_file_by_storage(
         raise NotImplementedError(f"Unsupported storage type: {storage_type}")
 
     if include_packup:
-        res = await OssStorage.delete_file_and_packup(str(path))
+        res = await OssStorage.delete_file_and_packup(str(path), file_id=file_id)
     else:
         res = await OssStorage.delete_file(str(path))
     if res is None:
@@ -189,41 +191,6 @@ def validate_file_metadata(filename: str, file_type: str) -> bool:
         True 表示验证通过,False 表示验证失败
     """
     return validate_filename(filename) and validate_file_type(file_type)
-
-
-def validate_upload_params(
-    storage_type: str,
-    filename: str,
-    expected_storage_type: str | None = None,
-    expected_filename: str | None = None,
-) -> bool:
-    """
-    验证上传参数
-
-    Returns:
-        True 表示验证通过,False 表示验证失败
-    """
-    # 1. 存储类型验证
-    if storage_type not in ALLOWED_STORAGE_TYPES:
-        return False
-
-    # 2. 提供了预检的存储类型,进行比较
-    if expected_storage_type and storage_type != expected_storage_type:
-        return False
-
-    # 3. 文件名验证
-    if not filename:
-        return False
-
-    # 4. 提供了预检的文件名,进行比较
-    if expected_filename and filename != expected_filename:
-        return False
-
-    # 5. 文件名验证（类型验证需要 file_type 参数，此处跳过）
-    if not validate_filename(filename):
-        return False
-
-    return True
 
 
 async def check_oss_callback_signature(

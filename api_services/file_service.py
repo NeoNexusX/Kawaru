@@ -141,29 +141,6 @@ async def get_file_record_by_id(
     return file_record
 
 
-async def get_file_by_filename(
-    filename: str,
-    async_session: AsyncSession,
-) -> FileInDB:
-    """
-    根据文件名查询文件记录
-
-    Returns:
-        文件记录对象
-    Raises:
-        file_not_found_exception: 文件记录不存在
-    """
-    statement = select(FileInDB).where(FileInDB.filename == filename)
-
-    file_record = (await async_session.exec(statement)).first()
-
-    if not file_record:
-        logger.warning("file record not found filename=%s", filename)
-        raise file_not_found_exception
-
-    return file_record
-
-
 #########################
 # File  - 增
 #########################
@@ -315,13 +292,14 @@ async def prepare_download_file_oss(
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
-        should_pack, zip_download_url, zip_path, fc_request_id = await _handle_packup_status_check(
+        # 返回值已无 fc_request_id：FC 日志回捞链路已删除
+        should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
             file_record, packup, oss_packup_key, oss_packup_lock_key
         )
 
         if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
             zip_download_url = await _prepare_download_url_for_completed_packup(
-                file_record, zip_path, fc_request_id, oss_packup_key
+                file_record, zip_path, oss_packup_key
             )
 
         if should_pack:
@@ -345,17 +323,34 @@ async def prepare_download_file_oss(
 
 
 async def validate_simple_upload(
+    async_session: AsyncSession,
     current_user: UserInDB,
     filename: str | None,
     pre_record: FileInDB,
     storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：包含名字、存储类型
+    验证简单上传的所有条件：归属、状态、名字、存储类型
 
     Raises:
-        HTTPException: 验证失败时抛出异常
+        file_not_found_exception: 预检记录不属于当前用户（对外隐藏存在性）
+        HTTPException: 其他验证失败时抛出异常
     """
+    # 归属校验：当前用户必须拥有该预检记录，防止越权签发 STS 覆盖他人对象
+    # 使用 404 而非 403，避免泄露该 pre_file_id 是否存在
+    if not await assert_file_owner(async_session, pre_record, current_user):
+        logger.warning(
+            f"unauthorized upload attempt user={current_user.id} pre_file_id={pre_record.file_id}"
+        )
+        raise file_not_found_exception
+
+    # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
+    if pre_record.status not in ("", FileStatus.UPLOADING):
+        logger.warning(
+            f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
+        )
+        raise invalid_request_parameters_exception
+
     # 存储类型检查
     if storage_type != pre_record.storage_type:
         logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
@@ -467,6 +462,7 @@ async def delete_file_and_parts(
         file_record.path,
         file_record.storage_type,
         include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
+        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
     )
     logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
 
@@ -667,17 +663,16 @@ async def _handle_packup_status_check(
     packup: dict | None = None,
     oss_packup_key: str | None = None,
     oss_packup_lock_key: str | None = None,
-) -> tuple[bool, str | None, str | None, str | None]:
+) -> tuple[bool, str | None, str | None]:
     """
     检查Redis中的打包状态并处理相应逻辑
 
     Returns:
-        tuple: (should_pack, zip_download_url, zip_path, fc_request_id)
+        tuple: (should_pack, zip_download_url, zip_path)
     """
     should_pack = False
     zip_download_url = None
     zip_path = None
-    fc_request_id = None
 
     if not packup:
         if not await OssStorage.check_file_exist(file_record.path):
@@ -709,7 +704,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.COMPLETED:
         zip_path = packup.get("file_path")
-        fc_request_id = packup.get("fc_request_id")
         zip_download_url = packup.get("download_url")
         if not zip_path:
             logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
@@ -720,7 +714,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.FAILED:
         logger.error("packup failed, filename=%s", file_record.filename)
-        fc_request_id = packup.get("fc_request_id")
         await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
         raise file_content_missing_exception
 
@@ -728,13 +721,12 @@ async def _handle_packup_status_check(
         logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
         should_pack = True
 
-    return should_pack, zip_download_url, zip_path, fc_request_id
+    return should_pack, zip_download_url, zip_path
 
 
 async def _prepare_download_url_for_completed_packup(
     file_record: FileInDB,
     zip_path: str,
-    fc_request_id: str | None,
     oss_packup_key: str | None,
 ) -> str | None:
     """为已完成的打包生成下载URL"""
@@ -776,17 +768,19 @@ async def _execute_packup_flow(
     """
     origin_path = await get_origin_path_for_packup(session, file_record)
 
+    # packup zip 使用 file_id 命名，与原始文件名解耦（同名文件秒传复用场景不冲突）
     fc_request_id = await packup_oss_file(
         filename=file_record.filename,
         packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip",  # type: ignore
+        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
     )
 
     if fc_request_id is None:
         logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
         raise internal_server_error_exception
 
-    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
+    # 不再把 fc_request_id 写入 Redis：FC 日志回捞链路已删除，此处仅用于判断触发是否成功
+    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
     return "<PACKING>"

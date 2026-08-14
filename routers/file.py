@@ -7,7 +7,7 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
     ListPublicFilesDep,
-    OssUploadDep, ImageUrlDep, FileMetadataDep, SetFilePublicDep
+    OssUploadDep, FileMetadataDep, SetFilePublicDep
 )
 from database.visit_stats import incr_visit
 
@@ -74,12 +74,6 @@ async def list_files(list_file_response: ListPublicFilesDep):
 async def upload_file(file_record: OssUploadDep):
     """上传文件至OSS存储"""
     return file_record
-
-
-@file_router.get("/{file_id}/images")
-async def get_file_images(image_urls: ImageUrlDep):
-    """获取文件图像 OSS 下载 URL（公开接口，根据 spectrum_mode 返回不同数量的 URL）"""
-    return image_urls
 
 
 @file_router.get("/{file_id}/metadata", response_model=FilePublic)
