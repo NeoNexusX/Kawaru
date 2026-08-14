@@ -29,21 +29,6 @@ def validate_algorithms_config(config: ProcessingAlgorithmsConfig) -> Processing
     return config if has_any else None
 
 
-def validate_algorithms_json(algorithms_json: str) -> ProcessingAlgorithmsConfig | None:
-    """
-    从 JSON 字符串反序列化并校验算法配置
-
-    Returns:
-        ProcessingAlgorithmsConfig 实例，校验失败返回 None
-    """
-    try:
-        config = ProcessingAlgorithmsConfig.model_validate_json(algorithms_json)
-    except Exception: # pylint: disable=broad-exception-caught
-        logger.exception("failed to parse algorithms JSON")
-        return None
-    return validate_algorithms_config(config)
-
-
 def assert_origin_ready(origin: OriginImzMLInDB) -> bool:
     """校验 origin 状态为 COMPLETED，就绪返回 True"""
     return origin.status == ExperimentStatus.COMPLETED

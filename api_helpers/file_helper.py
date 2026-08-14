@@ -19,7 +19,6 @@ from models.user_models import UserInDB
 from constants.file_constants import (
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
-    ALLOWED_STORAGE_TYPES,
     MAX_PARTS_PER_UPLOAD,
 )
 
@@ -192,41 +191,6 @@ def validate_file_metadata(filename: str, file_type: str) -> bool:
         True 表示验证通过,False 表示验证失败
     """
     return validate_filename(filename) and validate_file_type(file_type)
-
-
-def validate_upload_params(
-    storage_type: str,
-    filename: str,
-    expected_storage_type: str | None = None,
-    expected_filename: str | None = None,
-) -> bool:
-    """
-    验证上传参数
-
-    Returns:
-        True 表示验证通过,False 表示验证失败
-    """
-    # 1. 存储类型验证
-    if storage_type not in ALLOWED_STORAGE_TYPES:
-        return False
-
-    # 2. 提供了预检的存储类型,进行比较
-    if expected_storage_type and storage_type != expected_storage_type:
-        return False
-
-    # 3. 文件名验证
-    if not filename:
-        return False
-
-    # 4. 提供了预检的文件名,进行比较
-    if expected_filename and filename != expected_filename:
-        return False
-
-    # 5. 文件名验证（类型验证需要 file_type 参数，此处跳过）
-    if not validate_filename(filename):
-        return False
-
-    return True
 
 
 async def check_oss_callback_signature(
