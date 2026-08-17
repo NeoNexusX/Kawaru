@@ -1,4 +1,6 @@
 """存储和文件相关的常量定义"""
+import math
+
 from boot.config import get_config
 
 # 字节单位常量
@@ -29,9 +31,32 @@ ALLOWED_EXPERIMENT_TYPES = set(storage_config.allowed_experiment_types)
 # 文件名限制
 MAX_FILENAME_LENGTH = int(storage_config.max_filename_length)
 
-# 清理过期预检任务的间隔时间
-PREFLIGHT_TTL_MINUTES = int(getattr(storage_config, "preflight_ttl_minutes", 30))
+def _compute_preflight_ttl_minutes() -> int:
+    """
+    计算预检记录 TTL（分钟）：
+        公式值 = max_file_size_gb × 2^30 × 8 ÷ (min_upload_bandwidth_mbps × 10^6) ÷ 60 × safety_factor
+        最终值 = max(公式值, preflight_ttl_minutes 手填下限)
+
+    未配置 max_file_size_gb 或 min_upload_bandwidth_mbps 时不启用公式，
+    直接使用 preflight_ttl_minutes，保持旧部署行为不变。
+    """
+    floor = int(getattr(storage_config, "preflight_ttl_minutes", 30))
+    max_gb = getattr(storage_config, "max_file_size_gb", None)
+    min_mbps = getattr(storage_config, "min_upload_bandwidth_mbps", None)
+    if not max_gb or not min_mbps:
+        return floor
+    factor = float(getattr(storage_config, "upload_ttl_safety_factor", 1.5))
+    upload_minutes = max_gb * BYTES_IN_GB * 8 / (min_mbps * 1e6) / 60
+    return max(floor, math.ceil(upload_minutes * factor))
+
+
+# 预检记录过期 TTL：按最大文件与最低带宽公式计算，preflight_ttl_minutes 作为下限
+PREFLIGHT_TTL_MINUTES = _compute_preflight_ttl_minutes()
 CLEANUP_PREFLIGHTS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_preflights_interval_minutes", 60))
+
+# 单文件大小上限（字节），未配置 max_file_size_gb 时为 None（不限制）
+_max_file_size_gb = getattr(storage_config, "max_file_size_gb", None)
+MAX_SINGLE_FILE_SIZE_BYTES = int(_max_file_size_gb * BYTES_IN_GB) if _max_file_size_gb else None
 
 # 下载zip文件清理策略
 DOWNLOAD_ZIP_TTL_MINUTES = int(getattr(storage_config, "download_zip_ttl_minutes", 30))
@@ -74,6 +99,7 @@ __all__ = [
     "ALLOWED_EXPERIMENT_TYPES",
     "MAX_FILENAME_LENGTH",
     "PREFLIGHT_TTL_MINUTES",
+    "MAX_SINGLE_FILE_SIZE_BYTES",
     "CLEANUP_PREFLIGHTS_INTERVAL_MINUTES",
     "DOWNLOAD_ZIP_TTL_MINUTES",
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",

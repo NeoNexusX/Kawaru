@@ -85,7 +85,10 @@ class StorageSettings(BaseModel):
     cleanup_preflights_interval_minutes: int
     cleanup_download_zip_interval_minutes: int
     cleanup_failed_experiments_interval_minutes: int
-    preflight_ttl_minutes: int
+    preflight_ttl_minutes: int = Field(description="预检记录 TTL 下限（分钟）；与带宽公式计算值取较大者")
+    max_file_size_gb: int | None = Field(default=None, gt=0, description="允许的最大单文件大小（GB），用于预检校验和 TTL 公式；不配置则不启用")
+    min_upload_bandwidth_mbps: float | None = Field(default=None, gt=0, description="最低上传带宽假设（Mbps，运营下限），用于 TTL 公式；不配置则不启用公式")
+    upload_ttl_safety_factor: float = Field(default=1.5, gt=0, description="预检 TTL 安全余量系数（乘式），随上传耗时等比放大")
     download_zip_ttl_minutes: int
     signed_url_ttl_minutes: int
     failed_experiment_ttl_minutes: int

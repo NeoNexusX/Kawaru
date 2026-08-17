@@ -28,6 +28,7 @@ from storage.oss.oss_storage import OssStorage
 
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
+    MAX_SINGLE_FILE_SIZE_BYTES,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     SIGNED_URL_EXPIRE_SECONDS,
     PACKUP_CACHE_TTL_SECONDS,
@@ -813,15 +814,20 @@ async def validate_upload_request(
     if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
         return False
 
-    # 5. 用户配额检查
+    # 5. 单文件大小上限校验（max_file_size_gb 未配置时不限制）
+    if MAX_SINGLE_FILE_SIZE_BYTES and file_data.size and file_data.size > MAX_SINGLE_FILE_SIZE_BYTES:
+        logger.error(f"file size exceeds limit user={current_user.id} size={file_data.size} limit={MAX_SINGLE_FILE_SIZE_BYTES}")
+        return False
+
+    # 6. 用户配额检查
     if not check_user_quota(current_user, file_data.size):
         raise user_file_limit_exception
 
-    # 6. 重复文件名检查
+    # 7. 重复文件名检查
     if await valid_duplicate_filename(async_session, current_user, file_data.filename):
         raise duplicate_file_exception
 
-    # 7. 重复文件哈希检查
+    # 8. 重复文件哈希检查
     assert file_data.file_verify_code is not None
     if await valid_user_duplicate_file_hash(async_session, current_user, file_data.file_verify_code):
         raise duplicate_file_exception

@@ -261,8 +261,13 @@ async def create_clustering_task(
     try:
         run_record = await validate_clustering_request(async_session, run_id, current_user)
 
-        # 聚类已完成或处理中，直接返回
-        if run_record.clustering_status in (ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING):
+        # 聚类已完成 / 处理中 / 已失败，直接返回（幂等；failed 不自动重试，
+        # 如需重跑由运维将 clustering_status 置空后再触发）
+        if run_record.clustering_status in (
+            ProcessingStatus.COMPLETED,
+            ProcessingStatus.PROCESSING,
+            ProcessingStatus.FAILED,
+        ):
             return ExperimentProcessRunPublic(**run_record.model_dump())
 
         # 标记聚类状态为 processing
