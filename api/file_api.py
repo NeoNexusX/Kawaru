@@ -7,7 +7,7 @@ from fastapi import Depends, Form, Query, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
-from api_helpers.file_helper import delete_file_by_storage
+from api_helpers.file_helper import check_user_quota, delete_file_by_storage
 from api_services.composite_service import delete_origin_files
 from api_services.file_service import (
     assert_file_owner,
@@ -37,6 +37,7 @@ from exceptions.file_exceptions import (
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    user_file_limit_exception,
     download_not_implemented_exception,
 )
 from models.file_models import (
@@ -89,8 +90,25 @@ async def preflight_create_file(
 
     reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
+    # 复用前确认 OSS 对象真实存在（对象可能已被清理任务删除）。
+    # 对象丢失时降级为正常新上传，不产生"幽灵文件"秒传。
+    if reused_file and not await OssStorage.check_file_exist(reused_file.path):
+        logger.warning(
+            "reuse target object missing, fallback to new upload file_id=%s path=%s",
+            reused_file.file_id, reused_file.path,
+        )
+        reused_file = None
+
     is_reuse = False
     if reused_file:
+        # 秒传按被复用记录的实际 size 计费和核对配额（该 size 已经回调核对，可信），
+        # 不能用客户端本次声明值——否则声明 1 字节即可秒传大文件绕过配额
+        if not check_user_quota(current_user, reused_file.size):
+            logger.error(
+                "reuse quota exceeded user=%s file_id=%s size=%s",
+                current_user.id, reused_file.file_id, reused_file.size,
+            )
+            raise user_file_limit_exception
         file_record = reused_file
         is_reuse = True
     else:
@@ -102,8 +120,9 @@ async def preflight_create_file(
         async_session.add(file_record)
         await async_session.flush()  # 获取 file_id
 
-    # 统一建立用户关联
-    await link_file_to_user(async_session, current_user, file_record, file_data.size)
+    # 统一建立用户关联（秒传按记录实际 size 计费，新上传按声明值预占）
+    billed_size = file_record.size if is_reuse else file_data.size
+    await link_file_to_user(async_session, current_user, file_record, billed_size)
     await async_session.commit()
     await async_session.refresh(file_record)
     await async_session.refresh(current_user)

@@ -130,11 +130,28 @@ async def oss_upload_callback(
                          file_id, source_file.file_verify_code, act_hash)
             raise hash_size_validation_failed_exception
 
-        # 更新文件大小
-        source_file.size = await OssStorage.get_file_size(file_path)
-        if not source_file.size or source_file.size <= 0:
+        # 获取上传 zip 的实际大小。只用于计算压缩率，不回写 size：
+        # size 恒为预检时的压缩前大小，额度预占/退还/删除同一口径。
+        # 注意 get_file_size 失败时返回 0（celery 超时/异常），与"空文件"无法区分；
+        # 空 zip 在 FC 解压阶段已失败走不到这里，故 <= 0 一律视为获取失败。
+        zip_actual_size = await OssStorage.get_file_size(file_path)
+        if zip_actual_size <= 0:
             logger.error("oss get file size failed, file_id=%s", file_id)
             raise internal_server_error_exception
+
+        # 大小核对：预检声明的压缩前大小（前端 hashFiles 中 fileBytes = imzml.size + ibd.size）
+        # 与解压产物 imzML+ibd 实际大小严格相等，不相等即客户端数据造假/数据损坏。
+        extracted_total_size = imzml_size + ibd_size
+        # source_file.size <= 0 同时防御除零（下方压缩率以它为分母）
+        if source_file.size <= 0 or source_file.size != extracted_total_size:
+            logger.error(
+                "size check failed file_id=%s declared=%s extracted(imzml+ibd)=%s",
+                file_id, source_file.size, extracted_total_size,
+            )
+            raise hash_size_validation_failed_exception
+
+        # 压缩率 = zip 实际大小 / 压缩前大小，供下载分流（打包 zip vs RAW 直链）参考
+        source_file.compression_ratio = zip_actual_size / source_file.size
 
         # 更新文件路径和实验路径
         await update_file_record(async_session, source_file, status=FileStatus.COMPLETED,

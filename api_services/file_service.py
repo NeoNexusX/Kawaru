@@ -228,12 +228,19 @@ async def get_reuse_file_by_hash(
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
     """
-    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件
+    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件。
+    # 只允许复用 COMPLETED 记录：COMPLETED 由回调在哈希校验、大小核对、
+    # 路径落库全部通过后才设置，蕴含"origin 完整、哈希有效"；
+    # UPLOADING / FAILED / 预检初始态（""）一概禁止复用。
+    # path != "" 与 size > 0 进一步排除路径未确认或大小异常的记录。
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
             .where(FileInDB.file_verify_code == hash_md5)
             .where(FileInDB.storage_type == "oss")
+            .where(FileInDB.status == FileStatus.COMPLETED)
+            .where(FileInDB.path != "")
+            .where(FileInDB.size > 0)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -740,14 +747,17 @@ async def _prepare_download_url_for_completed_packup(
     await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
 
+    # 回写 path 指向 packup zip：cleanup_old_download_zips 靠它定位清理对象，
+    # 且 FileDownloadMeta 返回的 path 与实际下载内容一致。
+    # 注意：此处不 flush/commit，依赖外层 get_download_file_metadata 的事务提交生效。
+    # 绝不回写 size：size 是计费字段，恒为压缩前大小，不能被 packup zip 大小污染。
     file_record.path = zip_path
-    file_record.size = zip_size  # type: ignore
 
     logger.info(
-        "prepared download zip file_id=%s path=%s size=%s",
+        "prepared download zip file_id=%s path=%s zip_size=%s",
         file_record.file_id,
         zip_path,
-        file_record.size,
+        zip_size,
     )
 
     return zip_download_url

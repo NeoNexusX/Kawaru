@@ -123,6 +123,13 @@ class FileInDB(FileBase, table=True):
     total_parts: int | None = Field(default=1, description="兼容保留的总分片数字段")
     image_path: str | None = Field(default=None, max_length=255, description="预览图像(preview.jpg)在 OSS 上的完整对象键，由 FC 回调写入")
     default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
+    # 压缩率 = 上传 zip 实际大小 / 压缩前大小（size 字段），由 FC 回调写入；
+    # 值越小压缩收益越大，供下载分流（打包 zip vs RAW 直链）参考；NULL 表示回调未完成
+    compression_ratio: float | None = Field(
+        default=None,
+        sa_column=Column(Float, nullable=True),
+        description="压缩率 = zip实际大小 / 压缩前大小，FC 回调时写入",
+    )
 
 class FileDownloadMeta(FileBase):
     """下载所需的文件元数据"""
