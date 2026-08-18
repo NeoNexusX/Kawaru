@@ -27,12 +27,11 @@ from api_services.file_service import (
     update_file_record,
 )
 from api_services.user_service import count_items
-from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
+from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, PACKUP_CACHE_TTL_SECONDS
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
-    file_content_missing_exception,
     file_persist_failed_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,

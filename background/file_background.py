@@ -15,6 +15,7 @@ from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MIN
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
+from database.atomic_ops import atomic_decrement
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -216,20 +217,25 @@ async def cleanup_failed_experiments(
                     )
                     continue
 
-                # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
+                # 1. 查询所有关联的用户，使用 atomic_decrement 原子更新统计信息
+                #    与 unlink_user_from_file 的语义一致，避免 skip_locked 或
+                #    read-modify-write 导致的配额漂移。
                 user_ids = (await session.exec(
-                    select(UserFileLink.user_id).where(UserFileLink.file_id == exp.source_file_id))).all()
+                    select(UserFileLink.user_id).where(
+                        UserFileLink.file_id == exp.source_file_id
+                    )
+                )).all()
 
                 for user_id in user_ids:
-                    user_record = (await session.exec(select(UserInDB).where(UserInDB.id == user_id).with_for_update(skip_locked=True))).first()
-
-                    if user_record:
-                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)  #TODO 风险，后面加锁
-                        user_record.total_file_size = max(
-                            0, (user_record.total_file_size or 0) - (file_record.size or 0)) # type: ignore[attr-defined]
-                        session.add(user_record)
-                        logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
-                            user_record.total_file_size,)
+                    assert user_id is not None
+                    await atomic_decrement(session, UserInDB, user_id, "file_count")
+                    await atomic_decrement(
+                        session, UserInDB, user_id, "total_file_size", file_record.size or 0
+                    )
+                    logger.debug(
+                        "updated user stats via atomic decrement: user_id=%s file_id=%s",
+                        user_id, file_record.file_id,
+                    )
 
                 # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
                 #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
