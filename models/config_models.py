@@ -97,7 +97,10 @@ class StorageSettings(BaseModel):
     min_upload_bandwidth_mbps: float | None = Field(default=None, gt=0, description="最低上传带宽假设（Mbps，运营下限），用于 TTL 公式；不配置则不启用公式")
     upload_ttl_safety_factor: float = Field(default=1.5, gt=0, description="预检 TTL 安全余量系数（乘式），随上传耗时等比放大")
     download_zip_ttl_minutes: int
-    signed_url_ttl_minutes: int
+    signed_url_ttl_minutes: int = Field(
+        ge=6,
+        description="OSS 签名 URL 过期时间（分钟），必须 >= 6，以保证 Redis 缓存能比签名 URL 早 5 分钟过期",
+    )
     failed_experiment_ttl_minutes: int
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
     cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")

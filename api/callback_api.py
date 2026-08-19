@@ -362,11 +362,11 @@ async def oss_packup_callback(
         # 打包成功，存储URL，更新状态为COMPLETED
         if status == PackupStatus.COMPLETED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
         # 打包失败，更新状态为FAILED
         if status == PackupStatus.FAILED:
             await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS) # 与签名URL过期时间一致
+            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
 
     except Exception as e:
         logger.error("oss packup callback error, filename=%s, error=%s", filename, e)

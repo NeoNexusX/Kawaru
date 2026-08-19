@@ -66,9 +66,15 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_dow
 STALE_PROCESS_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_process_run_timeout_minutes", 60))
 CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_stale_process_runs_interval_minutes", 15))
 
-# 签名URL过期时间 & Redis缓存过期时间（Redis缓存比签名URL早过期5分钟，确保缓存过期后旧URL仍有效）
+# 签名URL过期时间 & Redis缓存过期时间
+# 要求 SIGNED_URL_EXPIRE_SECONDS >= 360（由 storage.signed_url_ttl_minutes >= 6 保证），
+# 这样 PACKUP_CACHE_TTL_SECONDS 才能稳定比签名 URL 早 5 分钟过期，
+# 确保缓存过期后旧 URL 仍然有效。
 SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
 PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
+assert SIGNED_URL_EXPIRE_SECONDS > PACKUP_CACHE_TTL_SECONDS, (
+    "signed_url_ttl_minutes 必须保证签名 URL 过期时间严格大于 Redis 缓存 TTL"
+)
 
 
 # OSS相关常量
