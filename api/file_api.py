@@ -28,6 +28,7 @@ from api_services.file_service import (
 )
 from api_services.user_service import count_items
 from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, PACKUP_CACHE_TTL_SECONDS
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
@@ -91,7 +92,11 @@ async def preflight_create_file(
 
     # 复用前确认 OSS 对象真实存在（对象可能已被清理任务删除）。
     # 对象丢失时降级为正常新上传，不产生"幽灵文件"秒传。
-    if reused_file and not await OssStorage.check_file_exist(reused_file.path):
+    # path 为哨兵时跳过检查：zip 虽已被定时清理，但 origin（imzML/ibd）仍在
+    # （COMPLETED 蕴含 origin 完整，origin 不存在随 file 记录独立删除的路径），
+    # 下载侧可从 origin 重新打包，不影响复用。
+    if (reused_file and reused_file.path != SOURCE_FILE_PATH_CLEARED
+            and not await OssStorage.check_file_exist(reused_file.path)):
         logger.warning(
             "reuse target object missing, fallback to new upload file_id=%s path=%s",
             reused_file.file_id, reused_file.path,

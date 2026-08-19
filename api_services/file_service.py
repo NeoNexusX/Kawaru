@@ -33,6 +33,7 @@ from constants.file_constants import (
     SIGNED_URL_EXPIRE_SECONDS,
     PACKUP_CACHE_TTL_SECONDS,
 )
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from exceptions import (
     duplicate_file_exception,
     file_not_found_exception,
@@ -297,6 +298,12 @@ async def prepare_download_file_oss(
     """
     oss_packup_key = f"oss_packup-{file_record.filename}"
     oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
+
+    # path 为空说明上传从未完成（预检记录或上传中断），既无源 zip 可签、
+    # origin 也不存在（无法打包），直接判定内容缺失，避免对空路径走 OSS 签名。
+    if not file_record.path:
+        logger.warning("download requested but file path is empty, filename=%s", file_record.filename)
+        raise file_content_missing_exception
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
@@ -683,7 +690,11 @@ async def _handle_packup_status_check(
     zip_path = None
 
     if not packup:
-        if not await OssStorage.check_file_exist(file_record.path):
+        if file_record.path == SOURCE_FILE_PATH_CLEARED:
+            # 源 zip 已被定时清理（删除统一按 path 执行，删后必写哨兵），
+            # origin imzML/ibd 仍在 → 触发重新打包。
+            # 不做 check_file_exist 兜底：秒传链路（preflight_create_file）已保证
+            # zip 被清理后该记录不可复用，不会有新对象写回原 key。
             # 原子加锁（SET NX EX），防止多个并发请求同时触发打包。
             # SET key value NX EX seconds 是 Redis 单条原子命令：
             #   - NX：仅当 key 不存在时才设置成功
