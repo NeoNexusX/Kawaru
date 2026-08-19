@@ -21,6 +21,8 @@ email:
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
   totp_window: 30
+  reset_password_max_attempts: 5
+  email_send_cooldown_seconds: 60
 
 
 database:
