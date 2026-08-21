@@ -89,6 +89,8 @@ oss:
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
+  oss_delete_object_timeout_seconds: 30
+  oss_delete_prefix_timeout_seconds: 300
   fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
   fc_packup_timeout_seconds: 200
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run

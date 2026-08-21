@@ -81,6 +81,8 @@ assert SIGNED_URL_EXPIRE_SECONDS > PACKUP_CACHE_TTL_SECONDS, (
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
+OSS_DELETE_OBJECT_TIMEOUT_SECONDS = config.oss.oss_delete_object_timeout_seconds
+OSS_DELETE_PREFIX_TIMEOUT_SECONDS = config.oss.oss_delete_prefix_timeout_seconds
 FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
 FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
 FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
@@ -128,6 +130,8 @@ __all__ = [
     "FC_CLUSTERING_ENDPOINT",
     "FC_CLUSTERING_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
+    "OSS_DELETE_OBJECT_TIMEOUT_SECONDS",
+    "OSS_DELETE_PREFIX_TIMEOUT_SECONDS",
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
 ]

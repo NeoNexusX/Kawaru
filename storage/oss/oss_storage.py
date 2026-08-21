@@ -16,6 +16,8 @@ from celery.result import AsyncResult, GroupResult
 from celery_runtime.result import wait_for_result
 from constants.file_constants import (
     OSS_DEFAULT_TIMEOUT_SECONDS,
+    OSS_DELETE_OBJECT_TIMEOUT_SECONDS,
+    OSS_DELETE_PREFIX_TIMEOUT_SECONDS,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     OSS_ZIP_STORAGE_ROOT,
 )
@@ -45,7 +47,7 @@ class OssStorage:
         result: dict = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if result is None:
             logger.error(
@@ -62,7 +64,7 @@ class OssStorage:
         is_file_exist: bool = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if is_file_exist is None:
             logger.warning(
@@ -79,7 +81,7 @@ class OssStorage:
         size: int = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if size is None:
             logger.error(
@@ -110,10 +112,15 @@ class OssStorage:
                 task_list.append(delete_oss_file_task.si(potential_packup_path))  # type: ignore
 
         delete_tasks: GroupResult = group(task_list).delay()  # type: ignore
+        timeout = (
+            OSS_DELETE_PREFIX_TIMEOUT_SECONDS
+            if file_path.endswith("/")
+            else OSS_DELETE_OBJECT_TIMEOUT_SECONDS
+        )
         delete_results: Sequence[bool] | None = await wait_for_result(
             result=delete_tasks,
             poll_interval=1,
-            timeout=10,
+            timeout=timeout,
         )
 
         if delete_results is None:
@@ -131,11 +138,16 @@ class OssStorage:
             logger.warning("empty path for deletion, skipping")
             return None
 
+        timeout = (
+            OSS_DELETE_PREFIX_TIMEOUT_SECONDS
+            if file_path.endswith("/")
+            else OSS_DELETE_OBJECT_TIMEOUT_SECONDS
+        )
         res: AsyncResult = delete_oss_file_task.delay(file_path)  # type: ignore
         delete_result: bool | None = await wait_for_result(
             res,
             poll_interval=1,
-            timeout=10,
+            timeout=timeout,
         )  # type: ignore
 
         if delete_result is None:
@@ -151,7 +163,7 @@ class OssStorage:
         is_tagged: bool = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if is_tagged is None:
             logger.error(
@@ -168,7 +180,7 @@ class OssStorage:
         sign_url: str | None = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if sign_url is None:
             logger.error(
@@ -214,7 +226,7 @@ class OssStorage:
         result: dict = await wait_for_result(
             res,
             poll_interval=0.1,
-            timeout=10,
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )  # type: ignore
         if result is None:
             logger.error(

@@ -81,6 +81,8 @@ oss:
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
+  oss_delete_object_timeout_seconds: 30
+  oss_delete_prefix_timeout_seconds: 300
   # 以下 FC 函数端点测试用不到，留空（check_oss_config 不校验它们）
   fc_packup_endpoint: ""
   fc_algorithm_endpoint: ""
