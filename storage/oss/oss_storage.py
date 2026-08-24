@@ -18,7 +18,6 @@ from constants.file_constants import (
     OSS_DEFAULT_TIMEOUT_SECONDS,
     OSS_DELETE_OBJECT_TIMEOUT_SECONDS,
     OSS_DELETE_PREFIX_TIMEOUT_SECONDS,
-    OSS_PACKUP_ZIP_STORAGE_ROOT,
     OSS_ZIP_STORAGE_ROOT,
 )
 from exceptions.oss_exceptions import oss_timeout_exception
@@ -92,69 +91,48 @@ class OssStorage:
         return size
 
     @staticmethod
-    async def delete_file_and_packup(file_path: str, file_id: int | None = None) -> bool | None:
-        """删除 OSS 文件及对应的临时打包文件。
-
-        packup zip 命名为 packup/{file_id}.zip（见 file_service._execute_packup_flow），
-        无法从 file_path 推导，需调用方传入 file_id。
+    async def delete_file(file_path: str | list[str]) -> bool | None:
         """
-        if not file_path:
-            logger.warning("empty path for deletion, skipping")
-            return None
+        删除 OSS 文件，支持单个 key 或 key 列表。
 
-        task_list = [delete_oss_file_task.si(file_path)]  # type: ignore
+        单对象与 chunk 目录（以 '/' 结尾，如 zarr 输出目录）由 worker 内部分支
+        自动区分：目录走 list + 批量删除，单对象直接 delete。
+        多个 key 合成一个 celery group 一次等待。
 
-        if not file_path.endswith("/") and file_id is not None:
-            potential_packup_path = (
-                f"{OSS_PACKUP_ZIP_STORAGE_ROOT.rstrip('/')}/{file_id}.zip"  # type: ignore
-            )
-            if await OssStorage.check_file_exist(potential_packup_path):
-                task_list.append(delete_oss_file_task.si(potential_packup_path))  # type: ignore
-
-        delete_tasks: GroupResult = group(task_list).delay()  # type: ignore
-        timeout = (
-            OSS_DELETE_PREFIX_TIMEOUT_SECONDS
-            if file_path.endswith("/")
-            else OSS_DELETE_OBJECT_TIMEOUT_SECONDS
-        )
-        delete_results: Sequence[bool] | None = await wait_for_result(
-            result=delete_tasks,
-            poll_interval=1,
-            timeout=timeout,
-        )
-
-        if delete_results is None:
-            logger.error(f"failed to delete oss file due to server timeout: {file_path}")
-            raise oss_timeout_exception
-
-        return all(delete_results)
-
-    @staticmethod
-    async def delete_file(file_path: str) -> bool | None:
+        Returns:
+            None: 路径为空（跳过删除）
+            True/False: 全部删除成功 / 存在失败
         """
-        删除单个指定的 OSS 文件。
-        """
-        if not file_path:
+        paths = [file_path] if isinstance(file_path, str) else list(file_path)
+        paths = [p for p in paths if p]
+        if not paths:
             logger.warning("empty path for deletion, skipping")
             return None
 
         timeout = (
             OSS_DELETE_PREFIX_TIMEOUT_SECONDS
-            if file_path.endswith("/")
+            if any(p.endswith("/") for p in paths)
             else OSS_DELETE_OBJECT_TIMEOUT_SECONDS
         )
-        res: AsyncResult = delete_oss_file_task.delay(file_path)  # type: ignore
-        delete_result: bool | None = await wait_for_result(
-            res,
+
+        if len(paths) == 1:
+            res: AsyncResult | GroupResult = delete_oss_file_task.delay(paths[0])  # type: ignore
+        else:
+            res = group(delete_oss_file_task.si(p) for p in paths).delay()  # type: ignore
+
+        result: bool | Sequence[bool] | None = await wait_for_result(
+            result=res,
             poll_interval=1,
             timeout=timeout,
-        )  # type: ignore
+        )
 
-        if delete_result is None:
-            logger.error(f"failed to delete oss file due to server timeout: {file_path}")
+        if result is None:
+            logger.error(f"failed to delete oss file due to server timeout: {paths}")
             raise oss_timeout_exception
 
-        return delete_result
+        if isinstance(result, bool):
+            return result
+        return all(result)
 
     @staticmethod
     async def tag_oss_file(file_path: str, tag: dict[str, str]) -> bool:

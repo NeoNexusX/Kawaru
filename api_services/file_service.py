@@ -22,7 +22,6 @@ from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
     validate_total_parts,
-    delete_file_by_storage,
 )
 from storage.oss.oss_storage import OssStorage
 
@@ -453,36 +452,6 @@ async def update_file_record(
         if value is not None:
             setattr(file_record, field, value)
     async_session.add(file_record)
-
-
-#########################
-# File  - 删
-#########################
-async def delete_file_and_parts(
-    async_session: AsyncSession,
-    file_id: int,
-    current_user_id: int|None = None,
-) -> None:
-    """
-    根据 file_id 删除 OSS 对象和文件记录。
-    函数名为兼容现有调用保留
-    Raises:
-        ValueError: 文件不存在
-        PermissionError: 用户无权限删除该文件
-        OSError: 物理文件删除失败时
-    """
-    file_record = await get_file_record_by_id(file_id, async_session)
-    # TODO：这里删除存在竞态，可能存在已经触发在打包的状态了，但是文件还没打包完，这里不好处理得考虑下。
-    await delete_file_by_storage(
-        file_record.path,
-        file_record.storage_type,
-        include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
-        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
-    )
-    logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
-
-    await async_session.delete(file_record)
-    logger.info(f"deleted OSS file file_id={file_id} user={current_user_id}")
 
 
 async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:

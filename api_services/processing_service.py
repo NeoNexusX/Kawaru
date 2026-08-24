@@ -156,7 +156,7 @@ async def delete_process_run(
 
 
 async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
-    """清理 OSS 输出目录；storage_type 参数为兼容既有内部调用而保留。"""
+    """清理 OSS 输出目录；storage_type 参数为后续扩展本地存储而保留。"""
     if storage_type != "oss":
         raise ValueError(f"invalid storage type: {storage_type}")
     try:

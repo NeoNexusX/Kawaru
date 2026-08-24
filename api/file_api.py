@@ -7,11 +7,10 @@ from fastapi import Depends, Form, Query, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
-from api_helpers.file_helper import check_user_quota, delete_file_by_storage
-from api_services.composite_service import delete_origin_files
+from api_helpers.file_helper import check_user_quota
+from api_services.composite_service import delete_file_completely
 from api_services.file_service import (
     assert_file_owner,
-    delete_file_and_parts,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
@@ -344,16 +343,7 @@ async def delete_user_file(
         return {"file_id": file_id, "status": "unlinked"}
 
     # 没有其他用户持有该文件,执行完全删除
-    # 删除 origin 相关文件(如果有)
-    if file_record.experiment_type == "imzML":
-        await delete_origin_files(session, file_id, file_record.storage_type)
-        # 同步删除对应的图像目录
-        if file_record.image_path:
-            await delete_file_by_storage(file_record.image_path, file_record.storage_type)
-            logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
-
-    # 删除 OSS 文件和数据库记录
-    await delete_file_and_parts(session, file_id, current_user.id)
+    await delete_file_completely(session, file_id, file_record.storage_type, current_user.id)
 
     await session.commit()
     await session.refresh(current_user)

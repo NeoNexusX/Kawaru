@@ -3,14 +3,13 @@ from datetime import timedelta
 from sqlmodel import select, func, or_
 
 
-from api_services.composite_service import delete_origin_files
+from api_services.composite_service import delete_file_completely
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
     safe_cleanup_preflight_record,
-    delete_file_and_parts,
 )
-from api_helpers.file_helper import delete_file_by_storage
+from storage.oss.oss_storage import OssStorage
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
@@ -111,7 +110,7 @@ async def cleanup_old_download_zips(
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
                 continue
             try:
-                await delete_file_by_storage(file_path, rec.storage_type)
+                await OssStorage.delete_file(file_path)
                 rec.path = SOURCE_FILE_PATH_CLEARED
                 session.add(rec)
                 cleaned += 1
@@ -158,10 +157,7 @@ async def clean_user_all_task(
                 else:
                     # 没有其他用户持有，执行完全删除
                     file_record = await get_file_record_by_id(file_id, session)
-                    if file_record.experiment_type == "imzML":
-                        await delete_origin_files(session, file_id, file_record.storage_type)
-
-                    await delete_file_and_parts(session, file_id, deleted_user_id)                                          
+                    await delete_file_completely(session, file_id, file_record.storage_type, deleted_user_id)
                     total_deleted += 1
 
                 await session.commit()
@@ -237,24 +233,31 @@ async def cleanup_failed_experiments(
                         user_id, file_record.file_id,
                     )
 
-                # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
-                #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
+                # 2. 收集所有 OSS 路径，一次批量删除，避免逐个 celery round-trip。
                 #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。
-                for obj_path in (
-                    (file_record.path or "").strip() if file_record else "",
-                    (exp.imzml_path or "").strip(),
-                    (exp.ibd_path or "").strip(),
-                ):
-                    if not obj_path:
-                        continue
+                #    同时补删该文件所有 run 的输出目录（zarr）：run 行随 file 级联删除，
+                #    不提前收集 out_path 会成为孤儿对象。
+                run_out_paths = (await session.exec(
+                    select(ExperimentProcessRunInDB.out_path).where(
+                        ExperimentProcessRunInDB.source_file_id == exp.source_file_id
+                    )
+                )).all()
+                paths_to_delete = [
+                    p for p in (
+                        (file_record.path or "").strip(),
+                        (exp.imzml_path or "").strip(),
+                        (exp.ibd_path or "").strip(),
+                        *((pp or "").strip() for pp in run_out_paths),
+                    )
+                    if p
+                ]
+                if paths_to_delete:
                     try:
-                        await delete_file_by_storage(
-                            obj_path, (file_record.storage_type if file_record else "oss")
-                        )
+                        await OssStorage.delete_file(paths_to_delete)
                     except Exception as exc:  # pylint: disable=broad-exception-caught
                         logger.warning(
-                            "cleanup_failed_experiments delete oss object failed path=%s error=%s",
-                            obj_path, exc,
+                            "cleanup_failed_experiments delete oss objects failed paths=%s error=%s",
+                            paths_to_delete, exc,
                         )
 
                 # 3. 删除文件表记录。

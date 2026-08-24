@@ -21,13 +21,16 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from storage.oss.oss_storage import OssStorage
-from api_helpers.file_helper import delete_multiple_files_by_storage
-from api_services.file_service import update_file_record
+from api_services.file_service import (
+    get_file_record_by_id,
+    update_file_record,
+)
 from api_services.experiment_service import (
     get_origin_imzml_by_file_id,
     update_origin,
 )
 from api_services.processing_service import cleanup_output_dir
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB
 from models.file_models import FileInDB, FileStatus
@@ -49,9 +52,9 @@ async def delete_origin_files(
 
     处理逻辑:
     1. 查询与 source_file_id 关联的 origin 记录
-    2. 删除 origin 相关的物理文件(imzml_path、ibd_path)
-    3. 删除 origin 目录(如果为空)
-    4. 删除 origin 数据库记录由对应的文件记录删除管理
+    2. 清理所有 process_run 的输出目录（DB 记录由 FK CASCADE 自动删除）
+    3. 删除 origin 相关的物理文件(imzml_path、ibd_path)及目录
+    4. origin 数据库记录由 file 级联删除自动处理
 
     Raises:
         OSError: 物理文件删除失败时
@@ -74,23 +77,18 @@ async def delete_origin_files(
         if run.out_path:
             await cleanup_output_dir(run.out_path, storage_type)
 
-    # 收集需要删除的 origin 文件
-    files_to_delete = []
+    # 收集需要删除的 origin 文件及目录，一次 celery group 统一删除
+    paths_to_delete = []
     if origin.imzml_path:
-        files_to_delete.append(origin.imzml_path)
+        paths_to_delete.append(origin.imzml_path)
     if origin.ibd_path:
-        files_to_delete.append(origin.ibd_path)
-
-    # 批量删除 origin 文件
-    if files_to_delete:
-        deleted_count = await delete_multiple_files_by_storage(files_to_delete, storage_type)
-        logger.info("deleted %s origin files for file_id=%s", deleted_count, file_id)
-
-    # 删除对应的文件夹
+        paths_to_delete.append(origin.ibd_path)
     if origin.imzml_path:
-        origin_dir = f"{str(Path(origin.imzml_path).parent)}/"
-        if await OssStorage.delete_file(origin_dir):
-            logger.debug("cleaned up origin directory path=%s", origin_dir)
+        paths_to_delete.append(f"{str(Path(origin.imzml_path).parent)}/")
+
+    if paths_to_delete:
+        if await OssStorage.delete_file(paths_to_delete):
+            logger.info("deleted origin files for file_id=%s paths=%s", file_id, paths_to_delete)
 
 
 async def failed_mark_origin_record_clean(
@@ -121,3 +119,65 @@ async def failed_mark_origin_record_clean(
     if origin_record:
         await update_origin(async_session, origin_record, status=o_status,
                             error_message=str(e))
+
+
+async def delete_file_completely(
+    session: AsyncSession,
+    file_id: int,
+    storage_type: str,
+    current_user_id: int | None = None,
+) -> None:
+    """
+    删除一个文件的全部资源（OSS 对象 + DB 记录）。
+
+    编排逻辑：
+    1. 清理 process_run 输出目录（无 origin 记录时需手动处理）
+    2. 删除 origin 相关文件（imzML/ibd + 目录）
+    3. 删除图像文件
+    4. 删除主 OSS 文件
+    5. 删除 DB 记录（级联删除 origin、UserFileLink 等）
+
+    注意：不处理用户关联解除和所有权校验，由调用方负责。
+
+    Raises:
+        ValueError: 文件不存在或不支持的存储类型
+        OSError: 物理文件删除失败时
+    """
+    if storage_type != "oss":
+        raise ValueError(f"invalid storage type: {storage_type}")
+
+    file_record = await get_file_record_by_id(file_id, session)
+
+    # 1. 清理 process_run 输出目录（无 origin 记录时需手动处理，有 origin 时由 delete_origin_files 处理）
+    origin = await get_origin_imzml_by_file_id(session, file_id)
+    if not origin:
+        run_out_paths = (await session.exec(
+            select(ExperimentProcessRunInDB.out_path).where(
+                ExperimentProcessRunInDB.source_file_id == file_id
+            )
+        )).all()
+        for out_path in run_out_paths:
+            if out_path:
+                await cleanup_output_dir(out_path, storage_type)
+
+    # 2. 删除 origin 相关文件（imzML/ibd + 目录）
+    if file_record.experiment_type == "imzML":
+        await delete_origin_files(session, file_id, storage_type)
+
+    # 3. 删除图像文件
+    if file_record.image_path:
+        await OssStorage.delete_file(file_record.image_path)
+        logger.info("deleted image file file_id=%s image_path=%s", file_id, file_record.image_path)
+
+    # 4. 删除主 OSS 文件
+    # TODO：删除与正在执行的 packup 仍有竞态，后续统一调整 packup 回调落库流程时处理。
+    path = (file_record.path or "").strip()
+    if path and path != SOURCE_FILE_PATH_CLEARED:
+        ok = await OssStorage.delete_file(path)
+        if ok is False:
+            raise OSError(f"Failed to delete file: {path}")
+    logger.debug("deleted file physical file path=%s file_id=%s", file_record.path, file_id)
+
+    # 5. 删除 DB 记录（级联删除 origin、UserFileLink 等）
+    await session.delete(file_record)
+    logger.info("deleted file completely file_id=%s user=%s", file_id, current_user_id)
