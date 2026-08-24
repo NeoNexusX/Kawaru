@@ -65,6 +65,8 @@ CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_dow
 # 僵尸 process_run 清理策略（FC 算法/转换超时无回调）
 STALE_PROCESS_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_process_run_timeout_minutes", 60))
 CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES = int(getattr(storage_config, "cleanup_stale_process_runs_interval_minutes", 15))
+# 僵尸聚类 run 清理策略：UMAP/KMeans 较算法处理更重，默认超时更宽
+STALE_CLUSTERING_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_clustering_run_timeout_minutes", 120))
 
 # 签名URL过期时间 & Redis缓存过期时间
 # 要求 SIGNED_URL_EXPIRE_SECONDS >= 360（由 storage.signed_url_ttl_minutes >= 6 保证），
@@ -113,6 +115,7 @@ __all__ = [
     "CLEANUP_DOWNLOAD_ZIP_INTERVAL_MINUTES",
     "STALE_PROCESS_RUN_TIMEOUT_MINUTES",
     "CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES",
+    "STALE_CLUSTERING_RUN_TIMEOUT_MINUTES",
     "SIGNED_URL_EXPIRE_SECONDS",
     "PACKUP_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",

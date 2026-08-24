@@ -76,6 +76,7 @@ storage:
   signed_url_ttl_minutes: 60
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
+  stale_clustering_run_timeout_minutes: 120
   cleanup_stale_process_runs_interval_minutes: 30
 
 oss:

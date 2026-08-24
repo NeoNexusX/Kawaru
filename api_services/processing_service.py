@@ -161,7 +161,7 @@ async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
         raise ValueError(f"invalid storage type: {storage_type}")
     try:
         await OssStorage.delete_file(out_path)
-    except Exception as e:
+    except Exception as e: # pylint: disable=broad-except
         logger.warning("failed to cleanup output path=%s error=%s", out_path, e)
 
 
@@ -198,8 +198,11 @@ async def mark_clustering_run(
 ) -> None:
     """更新聚类分析运行状态（聚类结果写回 out_path，不单独记录路径/大小）"""
     run_record.clustering_status = status
-    if error_message:
-        run_record.error_message = error_message
+    # 无条件写入（成功时为 None 清空），避免重跑成功后旧错误残留
+    run_record.clustering_error_message = error_message
+    if status == ProcessingStatus.PROCESSING:
+        # 聚类由用户在处理完成后手动触发，created_at/finished_at 均不能代表聚类开始时间
+        run_record.clustering_started_at = utc_time()
 
     async_session.add(run_record)
 

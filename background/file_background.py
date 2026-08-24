@@ -11,7 +11,7 @@ from api_services.file_service import (
 )
 from storage.oss.oss_storage import OssStorage
 from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
-from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
+from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
 from database.atomic_ops import atomic_decrement
@@ -278,19 +278,27 @@ async def cleanup_failed_experiments(
 @celery_app.task()  # type: ignore
 async def cleanup_stale_process_runs(
     timeout_minutes: int = STALE_PROCESS_RUN_TIMEOUT_MINUTES,
+    clustering_timeout_minutes: int = STALE_CLUSTERING_RUN_TIMEOUT_MINUTES,
     batch_size: int = 100,
 ) -> int:
     """
-    清理僵尸算法/转换 run：将超过 timeout 仍为 processing 的记录标记为 failed。
+    清理僵尸算法/转换/聚类 run：将超过 timeout 仍为 processing 的记录标记为 failed。
 
     FC 函数异步执行后通过回调更新状态，若 FC 超时/崩溃/回调丢失，
     run 会永久卡在 processing。此任务定期扫描并标记为 failed。
+
+    两个阶段独立判定超时，互不覆盖对方的错误字段：
+    - 算法处理：status + error_message，以 created_at 为开始时间
+    - 聚类：clustering_status + clustering_error_message，以 clustering_started_at
+      为开始时间（聚类由用户在处理完成后手动触发，不能用 created_at/finished_at
+      判定；历史数据该字段为 NULL，不参与扫描，由运维手动处理）
     """
     async with get_standalone_async_session() as session:
         now = utc_time()
-        cutoff_time = now - timedelta(minutes=timeout_minutes)
         total_cleaned = 0
 
+        # 阶段一：算法处理超时
+        cutoff_time = now - timedelta(minutes=timeout_minutes)
         records = (await session.exec(
             select(ExperimentProcessRunInDB).where(
                 ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
@@ -306,6 +314,26 @@ async def cleanup_stale_process_runs(
             logger.info(
                 "marked stale process run as failed run_id=%s created_at=%s",
                 run_record.id, run_record.created_at,
+            )
+
+        # 阶段二：聚类超时（处理阶段已 COMPLETED 的 run 才可能处于聚类 processing，
+        # 只置 clustering_status/clustering_error_message，不动处理阶段字段；
+        # 若 FC 回调迟到，真实回调会无条件覆盖此处标记）
+        clustering_cutoff_time = now - timedelta(minutes=clustering_timeout_minutes)
+        clustering_records = (await session.exec(
+            select(ExperimentProcessRunInDB).where(
+                ExperimentProcessRunInDB.clustering_status == ProcessingStatus.PROCESSING,
+                ExperimentProcessRunInDB.clustering_started_at < clustering_cutoff_time,).limit(batch_size) # type: ignore[call-overload]
+            .with_for_update(skip_locked=True))).all()
+
+        for run_record in clustering_records:
+            run_record.clustering_status = ProcessingStatus.FAILED
+            run_record.clustering_error_message = "FC clustering task timeout: no callback received"
+            session.add(run_record)
+            total_cleaned += 1
+            logger.info(
+                "marked stale clustering run as failed run_id=%s clustering_started_at=%s",
+                run_record.id, run_record.clustering_started_at,
             )
 
         if total_cleaned:

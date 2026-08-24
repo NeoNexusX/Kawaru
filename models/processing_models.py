@@ -106,6 +106,8 @@ class ExperimentProcessRunBase(SQLModel):
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     finished_at: datetime | None = Field(default=None, description="结束时间")
     clustering_status: str | None = Field(default=None, max_length=32, description="聚类状态: processing/completed/failed，None 表示未执行")
+    clustering_error_message: str | None = Field(default=None, max_length=1024, description="聚类错误信息(失败时)")
+    clustering_started_at: datetime | None = Field(default=None, description="聚类开始时间，超时巡检判定僵尸聚类 run 的依据")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
