@@ -51,11 +51,22 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    image: ${APP_IMAGE:?set APP_IMAGE in .env}
+    restart: "no"
+    depends_on:
+      mariadb: { condition: service_healthy }
+    env_file: [ .env ]
+    volumes:
+      - ./prod-config.yaml:/app/config/prod-config.yaml:ro
+    command: ["python", "-m", "database.migration", "upgrade"]
+
   app:
     image: ${APP_IMAGE:?set APP_IMAGE in .env}
     restart: unless-stopped
     depends_on:
       mariadb: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis:   { condition: service_healthy }
     env_file: [ .env ]                          # 整个 .env 注入容器
     volumes:
@@ -74,6 +85,7 @@ services:
     restart: unless-stopped
     depends_on:
       mariadb: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis:   { condition: service_healthy }
     env_file: [ .env ]
     command: ["celery", "-A", "celery_runtime.entrypoint:celery_app", "worker",
@@ -88,6 +100,7 @@ services:
     image: ${APP_IMAGE:?}
     restart: unless-stopped
     depends_on:
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     env_file: [ .env ]
     command: ["celery", "-A", "celery_runtime.beat_entrypoint:beat_app", "beat", "--loglevel", "INFO"]

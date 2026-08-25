@@ -154,10 +154,10 @@ async def upload_simple_file(
     通过 OSS SDK 直传。必须先调用预检接口获取 pre_file_id。
 
     OSS 对象清理策略：
-    - 已收到失败回调，或回调在数据库成功提交前异常时，应用会尽力
-      主动删除 source/imzML/ibd 以及关联的 packup 对象。
-    - FC 完全没有回调时，应用只清理过期数据库记录；未写入
-      persistent=true 标签的孤儿对象由 OSS 生命周期规则自动回收。
+    - 回调在路径提交后失败时，失败实验定时任务会按已落库路径尝试删除
+      source/imzML/ibd 对象。
+    - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
+      未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
     """
 
     pre_record = None

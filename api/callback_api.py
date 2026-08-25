@@ -179,8 +179,8 @@ async def oss_upload_callback(
             raise internal_server_error_exception
 
         # 根据 storage_mode 分发到不同的 FC 函数
-        # continuous → fc-feature (UMAP/KMeans 特征分析，大内存)
-        # processed  → fc-tic (TIC 图像生成，轻量)
+        # continuous → fc-feature（UMAP 预览图，大内存）
+        # 其他模式   → fc-tic（TIC 预览图，轻量）
         if source_file.storage_mode == "continuous":
             trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
         else:

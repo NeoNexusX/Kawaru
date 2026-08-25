@@ -33,8 +33,8 @@ async def oss_upload_callback(file_record: OssUploadCallbackDep):
     """
     OSS 上传完成回调。
 
-    回调到达但处理失败时会尽力删除本次 OSS 对象；FC 未回调产生的未标记
-    对象由 OSS 生命周期规则自动清理。
+    回调失败时记录会标记为 FAILED；路径已落库的对象由失败实验定时任务
+    尝试删除，未落库且未持久化的对象由 OSS 生命周期规则回收。
     """
     return file_record
 

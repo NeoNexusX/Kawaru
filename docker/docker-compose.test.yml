@@ -58,6 +58,18 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    image: ${KAWARU_IMAGE:-kawaru-test:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: "no"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment: *common-env
+    command: ["python", "-m", "database.migration", "upgrade"]
+
   app:
     image: ${KAWARU_IMAGE:-kawaru-test:local}   # CI 注入 GHCR 预构建镜像；本地不设则用默认名配合 build
     build:                                       # 仅本地开发用（CI 在 GitHub 构建后推 GHCR，测试时只 pull --no-build）
@@ -66,6 +78,8 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment: *common-env
