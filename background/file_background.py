@@ -185,12 +185,13 @@ async def cleanup_failed_experiments(
     清理流程:
     1. 查询过期的失败 origin 记录
     2. 手动更新所有相关用户的 file_count 和 total_file_size
-    3. 删除文件表记录
-    4. 数据库自动级联删除关联的 UserFileLink 和 OriginImzMLInDB 记录
+    3. 按数据库中已有路径尝试删除 OSS 对象
+    4. 删除文件表记录
+    5. 数据库自动级联删除关联的 UserFileLink 和 OriginImzMLInDB 记录
 
     注意:
-    - 回调已到达但失败时由回调路径主动清理 OSS 对象
-    - FC 未回调时对象键不可可靠获取，未打 persistent tag 的对象由 OSS 生命周期清理
+    - 对数据库中已有的 file/imzML/ibd 路径逐个尝试显式删除
+    - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
     - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 OriginImzMLInDB
     """
     async with get_standalone_async_session() as session:
@@ -233,7 +234,7 @@ async def cleanup_failed_experiments(
 
                 # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
                 #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
-                #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。
+                #    只有成功分支第一次 commit 已完成时，数据库才保证保留三个路径。
                 for obj_path in (
                     (file_record.path or "").strip() if file_record else "",
                     (exp.imzml_path or "").strip(),
