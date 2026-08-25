@@ -92,17 +92,17 @@ oss:
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
-  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
+  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou-vpc.fcapp.run
   fc_packup_timeout_seconds: 200
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
   fc_algorithm_timeout_seconds: 60
-  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou.fcapp.run
+  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou-vpc.fcapp.run
   fc_tic_timeout_seconds: 60
-  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
+  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou-vpc.fcapp.run
   fc_feature_timeout_seconds: 60
-  fc_raw_convert_endpoint: http://imz-to-zarr-xrujfuejtn.cn-hangzhou.fcapp.run
+  fc_raw_convert_endpoint: https://imz-to-zarr-xrujfuejtn.cn-hangzhou-vpc.fcapp.run
   fc_raw_convert_timeout_seconds: 60
-  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou.fcapp.run
+  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou-vpc.fcapp.run
   fc_clustering_timeout_seconds: 60
 
 admin_info:
