@@ -108,10 +108,10 @@ async def failed_mark_origin_record_clean(
     跨 file_service / experiment_service 的编排逻辑集中在此，避免在
     experiment_service 内反向 import file_service 造成循环依赖。
 
-    当下架构中，三个 OSS 路径在成功分支的第一次 commit 时已落库；
-    即使后续步骤（如打 persistent tag）失败触发 rollback，已提交的路径也不会被抹掉。
-    因此兜底只需标 FAILED，无需再传路径参数，由 cleanup_failed_experiments
-    按 DB 中已落库的路径删除 OSS 对象，避免孤儿。
+    若异常发生在成功分支第一次 commit 之后，三个 OSS 路径已经落库，
+    后续 rollback 不会抹掉；若异常更早发生，则数据库不保证有完整路径。
+    本函数只标 FAILED，不补写路径，也不删除对象。已有路径由
+    cleanup_failed_experiments 尝试删除，其余对象依赖 OSS 生命周期规则。
     """
     # update file status to failed
     assert async_session is not None

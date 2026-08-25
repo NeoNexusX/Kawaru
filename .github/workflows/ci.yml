@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  pull_request:
+    branches: [test]
   push:
     branches: [test]
   workflow_dispatch:
@@ -10,8 +12,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ① 静态检查：依赖锁、语法、lint
+  # ① 数据库迁移门禁：空库完整重建 + 上一版本升级
+  migration-check:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: kawaru-test-pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pkawaru-test-pass"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      CONFIG_PATH: docker/test-config.yaml
+      REGION_PATH: external/countries-states-cities-database/json/countries.json
+      DATABASE_PASSWORD: kawaru-test-pass
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.3"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Require one Alembic head
+        run: uv run python -m database.migration check-heads
+
+      - name: Rebuild an empty database to head
+        env:
+          MIGRATION_DATABASE_URL: mariadb+asyncmy://root:kawaru-test-pass@127.0.0.1:3306/kawaru_empty?charset=utf8mb4
+        run: |
+          uv run python -m database.migration upgrade
+          uv run python -m database.migration verify
+          uv run alembic check
+
+      - name: Upgrade the previous revision to head
+        env:
+          MIGRATION_DATABASE_URL: mariadb+asyncmy://root:kawaru-test-pass@127.0.0.1:3306/kawaru_previous?charset=utf8mb4
+        run: uv run python -m database.migration test-upgrade-from-previous
+
+      - name: Run migration-specific tests
+        run: uv run pytest -c pytest.ini --confcutdir=tests/migrations tests/migrations -q
+
+  # ② 静态检查：依赖锁、语法、lint
   static-checks:
+    needs: migration-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,7 +81,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "0.7.22"
+          version: "0.11.3"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -34,15 +92,16 @@ jobs:
         run: >-
           uv run python -m compileall -q
           main.py api api_helpers api_services background boot celery_runtime
-          constants database exceptions models routers storage tools tests
+          constants database exceptions migrations models routers storage tools tests
 
       - name: Lint (ruff)
         run: uvx ruff check .     # uvx 临时拉取 ruff，不依赖项目环境（ruff 未在锁文件中声明）
         continue-on-error: true   # 先不阻塞；存量 lint 清完后去掉这行改为强制
 
-  # ② 打包：静态检查通过后，构建测试镜像并推到 GHCR
+  # ③ 打包：静态检查通过后，构建测试镜像并推到 GHCR
   build-image:
     needs: static-checks
+    if: github.event_name != 'pull_request'  # PR 不执行不受信任代码的镜像推送；合入 test 后跑完整集成测试
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -74,7 +133,7 @@ jobs:
           push: true
           tags: ${{ steps.img.outputs.ref }}
 
-  # ③ 测试：在 GitHub 托管机上用 compose 起栈，容器内跑 pytest
+  # ④ 测试：在 GitHub 托管机上用 compose 起栈，容器内跑 pytest
   integration-test:
     needs: build-image
     runs-on: ubuntu-latest
@@ -114,7 +173,7 @@ jobs:
         run: docker pull "$KAWARU_IMAGE"
 
       - name: Start stack & wait healthy (compose, no build)
-        # 五个服务都带 healthcheck，--wait 等 app(9001) + celery-worker + celery-beat 全部 healthy；用 GHCR 拉下来的镜像，绝不在此构建
+        # app/mariadb/redis 带 healthcheck；celery-worker/celery-beat 无 healthcheck，--wait 只要求其已启动。使用 GHCR 预构建镜像，不在此构建
         run: |
           $COMPOSE down -v --remove-orphans || true
           $COMPOSE up -d --no-build --wait --wait-timeout 400

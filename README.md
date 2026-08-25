@@ -82,7 +82,8 @@ The application connects to MariaDB and Redis at startup. If you don't have loca
 
 ```bash
 docker run -d --name kawaru-mariadb -p 13306:3306 \
-  -e MARIADB_ROOT_PASSWORD=your_db_password mariadb:11.4
+  -e MARIADB_ROOT_PASSWORD=your_db_password \
+  -e MARIADB_DATABASE=kawaru mariadb:11.4
 
 docker run -d --name kawaru-redis -p 16379:6379 \
   redis:8.4-alpine redis-server --requirepass your_redis_password
@@ -103,11 +104,12 @@ Core runtime variables are checked at startup, and OSS initialization/callback r
 |----------|---------|
 | `DATABASE_PASSWORD` | MariaDB password (connects as root) |
 | `REDIS_PASSWORD` | Redis password |
+| `SECRET_KEY` | Stable JWT signing key. Set it explicitly outside the disposable test stack; otherwise a random key is generated on every process start and existing tokens become invalid after restart. |
 | `SMTP_PASSWORD` | SMTP login password (server / port / account / sender are configured in `config.yaml` → `email:`) |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | Aliyun OSS credentials and the RAM role used to issue scoped upload/download STS credentials |
 | `OSS_FC_PACKUP_TOKEN` / `OSS_FC_ALGORITHM_TOKEN` / `OSS_FC_TIC_TOKEN` / `OSS_FC_FEATURE_TOKEN` / `OSS_FC_RAW_CONVERT_TOKEN` / `OSS_FC_CLUSTERING_TOKEN` | Tokens used by the worker to invoke the configured FC functions |
 | `FC_CALLBACK_TOKEN` | Shared token required in the `X-FC-Token` header of every `/callback/*` request |
-| `CONFIG_PATH` | Path to the app config file (default `config.yaml`) |
+| `CONFIG_PATH` / `REGION_PATH` | Paths to the app config and country/region validation dataset |
 | `LOG_DIR` / `LOG_LEVEL` | Log directory and level |
 | `BASE_URL` / `TEST_USER` / `TEST_PWD` | Only used when running pytest locally (see [Contributing](docs/en/CONTRIBUTING.md)) |
 
@@ -119,13 +121,21 @@ cp config_example.yaml config.yaml
 
 Edit `config.yaml`, focusing on:
 
-- `database:` / `redis:` — point to the instances prepared in step 3
+- `database:` / `redis:` — point to the instances prepared in step 3. For the commands above, use database `kawaru`, host `127.0.0.1`, and ports `13306` / `16379`.
 - `email:` — SMTP server, port, account, sender
 - `oss:` — required bucket, region, storage roots, and FC endpoints; file storage is OSS-only
 
 The OSS identity used by the application must be able to assume the configured RAM role and perform the required object operations; the role must support the scoped upload/download policies issued to clients. Configure an OSS event trigger for the upload ZIP extraction function and a lifecycle rule that removes abandoned temporary objects without the `persistent=true` tag while retaining tagged source and extracted objects.
 
-### 6. Run the Project
+### 6. Initialize / Upgrade Database Schema
+
+The application verifies the database schema version against the code head on startup using Schema Guard. Before initial startup or after code updates, execute the database migration:
+
+```bash
+uv run python -m database.migration upgrade
+```
+
+### 7. Run the Project
 
 ```bash
 uv run main.py
@@ -147,7 +157,7 @@ After the server starts, visit:
 - API Documentation (Swagger): `http://localhost:8000/docs`
 - API Documentation (ReDoc): `http://localhost:8000/redoc`
 
-### 7. Background Tasks (Celery)
+### 8. Background Tasks (Celery)
 
 Email delivery, file processing, and scheduled cleanup all run as Celery tasks — the API process alone does not execute them. Two ways to run them locally:
 
@@ -170,22 +180,22 @@ uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
 
 Kawaru now supports **OSS storage only**. The former local-storage and backend chunk-upload paths have been removed; clients upload ZIP files directly to OSS with short-lived STS credentials.
 
-1. Call `POST /files/preflight` with the file metadata, MD5, `storage_type=oss`, `spectrum_mode`, and `storage_mode`. The response reserves a `file_id` and may indicate hash reuse through `is_reuse`.
-2. For a new object, call `POST /files/upload` (or the compatibility endpoint `POST /files/upload_simple`) with `pre_file_id` and `filename`. The response contains the scoped STS credentials, bucket, region, and object path.
-3. Upload the ZIP directly from the client to OSS. The extraction FC function writes the imZML/ibd pair under the configured origin root and calls `POST /callback/oss_upload_callback` with `X-FC-Token`.
-4. After hash/path validation, the backend persists the object metadata, adds the `persistent=true` tag, and dispatches image generation: `storage_mode=continuous` invokes feature/UMAP-KMeans generation; other modes invoke TIC generation. Image callbacks store paths under `images/file_{file_id}/`.
-5. Algorithm processing (`POST /processes`), raw conversion (`POST /processes/raw-convert`), and clustering (`POST /processes/{run_id}/clustering`) run asynchronously in FC and store Zarr outputs in OSS. `GET /processes/{run_id}/zarr` returns scoped STS access to a completed result.
-6. `GET /files/{file_id}/download_raw` returns signed imZML and ibd URLs immediately. `GET /files/{file_id}/download` starts or checks asynchronous ZIP packup and may return `<PACKING>` until the FC callback completes.
+1. Call `POST /files/preflight` with file metadata, MD5, `storage_type=oss`, `spectrum_mode`, and `storage_mode`. The response reserves a `file_id`; `is_reuse=true` means an existing record with the same hash was linked to the current user and no new upload is required.
+2. For a new object, call `POST /files/upload` or `POST /files/upload_simple` with `pre_file_id` and `filename`. The backend verifies that the preflight record belongs to the current user and is still uploadable, then returns path-scoped STS credentials. The ZIP key is `{oss_zip_storage_root}/{file_id}/{file_verify_code}.zip`.
+3. Upload the ZIP directly to OSS. The extraction FC function parses `file_id` from the key, writes the imZML/ibd pair below `{oss_origin_storage_root}/{file_id}/{file_verify_code}/`, and calls `POST /callback/oss_upload_callback` with `X-FC-Token` and `file_id`.
+4. On a successful callback, the backend stores all three object keys, commits them, and then tags the ZIP, imZML, and ibd objects with `persistent=true`. `storage_mode=continuous` dispatches the feature FC task and receives its result at `/callback/umap_callback`; other modes dispatch TIC and use `/callback/tic_callback`. Both callbacks store the full preview key, normally `images/file_{file_id}/preview.jpg`.
+5. Algorithm processing (`POST /processes`) and raw conversion (`POST /processes/raw-convert`) write `{oss_processed_storage_root}/run_{run_id}.zarr/`. Clustering (`POST /processes/{run_id}/clustering`) updates that same Zarr rather than creating a second output path. `GET /processes/{run_id}/zarr` returns scoped read-only STS access after the base run completes.
+6. `GET /files/{file_id}/download_raw` returns signed imZML and ibd URLs. `GET /files/{file_id}/download` starts or checks asynchronous ZIP packup; the generated key is `{oss_packup_zip_storage_root}/{file_id}.zip`, and the response may remain `<PACKING>` until `/callback/oss_packup_callback` arrives.
 
-The configured object roots are `oss_zip_storage_root`, `oss_packup_zip_storage_root`, `oss_origin_storage_root`, and `oss_processed_storage_root`. Celery beat periodically removes stale preflight records, expired download ZIPs, failed experiments, and stale processing runs; an OSS lifecycle rule remains responsible for uploads for which no FC callback ever arrives.
+The configured object roots are `oss_zip_storage_root`, `oss_packup_zip_storage_root`, `oss_origin_storage_root`, and `oss_processed_storage_root`. Celery beat schedules stale-preflight cleanup, download cleanup, failed-experiment cleanup, stale-processing-run marking, and a heartbeat. Objects that never reach a callback and therefore never receive `persistent=true` still rely on the OSS lifecycle rule.
 
 ## Main API Areas
 
 | Area | Main routes |
 |------|-------------|
-| File upload and access | `/files/preflight`, `/files/upload`, `/files/{file_id}/metadata`, `/files/{file_id}/images`, `/files/{file_id}/download_raw`, `/files/{file_id}/download` |
+| File upload and access | `/files/preflight`, `/files/upload`, `/files/upload_simple`, `/files/{file_id}/metadata`, `/files/{file_id}/download_raw`, `/files/{file_id}/download_raw_noauth`, `/files/{file_id}/download` |
 | Processing runs | `POST /processes`, `POST /processes/raw-convert`, `POST /processes/{run_id}/clustering`, `GET /processes/{run_id}/zarr`, `GET /processes/mine`, `DELETE /processes/{run_id}` |
-| FC callbacks | `/callback/oss_upload_callback`, `/callback/algorithm_callback`, `/callback/tic_callback`, `/callback/feature_callback`, `/callback/clustering_callback`, `/callback/oss_packup_callback` |
+| FC callbacks | `/callback/oss_upload_callback`, `/callback/algorithm_callback`, `/callback/tic_callback`, `/callback/umap_callback`, `/callback/clustering_callback`, `/callback/oss_packup_callback` |
 
 All `/callback/*` routes require `X-FC-Token`. Use Swagger at `/docs` for the complete request and response schemas.
 
@@ -203,22 +213,24 @@ Layering direction: `routers/` → `api/` → `api_services/` / `api_helpers/` �
 | `celery_runtime/` | Celery app construction, worker / beat entrypoints, embedded launcher |
 | `boot/` | Bootstrap: env / config / logging / celery / OSS initialization |
 | `models/` | Pydantic / SQLModel models |
-| `database/` | DB engine, table creation, Redis client |
+| `database/` | DB engine, Alembic migration CLI, startup Schema Guard, Redis client |
+| `migrations/` | Alembic migration script history and environment configuration |
 | `storage/` | OSS storage implementation |
 | `constants/`, `exceptions/`, `tools/` | Constants, exception definitions, logger and utilities |
 | `docker/` | Dockerfile and dev / prod / test compose stacks |
-| `tests/` | End-to-end pytest suite (requires a running server, see Contributing) |
+| `tests/` | End-to-end pytest suite and `tests/migrations/` migration tests |
 | `.github/` | CI / CD GitHub Actions workflows |
-| `docs/` | Contributing and deployment guides |
+| `docs/` | Contributing, deployment, database migration guides, and upload callback flow |
 
 Top-level files:
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Application entry: FastAPI instance, router registration, lifespan (create tables, create admin, embedded celery start/stop) |
+| `main.py` | Application entry: FastAPI instance, router registration, lifespan (Schema Guard, create admin, embedded celery start/stop) |
+| `alembic.ini` | Alembic migration tool static configuration |
 | `config_example.yaml` | App config template — copy to `config.yaml` |
 | `.env_example` | Environment variable template — copy to `.env` |
-| `secrets.example.yaml` | GitHub Secrets checklist (fill in before running CI on your fork) |
+| `secrets.example.yaml` | GitHub Actions secrets checklist for CI and dev/prod CD |
 | `pyproject.toml` / `uv.lock` | Dependency declaration and lockfile (uv) |
 | `pytest.ini` | pytest configuration and marker definitions |
 | `.pylintrc` | pylint config (local use only, not in CI; line length 150) |
@@ -232,8 +244,10 @@ For detailed documentation, refer to the `docs/` directory:
 
 | Document | Description |
 |----------|-------------|
-| [Contributing](docs/en/CONTRIBUTING.md) | Collaboration workflow |
-| [Deployment](docs/en/DEPLOYMENT.md) | dev/prod deployment guide |
+| [Contributing](docs/en/CONTRIBUTING.md) | Collaboration workflow and quality gates |
+| [Deployment](docs/en/DEPLOYMENT.md) | dev/prod deployment guide and container orchestration |
+| [Database Migration Guide (Chinese)](docs/zh/数据库迁移指南.md) | Alembic setup, migration workflows, and zero-downtime deployment |
+| [OSS upload callback flow (Chinese)](docs/zh/上传回调流程.md) | Upload callback transaction and cleanup behavior |
 
 ## License
 
