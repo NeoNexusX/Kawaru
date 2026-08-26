@@ -4,7 +4,7 @@ from typing import Annotated
 from operator import attrgetter
 from fastapi import Depends, Header, HTTPException
 
-from sqlmodel import select
+from sqlmodel import select, update
 
 from api_services.composite_service import failed_mark_origin_record_clean
 from database.db import AsyncSessionDep
@@ -28,9 +28,8 @@ from exceptions.file_exceptions import (
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
 )
-from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
-from exceptions.callback_exceptions import invalid_fc_callback_token_exception
+from exceptions.callback_exceptions import fc_callback_target_not_found_exception, invalid_fc_callback_token_exception
 
 from boot.config import get_config
 from tools.time_tools import utc_time
@@ -217,6 +216,9 @@ async def algorithm_callback(
     FC 算法处理完成回调
 
     根据处理结果更新 process_run 状态和用户配额。
+    幂等：先查状态再更新——已 COMPLETED 的重复成功回调直接返回，
+    配额等副作用不二次执行（修配额双计）；成功迁移的判断并入 UPDATE 的
+    WHERE 子句（rowcount 门控副作用），并发重复回调也不会双计。
 
     :param callback_info: 算法回调信息
     :param async_session: 异步会话依赖
@@ -233,10 +235,14 @@ async def algorithm_callback(
         run_record = await get_process_run_by_id(async_session, run_id)
         if not run_record:
             logger.error("process run not found for algorithm callback run_id=%s", run_id)
-            raise invalid_process_request_exception
+            raise fc_callback_target_not_found_exception
 
-        # 处理失败
+        # 处理失败：仅 PROCESSING 在途时落 FAILED，终态不被重复/迟到失败回调覆盖
         if not is_success:
+            if run_record.status != ProcessingStatus.PROCESSING:
+                logger.info("algorithm callback duplicate failure run_id=%s status=%s, skip",
+                            run_id, run_record.status)
+                return run_record
             await mark_process_run(
                 async_session, run_record,
                 status=ProcessingStatus.FAILED,
@@ -247,52 +253,74 @@ async def algorithm_callback(
             logger.info("algorithm callback failed run_id=%s error=%s", run_id, error_message)
             return run_record
 
+        # 成功：已 COMPLETED 的重复回调幂等返回，配额不二次累加
+        if run_record.status == ProcessingStatus.COMPLETED:
+            logger.info("algorithm callback duplicate success run_id=%s, skip", run_id)
+            return run_record
+
         # 校验回调数据完整性
         if not out_path or not output_size or output_size <= 0:
             logger.error("algorithm callback data incomplete run_id=%s", run_id)
             raise file_content_missing_exception
 
-        # 更新 run 状态
-        await mark_process_run(
-            async_session, run_record,
-            status=ProcessingStatus.COMPLETED,
-            out_path=out_path,
-            output_size=output_size,
+        # 对象存在性：落库前探测 out_path（zarr 目录走前缀探测）。
+        # 缺失可能是时序问题，返回 5xx 交 FC 自带重试；持续失败由超时兜底任务判死
+        if not await OssStorage.check_file_exist(out_path):
+            logger.error("algorithm callback out_path not exist run_id=%s out_path=%s", run_id, out_path)
+            raise internal_server_error_exception
+
+        # 条件状态迁移：判断并入 WHERE（status != COMPLETED），rowcount=0 说明
+        # 已被并发回调处理，幂等跳过副作用；超时 FAILED 的迟到成功回调也走这条翻转
+        result = await async_session.execute(
+            update(ExperimentProcessRunInDB)
+            .where(
+                ExperimentProcessRunInDB.id == run_id,
+                ExperimentProcessRunInDB.status != ProcessingStatus.COMPLETED,
+            )
+            .values(
+                status=ProcessingStatus.COMPLETED,
+                out_path=out_path,
+                output_size=output_size,
+                error_message=None,
+                finished_at=utc_time(),
+            )
         )
 
-        # 累加用户处理配额（原子操作，防止并发丢失更新）
-        # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
-        # 改用 UPDATE SET processed_file_size = processed_file_size + N
-        # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
-        if run_record.user_id is not None:
-            await atomic_increment(
-                async_session, UserInDB, run_record.user_id,
-                "processed_file_size", output_size,
-            )
+        # 副作用与状态迁移同事务，rowcount 门控保证只执行一次
+        if result.rowcount == 1:
+            # 累加用户处理配额（原子操作，防止并发丢失更新）
+            # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
+            # 改用 UPDATE SET processed_file_size = processed_file_size + N
+            # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+            if run_record.user_id is not None:
+                await atomic_increment(
+                    async_session, UserInDB, run_record.user_id,
+                    "processed_file_size", output_size,
+                )
 
-        # raw_convert 成功回调：写入 fileindb.default_run_id
-        if run_record.params_json == RAW_CONVERT_MARKER:
-            file_record = (
-                await async_session.exec(
-                    select(FileInDB).where(
-                        FileInDB.file_id == run_record.source_file_id,
+            # raw_convert 成功回调：写入 fileindb.default_run_id
+            if run_record.params_json == RAW_CONVERT_MARKER:
+                file_record = (
+                    await async_session.exec(
+                        select(FileInDB).where(
+                            FileInDB.file_id == run_record.source_file_id,
+                        )
                     )
-                )
-            ).first()
-            if file_record:
-                file_record.default_run_id = run_record.id
-                async_session.add(file_record)
-                logger.info(
-                    "set default_run_id=%s for file_id=%s",
-                    run_record.id, run_record.source_file_id,
-                )
+                ).first()
+                if file_record:
+                    file_record.default_run_id = run_record.id
+                    async_session.add(file_record)
+                    logger.info(
+                        "set default_run_id=%s for file_id=%s",
+                        run_record.id, run_record.source_file_id,
+                    )
 
         await async_session.commit()
         await async_session.refresh(run_record)
 
         logger.info(
-            "algorithm callback success run_id=%s out_path=%s output_size=%s",
-            run_id, out_path, output_size,
+            "algorithm callback success run_id=%s out_path=%s output_size=%s applied=%s",
+            run_id, out_path, output_size, result.rowcount == 1,
         )
         return run_record
 
@@ -423,9 +451,11 @@ async def clustering_callback(
     FC 聚类分析完成回调。
 
     聚类结果写回源 zarr，回调只更新 run 记录的聚类状态。
+    幂等：先查 clustering_status 再更新——已 COMPLETED 的重复成功回调
+    直接返回；失败仅 PROCESSING 在途时落 FAILED，终态不被覆盖；
+    超时 FAILED 后的迟到成功回调仍可翻转（FAILED != COMPLETED）。
     """
     run_id = callback_info.run_id
-    is_success = callback_info.is_success
     error_type = callback_info.error_type
     error_message = callback_info.error_message
 
@@ -433,10 +463,14 @@ async def clustering_callback(
         run_record = await get_process_run_by_id(async_session, run_id)
         if not run_record:
             logger.error("process run not found for clustering callback run_id=%s", run_id)
-            raise invalid_process_request_exception
+            raise fc_callback_target_not_found_exception
 
-        # 处理失败
-        if not is_success:
+        # 处理失败：仅 PROCESSING 在途时落 FAILED，终态不被重复/迟到失败回调覆盖
+        if not callback_info.is_success:
+            if run_record.clustering_status != ProcessingStatus.PROCESSING:
+                logger.info("clustering callback duplicate failure run_id=%s status=%s, skip",
+                            run_id, run_record.clustering_status)
+                return run_record
             await mark_clustering_run(
                 async_session, run_record,
                 status=ProcessingStatus.FAILED,
@@ -447,7 +481,12 @@ async def clustering_callback(
             logger.info("clustering callback failed run_id=%s error=%s", run_id, error_message)
             return run_record
 
-        # 更新聚类状态
+        # 成功：已 COMPLETED 的重复回调幂等返回
+        if run_record.clustering_status == ProcessingStatus.COMPLETED:
+            logger.info("clustering callback duplicate success run_id=%s, skip", run_id)
+            return run_record
+
+        # 更新聚类状态（迟到成功回调从 FAILED 翻转也走这里）
         await mark_clustering_run(
             async_session, run_record,
             status=ProcessingStatus.COMPLETED,
