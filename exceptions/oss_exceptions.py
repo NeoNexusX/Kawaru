@@ -17,7 +17,14 @@ oss_timeout_exception = HTTPException(
     detail=format_exception_detail("oss request timeout"),
 )
 
+# OSS 对象不存在异常（回调落库前的对象存在性检查失败）
+oss_object_missing_exception = HTTPException(
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    detail=format_exception_detail("oss object missing (pre-persistence existence check failed)"),
+)
+
 __all__ = [
     "oss_client_create_failed_exception",
     "oss_timeout_exception",
+    "oss_object_missing_exception",
 ]
