@@ -3,7 +3,7 @@
 # 本地手动跑：
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
-#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent" -q
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent or password_reset" -q
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 name: kawaru-test
 
@@ -23,12 +23,14 @@ x-common-env: &common-env
   - OSS_ACCESS_KEY_ID=${OSS_ACCESS_KEY_ID:-}
   - OSS_ACCESS_KEY_SECRET=${OSS_ACCESS_KEY_SECRET:-}
   - OSS_ROLE_ARN=${OSS_ROLE_ARN:-}
-  # FC 函数 token（app 启动时 import background.processing_background 会读取，缺则为 None；测试不触发 FC，可留空）
+  # FC HTTP token（当前断言不依赖这些调用成功，可留空；OSS 上传仍依赖 Bucket 事件触发真实解包 FC）
   - OSS_FC_ALGORITHM_TOKEN=${OSS_FC_ALGORITHM_TOKEN:-}
   - OSS_FC_TIC_TOKEN=${OSS_FC_TIC_TOKEN:-}
   - OSS_FC_FEATURE_TOKEN=${OSS_FC_FEATURE_TOKEN:-}
   - OSS_FC_PACKUP_TOKEN=${OSS_FC_PACKUP_TOKEN:-}
-  # FC 回调校验 token：api/callback_api.py 在 import 时硬读 os.environ["FC_CALLBACK_TOKEN"]，缺则 KeyError 直接崩；测试不触发回调，给占位即可
+  - OSS_FC_RAW_CONVERT_TOKEN=${OSS_FC_RAW_CONVERT_TOKEN:-}
+  - OSS_FC_CLUSTERING_TOKEN=${OSS_FC_CLUSTERING_TOKEN:-}
+  # FC 回调校验 token：oss marker 会模拟上传回调；未注入时使用测试栈占位值
   - FC_CALLBACK_TOKEN=${FC_CALLBACK_TOKEN:-test-fc-callback-token}
   - BASE_URL=http://127.0.0.1:9001          # pytest 客户端连本容器 9001
 
@@ -56,6 +58,18 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    image: ${KAWARU_IMAGE:-kawaru-test:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: "no"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment: *common-env
+    command: ["python", "-m", "database.migration", "upgrade"]
+
   app:
     image: ${KAWARU_IMAGE:-kawaru-test:local}   # CI 注入 GHCR 预构建镜像；本地不设则用默认名配合 build
     build:                                       # 仅本地开发用（CI 在 GitHub 构建后推 GHCR，测试时只 pull --no-build）
@@ -64,6 +78,8 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment: *common-env

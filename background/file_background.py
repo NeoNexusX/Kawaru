@@ -1,9 +1,9 @@
 from datetime import timedelta
 
-from sqlmodel import select, func
+from sqlmodel import select, func, or_
 
 
-from api_services.experiment_service import delete_origin_files
+from api_services.composite_service import delete_origin_files
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
@@ -15,7 +15,7 @@ from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MIN
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
-from models.file_models import FileInDB
+from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
@@ -37,9 +37,12 @@ async def cleanup_stale_preflights_all_users(
     """
     清理所有用户过期且未完成的预检记录(celery定时任务版本)
 
-    清理条件(需同时满足):
-    1. 文件物理路径为空（“”）(说明为预检记录,未完成上传)
-    2. uploaded_at 超过 TTL
+    清理条件(uploaded_at 超过 TTL, 且满足以下任一):
+    1. 文件物理路径为空（""）(说明为预检记录,未完成上传)
+    2. status == FAILED (回调失败留下的脏记录, include_failed=True 时生效)
+
+    失败记录的 path 可能为空(回调未回传路径)或有值(哈希校验/打 tag 失败等)，
+    两种情况都仅清理数据库记录与用户额度，不主动删除 OSS 对象——未打persistent tag 的孤儿对象由 bucket 生命周期规则自动回收。
 
     Returns:
         清理的记录数量
@@ -52,13 +55,15 @@ async def cleanup_stale_preflights_all_users(
         cutoff_time = now - timedelta(minutes=ttl_minutes)
         total_cleaned = 0
 
-        # 直接查询所有过期预检记录（path 为空且 uploaded_at < cutoff_time）
-        # 通过 UserFileLink 关联获取用户
+        # 查询所有过期预检记录:
+        #   path 为空(未完成上传) 或 status 为 FAILED(回调失败脏记录) 通过 UserFileLink 关联获取用户
+        conditions = [or_(FileInDB.path == "", FileInDB.status == FileStatus.FAILED),
+                          FileInDB.uploaded_at < cutoff_time]
         records = (await session.exec(
             select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
-            .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
+            .where(*conditions)
             .limit(batch_size)
             .with_for_update(skip_locked=True)
         )).all()
@@ -131,7 +136,7 @@ async def clean_user_all_task(
     传入 file_ids 后，按 delete_user_file 的逻辑处理每个 file_id:
     - 先解除已删除用户与文件的关联（如果存在）
     - 如果文件被多个用户共享，仅解除关联
-    - 如果文件仅属于该用户时，完全删除文件和分片
+    - 如果文件仅属于该用户时，完全删除 OSS 文件和数据库记录
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
@@ -155,11 +160,7 @@ async def clean_user_all_task(
                     if file_record.experiment_type == "imzML":
                         await delete_origin_files(session, file_id, file_record.storage_type)
 
-                    # 创建一个临时的 user 对象用于删除
-                    user_obj = UserInDB( # type: ignore
-                        id=deleted_user_id,username="deleted_user",email="",hashed_password="",)
-                    await delete_file_and_parts(session, file_id, user_obj) # TODO 因为这个函数需要这个user对象来记录日志，所以这里构造了一个临时的user对象传入，
-                                                                            # 后续可以考虑优化这个函数的参数设计，避免需要传入一个无实际意义的user对象
+                    await delete_file_and_parts(session, file_id, deleted_user_id)                                          
                     total_deleted += 1
 
                 await session.commit()
@@ -181,16 +182,16 @@ async def cleanup_failed_experiments(
     """
     清理过期的失败 origin 记录
 
-    完整的清理流程:
+    清理流程:
     1. 查询过期的失败 origin 记录
     2. 手动更新所有相关用户的 file_count 和 total_file_size
-    3. 删除 origin 文件(imzML、ibd)物理文件
+    3. 按数据库中已有路径尝试删除 OSS 对象
     4. 删除文件表记录
     5. 数据库自动级联删除关联的 UserFileLink 和 OriginImzMLInDB 记录
 
     注意:
-    - 源 ZIP 文件会删除
-    - delete_origin_files 仅处理物理文件删除，不涉及数据库操作
+    - 对数据库中已有的 file/imzML/ibd 路径逐个尝试显式删除
+    - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
     - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 OriginImzMLInDB
     """
     async with get_standalone_async_session() as session:
@@ -208,6 +209,13 @@ async def cleanup_failed_experiments(
                 # 查询关联的文件记录
                 file_record = (await session.exec(
                     select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
+                if not file_record:
+                    # 关联文件记录缺失（理论上被级联/手动删过），无法定位 OSS 对象，跳过
+                    logger.warning(
+                        "cleanup_failed_experiments: file record missing for origin exp_id=%s source_file_id=%s, skip",
+                        exp.id, exp.source_file_id,
+                    )
+                    continue
 
                 # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
                 user_ids = (await session.exec(
@@ -224,14 +232,28 @@ async def cleanup_failed_experiments(
                         logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
                             user_record.total_file_size,)
 
-                # 2. 删除 origin 文件(imzML、ibd)物理文件， delete_origin_files 只处理物理文件删除，不操作数据库
-                await delete_origin_files(session, exp.source_file_id, file_record.storage_type) # type: ignore
+                # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
+                #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
+                #    只有成功分支第一次 commit 已完成时，数据库才保证保留三个路径。
+                for obj_path in (
+                    (file_record.path or "").strip() if file_record else "",
+                    (exp.imzml_path or "").strip(),
+                    (exp.ibd_path or "").strip(),
+                ):
+                    if not obj_path:
+                        continue
+                    try:
+                        await delete_file_by_storage(
+                            obj_path, (file_record.storage_type if file_record else "oss")
+                        )
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        logger.warning(
+                            "cleanup_failed_experiments delete oss object failed path=%s error=%s",
+                            obj_path, exc,
+                        )
 
-                # 3. 删除真实文件和文件表记录
+                # 3. 删除文件表记录。
                 # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 OriginImzMLInDB 记录
-                file_path = file_record.path.strip() # type: ignore[attr-defined]
-                if file_path and file_path != SOURCE_FILE_PATH_CLEARED :
-                    await delete_file_by_storage(file_path, file_record.storage_type) # type: ignore[attr-defined]
                 await session.delete(file_record)
                 cleaned += 1
                 logger.debug("cleanup failed origin: exp_id=%s", exp.id)

@@ -3,7 +3,8 @@ from fastapi import status
 
 from api.callback_api import (GetExpectHashDep, GetConfigDep,
                               OssUploadCallbackDep, AlgorithmCallbackDep,
-                              TicCallbackDep, FeatureCallbackDep,
+                              TicCallbackDep, UmapCallbackDep,
+                              ClusteringCallbackDep,
                               OssPackupCallbackDep, verify_fc_callback_token)
 
 callback_router = APIRouter(
@@ -29,7 +30,12 @@ async def get_config(config: GetConfigDep):
 
 @callback_router.post("/oss_upload_callback", response_model=OssUploadCallbackDep)
 async def oss_upload_callback(file_record: OssUploadCallbackDep):
-    """OSS上传完成回调"""
+    """
+    OSS 上传完成回调。
+
+    回调失败时记录会标记为 FAILED；路径已落库的对象由失败实验定时任务
+    尝试删除，未落库且未持久化的对象由 OSS 生命周期规则回收。
+    """
     return file_record
 
 
@@ -45,10 +51,16 @@ async def tic_callback(file_record: TicCallbackDep):
     return file_record
 
 
-@callback_router.post("/feature_callback", response_model=FeatureCallbackDep)
-async def feature_callback(file_record: FeatureCallbackDep):
-    """FC UMAP/KMeans 特征分析回调"""
+@callback_router.post("/umap_callback", response_model=UmapCallbackDep)
+async def umap_callback(file_record: UmapCallbackDep):
+    """FC UMAP图生成回调"""
     return file_record
+
+
+@callback_router.post("/clustering_callback", response_model=ClusteringCallbackDep)
+async def clustering_callback(run_record: ClusteringCallbackDep):
+    """FC 聚类分析完成回调"""
+    return run_record
 
 
 @callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)

@@ -80,7 +80,7 @@ def build_preflight_payload(
     size: int,
     file_verify_code: str,
     total_parts: int,
-    storage_type: str = "local",
+    storage_type: str = "oss",
     filename: str = TEST_FILENAME,
 ) -> dict:
     """统一构造 preflight 请求体，减少重复代码"""

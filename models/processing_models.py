@@ -105,6 +105,7 @@ class ExperimentProcessRunBase(SQLModel):
     status: str = Field(default=ProcessingStatus.PROCESSING, max_length=32, description="运行状态")
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     finished_at: datetime | None = Field(default=None, description="结束时间")
+    clustering_status: str | None = Field(default=None, max_length=32, description="聚类状态: processing/completed/failed，None 表示未执行")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
@@ -112,7 +113,7 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     __tablename__ = "experiment_process_run"  # type:ignore
 
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    # 一对多外键：级联删除（参考 PartInDB → FileInDB 模式）
+    # 一对多外键：数据库级联删除关联的处理记录
     experiment_id: int = Field(
         sa_column=Column(
             Integer,
@@ -146,7 +147,12 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     created_at: datetime = Field(default_factory=utc_time, description="创建时间")
 
     # 输出路径和大小仅 DB 层存储，不对外暴露
-    out_path: str | None = Field(default=None, max_length=getattr(storage_config, 'max_path_length', 255), description="结果输出路径")
+    # 聚类结果直接写回该 zarr 内部，不单独记录路径
+    out_path: str | None = Field(
+        default=None,
+        max_length=getattr(storage_config, 'max_path_length', 255),
+        description="结果输出路径",
+    )
     output_size: int | None = Field(
         default=None,
         sa_column=Column(BigInteger, nullable=True),

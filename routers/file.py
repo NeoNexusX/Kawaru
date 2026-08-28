@@ -1,16 +1,14 @@
 import asyncio
 
 from fastapi import APIRouter
-from models.file_models import FileStreamingResponse
-from models.file_models import FilePublic, PartUploadStatus, FileOssUploadResponse
+from models.file_models import FilePublic, FileOssUploadResponse
 from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,PartPublic,
-    PartUploadDep, PartStatusDep, ListPublicFilesDep,ValidateAndMergeDep,
-    OssUploadDep, ImageUrlDep, FileMetadataDep, SetFilePublicDep
+    DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
+    ListPublicFilesDep,
+    OssUploadDep, FileMetadataDep, SetFilePublicDep
 )
-from constants.file_constants import CHUNK_BUFFER_SIZE
 from database.visit_stats import incr_visit
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
@@ -28,7 +26,7 @@ async def preflight_file(file_record: PreflightDep):
 
 @file_router.post("/upload_simple", response_model=FileOssUploadResponse)#简单上传
 async def upload_simple_file(file_record: SimpleUploadDep):
-    """简单上传"""
+    """OSS 直传；FC 未回调的无 persistent tag 对象由 OSS 生命周期自动清理。"""
     return file_record
 
 
@@ -56,33 +54,13 @@ async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
     asyncio.create_task(incr_visit())
-    if file_meta.storage_type == "oss":
-        return file_meta
-    return FileStreamingResponse(file_meta.path, file_meta, CHUNK_BUFFER_SIZE)
+    return file_meta
 
 
 @file_router.delete("/{file_id}")
 async def delete_file(result: DeleteFileDep):
     """删除文件"""
     return result
-
-
-@file_router.post("/chunked/upload", response_model=PartPublic)  # 分片上传
-async def upload_chunk(chunk_result: PartUploadDep):
-    """分片上传"""
-    return chunk_result
-
-
-@file_router.post("/chunked/{file_id}/validate_and_merge")
-async def validate_and_merge_parts(result: ValidateAndMergeDep):
-    """显式触发分片合并"""
-    return result
-
-
-@file_router.get("/chunked/{file_id}/status", response_model=PartUploadStatus)
-async def get_upload_status(status: PartStatusDep):
-    """查询分片上传状态"""
-    return status
 
 
 @file_router.post("/list_files", response_model=ListDataResponse)
@@ -96,12 +74,6 @@ async def list_files(list_file_response: ListPublicFilesDep):
 async def upload_file(file_record: OssUploadDep):
     """上传文件至OSS存储"""
     return file_record
-
-
-@file_router.get("/{file_id}/images")
-async def get_file_images(image_urls: ImageUrlDep):
-    """获取文件图像 OSS 下载 URL（公开接口，根据 spectrum_mode 返回不同数量的 URL）"""
-    return image_urls
 
 
 @file_router.get("/{file_id}/metadata", response_model=FilePublic)

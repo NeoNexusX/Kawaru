@@ -1,7 +1,6 @@
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from sqlmodel import Field, SQLModel, Relationship,Column, String,BigInteger
-from tools.logger import get_logger
 from boot.config import get_config
 from models.link_models import UserFileLink
 
@@ -9,8 +8,6 @@ from models.link_models import UserFileLink
 if TYPE_CHECKING:
     from models.file_models import FileInDB
 
-# 获取服务器状态模块的日志器
-logger = get_logger("models.user_models")
 
 # 模型字段配置来自 config
 config = get_config()

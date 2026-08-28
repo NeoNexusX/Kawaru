@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: dev-cd
-  cancel-in-progress: true
+  cancel-in-progress: false        # 数据库迁移不可被新提交中途取消
 
 jobs:
   # ① 构建并推送 dev 镜像（dev-latest + dev-<sha>，前缀与 test- 区分）
@@ -69,14 +69,28 @@ jobs:
           username: ${{ secrets.DEV_SSH_USER }}
           key: ${{ secrets.DEV_SSH_KEY }}
           port: 22
-          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN,APP_IMAGE
+          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN,APP_IMAGE,DEPLOY_SHA
           script: |
             set -e
+            set -o pipefail
             export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
             cd /opt/kawaru-dev
             echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
-            docker compose -f docker-compose.dev.yml -p kawaru-dev pull app worker beat
-            docker compose -f docker-compose.dev.yml -p kawaru-dev up -d --wait --wait-timeout 300
+            COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
+            $COMPOSE pull migrate app worker beat
+            $COMPOSE up -d --wait --wait-timeout 180 mariadb redis
+
+            mkdir -p ./data/backups
+            BACKUP_PATH="./data/backups/$(date +%Y%m%d-%H%M%S)-${DEPLOY_SHA}.sql.gz"
+            $COMPOSE exec -T mariadb sh -lc \
+              'exec mariadb-dump -uroot -p"$MARIADB_ROOT_PASSWORD" --single-transaction --routines --triggers "$MARIADB_DATABASE"' \
+              | gzip > "$BACKUP_PATH"
+            test -s "$BACKUP_PATH"
+
+            $COMPOSE up --no-deps --force-recreate \
+              --abort-on-container-exit --exit-code-from migrate migrate
+            $COMPOSE up -d --no-deps --wait --wait-timeout 300 app worker beat
+            find ./data/backups -type f -name '*.sql.gz' -mtime +7 -delete
             # 部署成功后才执行：本地 dev-latest 标签指向本次部署的镜像（与 GHCR 的 dev-latest 同 digest）
             docker tag "$APP_IMAGE" "${APP_IMAGE%:*}:dev-latest"
             # 清理无容器引用且超过 7 天的旧镜像（历史 dev-<sha> / dangling）；GHCR 仍保留全部 tag，可随时回拉
@@ -86,6 +100,7 @@ jobs:
           GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:dev-${{ github.sha }}
+          DEPLOY_SHA: ${{ github.sha }}
 
       # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
       # 把 5 个服务的状态 + 各自 tail 日志打出来，免去人工 SSH 翻日志
@@ -115,7 +130,7 @@ jobs:
                 || docker inspect --format '{{json .State}}' "$APP_CID"
             fi
 
-            for svc in app worker beat mariadb redis; do
+            for svc in migrate app worker beat mariadb redis; do
               echo "========== logs: $svc (tail=200) =========="
               $COMPOSE logs --no-color --tail=200 "$svc" 2>&1 || true
             done

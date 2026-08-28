@@ -3,8 +3,8 @@ FC 函数触发模块。
 
 通过 HTTP 触发器触发 FC 函数：
 - fc-algorithm: 算法管线处理
-- fc-tic: TIC 图像生成（centroid 模式）
-- fc-feature: UMAP/KMeans 特征分析（profile/continuous 模式）
+- fc-tic: 非 continuous 存储模式的 TIC 预览图生成
+- fc-feature: continuous 存储模式的 UMAP 预览图生成
 
 FC 函数处理完成后通过回调接口返回结果。
 """
@@ -20,6 +20,8 @@ from constants.file_constants import (
     FC_FEATURE_TIMEOUT_SECONDS,
     FC_RAW_CONVERT_ENDPOINT,
     FC_RAW_CONVERT_TIMEOUT_SECONDS,
+    FC_CLUSTERING_ENDPOINT,
+    FC_CLUSTERING_TIMEOUT_SECONDS,
 )
 from tools.fc_client import invoke_fc
 from tools.logger import get_logger
@@ -33,12 +35,12 @@ FC_ALGORITHM_URL = FC_ALGORITHM_ENDPOINT
 FC_ALGORITHM_TIMEOUT = FC_ALGORITHM_TIMEOUT_SECONDS
 FC_ALGORITHM_TOKEN = os.getenv("OSS_FC_ALGORITHM_TOKEN")
 
-# ---- fc-tic（TIC 图像生成，centroid 模式）----
+# ---- fc-tic（非 continuous 存储模式的 TIC 预览图）----
 FC_TIC_URL = FC_TIC_ENDPOINT
 FC_TIC_TIMEOUT = FC_TIC_TIMEOUT_SECONDS
 FC_TIC_TOKEN = os.getenv("OSS_FC_TIC_TOKEN")
 
-# ---- fc-feature（UMAP/KMeans 特征分析，profile 模式，大内存）----
+# ---- fc-feature（continuous 存储模式的 UMAP 预览图，大内存）----
 FC_FEATURE_URL = FC_FEATURE_ENDPOINT
 FC_FEATURE_TIMEOUT = FC_FEATURE_TIMEOUT_SECONDS
 FC_FEATURE_TOKEN = os.getenv("OSS_FC_FEATURE_TOKEN")
@@ -47,6 +49,11 @@ FC_FEATURE_TOKEN = os.getenv("OSS_FC_FEATURE_TOKEN")
 FC_RAW_CONVERT_URL = FC_RAW_CONVERT_ENDPOINT
 FC_RAW_CONVERT_TIMEOUT = FC_RAW_CONVERT_TIMEOUT_SECONDS
 FC_RAW_CONVERT_TOKEN = os.getenv("OSS_FC_RAW_CONVERT_TOKEN")
+
+# ---- fc-clustering（UMAP/KMeans 聚类分析，结果写回源 zarr）----
+FC_CLUSTERING_URL = FC_CLUSTERING_ENDPOINT
+FC_CLUSTERING_TIMEOUT = FC_CLUSTERING_TIMEOUT_SECONDS
+FC_CLUSTERING_TOKEN = os.getenv("OSS_FC_CLUSTERING_TOKEN")
 
 
 @celery_app.task()
@@ -78,7 +85,7 @@ async def trigger_fc_tic_task(
     file_id: int,
     imzml_path: str,
 ) -> None:
-    """触发 fc-tic 生成 TIC 图像（异步调用，centroid 模式）"""
+    """触发 fc-tic 生成 TIC 预览图（异步调用）。"""
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
@@ -97,7 +104,7 @@ async def trigger_fc_feature_task(
     file_id: int,
     imzml_path: str,
 ) -> None:
-    """触发 fc-feature 生成 UMAP/KMeans 特征分析图像（异步调用，profile 模式）"""
+    """触发 fc-feature 生成 UMAP 预览图（异步调用）。"""
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
@@ -135,3 +142,23 @@ async def trigger_fc_raw_convert_task(
         logger.info("trigger fc raw_convert success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc raw_convert failed run_id=%s", run_id)
+
+
+@celery_app.task()
+async def trigger_fc_clustering_task(
+    run_id: int,
+    source_zarr_path: str,
+) -> None:
+    """触发 fc-clustering 执行 UMAP/KMeans 聚类分析（异步调用，结果写回源 zarr）"""
+    event = {
+        "run_id": run_id,
+        "source_zarr_path": source_zarr_path,
+    }
+    logger.info("trigger fc clustering run_id=%s source_zarr=%s", run_id, source_zarr_path)
+    request_id = await invoke_fc(
+        FC_CLUSTERING_URL, FC_CLUSTERING_TOKEN, event, FC_CLUSTERING_TIMEOUT,
+    )
+    if request_id is not None:
+        logger.info("trigger fc clustering success run_id=%s request_id=%s", run_id, request_id)
+    else:
+        logger.error("trigger fc clustering failed run_id=%s", run_id)

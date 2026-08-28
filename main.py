@@ -1,21 +1,29 @@
-from contextlib import asynccontextmanager
 import os
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from boot.bootstrap import bootstrap
+
 bootstrap()
 # pylint: disable=wrong-import-position
-from boot.config import get_config
-from celery_runtime.launcher import start_embedded_celery, stop_embedded_celery,enable_embedded_celery
-from database.db import create_db_and_tables
 from api.user_api import create_admin_user
-from routers.user import user_router
-from routers.file import file_router
+from boot.config import get_config
+from celery_runtime.launcher import (
+    enable_embedded_celery,
+    start_embedded_celery,
+    stop_embedded_celery,
+)
+from database.schema_guard import require_current_schema
 from routers.callback import callback_router
 from routers.experiment import originexperiment_router
+from routers.file import file_router
 from routers.processing import processing_router
 from routers.stats import stats_router
+from routers.user import user_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-outer-name
@@ -23,8 +31,8 @@ async def lifespan(app: FastAPI): # pylint: disable=unused-argument,redefined-ou
     FastAPI lifespan context manager.
     initialize resources before the application starts
     """
-    # create database
-    await create_db_and_tables()
+    # Schema changes are executed by the one-shot migrate service.
+    await require_current_schema()
     # admin create
     await create_admin_user()
     #celery worker/beat subprocess

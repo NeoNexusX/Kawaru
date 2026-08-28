@@ -1,18 +1,16 @@
 #########################
 # File Service - 业务逻辑层
 # 职责:业务逻辑处理,数据库操作,但不直接暴露API
-# 包含:用户文件关联管理、文件记录查询、权限校验、清理逻辑、分片合并
+# 包含:用户文件关联管理、文件记录查询、权限校验、OSS 清理逻辑
 #########################
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
-from sqlalchemy.orm import selectinload
 from sqlmodel import select, exists, and_, not_, func
 from sqlmodel.ext.asyncio.session import AsyncSession
-from celery.result import AsyncResult
 
 from database.db import get_async_engine
 from database.redis_client import redis_client
@@ -24,51 +22,32 @@ from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
     validate_total_parts,
-    merge_files_and_get_hash,
     delete_file_by_storage,
 )
-from storage_backend.storage import OssStorage, LocalStorage
+from storage.oss.oss_storage import OssStorage
 
-from celery_runtime.result import wait_for_result
-from background.file_background_helper import build_zip_file_background
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
-    LOCAL_STORAGE_ROOT,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     SIGNED_URL_EXPIRE_SECONDS,
     PACKUP_CACHE_TTL_SECONDS,
 )
 from exceptions import (
     duplicate_file_exception,
-    part_file_missing_exception,
     file_not_found_exception,
     file_content_missing_exception,
     invalid_request_parameters_exception,
     invalid_user_for_file_list_sync_exception,
-    merged_file_hash_mismatch_exception,
-    part_already_exists_exception,
-    part_number_out_of_range_exception,
     user_file_limit_exception,
-    hash_size_validation_failed_exception,
     origin_type_not_supported_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, PartInDB, PackupStatus, OssDownloadFile
+from models.file_models import FileCreate, FileInDB, FileStatus, PackupStatus, OssDownloadFile
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
-
-
-from boot.config import get_config
-
-if TYPE_CHECKING:
-    from models.file_models import PartCreate
-
 logger = get_logger("api_services.file_service")
-
-celery_worker_config = get_config().celery
-large_file_poll_time = celery_worker_config.large_file_poll_time
 
 
 #########################
@@ -142,7 +121,6 @@ async def valid_user_duplicate_file_hash(
 async def get_file_record_by_id(
     file_id: int,
     async_session: AsyncSession,
-    load_parts: bool = False
 ) -> FileInDB:
     """
     根据文件ID查询文件记录
@@ -154,38 +132,10 @@ async def get_file_record_by_id(
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
 
-    if load_parts:
-        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
     file_record = (await async_session.exec(statement)).first()
 
     if not file_record:
         logger.warning("file record not found file_id=%s", file_id)
-        raise file_not_found_exception
-
-    return file_record
-
-
-async def get_file_by_filename(
-    filename: str,
-    async_session: AsyncSession,
-    load_parts: bool = False,
-) -> FileInDB:
-    """
-    根据文件名查询文件记录
-
-    Returns:
-        文件记录对象
-    Raises:
-        file_not_found_exception: 文件记录不存在
-    """
-    statement = select(FileInDB).where(FileInDB.filename == filename)
-
-    if load_parts:
-        statement = statement.options(selectinload(FileInDB.parts)) # type: ignore
-    file_record = (await async_session.exec(statement)).first()
-
-    if not file_record:
-        logger.warning("file record not found filename=%s", filename)
         raise file_not_found_exception
 
     return file_record
@@ -259,28 +209,6 @@ async def link_file_to_user(
 #########################
 # File  - 查
 #########################
-async def get_file_record_by_hash(
-    async_session: AsyncSession,
-    file_hash: str,
-) -> FileInDB:
-    """
-    根据文件哈希查询文件记录
-
-    Returns:
-        文件记录对象
-    Raises:
-        file_not_found_exception: 文件记录不存在
-    """
-    file_record = (
-        await async_session.exec(
-            select(FileInDB).where(FileInDB.file_verify_code == file_hash)
-        )
-    ).first()
-    if not file_record:
-        raise file_not_found_exception
-    return file_record
-
-
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | None]:
     """获取用户所有文件 ID,不加载文件对象"""
     stmt = select(UserFileLink.file_id).where(UserFileLink.user_id == user_id)
@@ -304,6 +232,7 @@ async def get_reuse_file_by_hash(
         await async_session.exec(
             select(FileInDB)
             .where(FileInDB.file_verify_code == hash_md5)
+            .where(FileInDB.storage_type == "oss")
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -345,85 +274,6 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
-async def prepare_download_file_local(
-    session: AsyncSession,
-    file_record: FileInDB,
-) -> Path:
-    """
-    准备下载文件,处理实验文件的ZIP打包
-
-    Returns:
-        文件路径
-
-    Raises:
-        file_content_missing_exception: 文件内容缺失
-    """
-    try:
-        # 检查源文件是否存在
-        path = Path(file_record.path) if file_record.path else None
-        # 文件存在,直接返回
-        if path and path.exists():
-            return path
-
-        # 处理 origin 文件(imzML) # TODO： 封装函数
-        if file_record.experiment_type == "imzML":
-            assert file_record.file_id is not None
-            origin = await get_origin_imzml_by_file_id(session, file_record.file_id)
-
-            if not origin or origin.status not in [ExperimentStatus.COMPLETED, ExperimentStatus.PROCESSING]:
-                logger.warning(
-                    "origin not found or not completed file_id=%s", file_record.file_id
-                )
-                raise file_content_missing_exception
-
-            # 获取 origin 文件路径
-            imzml_path = Path(origin.imzml_path) if origin.imzml_path else None
-            ibd_path = Path(origin.ibd_path) if origin.ibd_path else None
-            if (not imzml_path or not ibd_path or not imzml_path.exists() or not ibd_path.exists()):
-                logger.warning("origin files missing file_id=%s", file_record.file_id)
-                raise file_content_missing_exception
-
-            # 打包文件
-            # 创建 ZIP 包(存放在本地存储根目录下)
-            zip_filename = f"{file_record.filename}.{file_record.file_type }"
-            LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-            zip_path = LOCAL_STORAGE_ROOT / zip_filename
-
-            # 准备文件列表:(文件路径, ZIP中的文件名)，通过 str 传递给 Celery
-            assert isinstance(imzml_path, Path) and isinstance(ibd_path, Path)
-            files_to_zip = [
-                (str(imzml_path), imzml_path.name),
-                (str(ibd_path), ibd_path.name),
-            ]
-
-            task_result: AsyncResult = build_zip_file_background.delay(files_to_zip, str(zip_path)) # type: ignore
-            zip_size = await wait_for_result(task_result, poll_interval=0.1, timeout=large_file_poll_time) # type: ignore
-            if zip_size is None:
-                raise file_content_missing_exception
-
-            # 更新文件记录
-            file_record.path = str(zip_path)
-            file_record.size = zip_size # type: ignore
-
-            logger.info(
-                "created download zip file_id=%s path=%s size=%s",
-                file_record.file_id,
-                zip_path,
-                file_record.size,
-            )
-
-            return zip_path
-
-        raise file_content_missing_exception
-
-    except HTTPException as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise internal_server_error_exception from e
-
-
 async def prepare_download_file_oss(
     session: AsyncSession,
     file_record: FileInDB,
@@ -442,13 +292,14 @@ async def prepare_download_file_oss(
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
-        should_pack, zip_download_url, zip_path, fc_request_id = await _handle_packup_status_check(
+        # 返回值已无 fc_request_id：FC 日志回捞链路已删除
+        should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
             file_record, packup, oss_packup_key, oss_packup_lock_key
         )
 
         if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
             zip_download_url = await _prepare_download_url_for_completed_packup(
-                file_record, zip_path, fc_request_id, oss_packup_key
+                file_record, zip_path, oss_packup_key
             )
 
         if should_pack:
@@ -472,17 +323,34 @@ async def prepare_download_file_oss(
 
 
 async def validate_simple_upload(
+    async_session: AsyncSession,
     current_user: UserInDB,
     filename: str | None,
     pre_record: FileInDB,
     storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：包含名字、存储类型
+    验证简单上传的所有条件：归属、状态、名字、存储类型
 
     Raises:
-        HTTPException: 验证失败时抛出异常
+        file_not_found_exception: 预检记录不属于当前用户（对外隐藏存在性）
+        HTTPException: 其他验证失败时抛出异常
     """
+    # 归属校验：当前用户必须拥有该预检记录，防止越权签发 STS 覆盖他人对象
+    # 使用 404 而非 403，避免泄露该 pre_file_id 是否存在
+    if not await assert_file_owner(async_session, pre_record, current_user):
+        logger.warning(
+            f"unauthorized upload attempt user={current_user.id} pre_file_id={pre_record.file_id}"
+        )
+        raise file_not_found_exception
+
+    # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
+    if pre_record.status not in ("", FileStatus.UPLOADING):
+        logger.warning(
+            f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
+        )
+        raise invalid_request_parameters_exception
+
     # 存储类型检查
     if storage_type != pre_record.storage_type:
         logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
@@ -494,38 +362,6 @@ async def validate_simple_upload(
         raise invalid_request_parameters_exception
 
 
-async def validate_hash_and_size(
-    expected_hash: str,
-    expected_size: int,
-    file_path: str,
-    storage_type: str,
-) -> tuple[str, int]:
-    """
-    验证哈希和大小是否匹配，适用于文件或分片的验证
-
-    Raises:
-        hash_size_validation_failed_exception: 验证失败时抛出异常
-    """
-    act_hash, act_size = "", 0
-    # 读取文件内容
-    if storage_type == "local":
-        #哈希、文件大小检查
-        act_hash, act_size = await LocalStorage.compute_upload_file_hash(file_path)
-    elif storage_type == "oss":
-        # TODO： 从 OSS 中获取文件哈希和大小
-        # 默认oss上传成功后，哈希已验证，无需再验证
-        act_size = await OssStorage.get_file_size(file_path)
-        act_hash = expected_hash
-
-    if act_size != expected_size or act_hash != expected_hash:
-        logger.error(f"file or part hash or size mismath\n"
-                     f"expected_hash={expected_hash} actual_hash={act_hash}\n"
-                     f"expected_size={expected_size} actual_size={act_size}")
-        raise hash_size_validation_failed_exception
-
-    return act_hash, act_size
-
-
 #########################
 # File  - 改
 #########################
@@ -534,8 +370,7 @@ async def set_file_public_service(
     file_record: FileInDB,
 ) -> None:
     """将文件标记为公开"""
-    file_record.is_public = True
-    async_session.add(file_record)
+    await update_file_record(async_session, file_record, is_public=True)
     await async_session.flush()
 
 
@@ -573,40 +408,66 @@ async def update_download_stats(
         )
 
 
+async def update_file_record(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+    *,
+    status: FileStatus | None = None,
+    path: str | None = None,
+    is_public: bool | None = None,
+    uploaded_at: datetime | None = None,
+    image_path: str | None = None,
+) -> None:
+    """
+    更新文件记录的若干字段。
+
+    仅传入需要更新的字段（None 表示保持原值），修改内存对象并加入会话，
+    不 flush / commit，由调用方控制事务边界（与 update_origin 一致）。
+
+    注意：download_count / last_downloaded_at 不在此处更新，高并发下载场景应
+    使用 update_download_stats 的原子操作，避免 read-modify-write 丢失更新。
+    """
+    updates = {
+        "status": status,
+        "path": path,
+        "is_public": is_public,
+        "uploaded_at": uploaded_at,
+        "image_path": image_path,
+    }
+    for field, value in updates.items():
+        if value is not None:
+            setattr(file_record, field, value)
+    async_session.add(file_record)
+
+
 #########################
 # File  - 删
 #########################
 async def delete_file_and_parts(
     async_session: AsyncSession,
     file_id: int,
-    current_user: UserInDB,
+    current_user_id: int|None = None,
 ) -> None:
     """
-    根据 file_id 删除文件记录及其所有分片(物理文件 + 数据库记录)
-
+    根据 file_id 删除 OSS 对象和文件记录。
+    函数名为兼容现有调用保留
     Raises:
         ValueError: 文件不存在
         PermissionError: 用户无权限删除该文件
         OSError: 物理文件删除失败时
     """
-    # 1. 查询文件记录,同时预加载对应的分片记录
-    file_record = await get_file_record_by_id(file_id, async_session, load_parts=True)
-    storage_type =  file_record.storage_type
-
-    # 2. 删除分片物理文件（oss不需要删除）(数据库记录会在删除文件记录时自动级联删除)
-    if storage_type == "local":
-        for part in file_record.parts:
-            await delete_file_by_storage(part.temp_path, storage_type)
-            logger.debug(f"deleted part file part_id={part.part_id} temp_path={part.temp_path}")
-
-    # 3. 删除文件的物理文件
-    await delete_file_by_storage(file_record.path, storage_type)
+    file_record = await get_file_record_by_id(file_id, async_session)
+    # TODO：这里删除存在竞态，可能存在已经触发在打包的状态了，但是文件还没打包完，这里不好处理得考虑下。
+    await delete_file_by_storage(
+        file_record.path,
+        file_record.storage_type,
+        include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
+        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
+    )
     logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
 
-    # 5. 删除文件数据库记录(数据库会自动级联删除分片记录)
     await async_session.delete(file_record)
-
-    logger.info(f"deleted file and all parts file_id={file_id} user={current_user.id}")
+    logger.info(f"deleted OSS file file_id={file_id} user={current_user_id}")
 
 
 async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
@@ -675,7 +536,10 @@ async def safe_cleanup_preflight_record(
     async_session: AsyncSession, current_user: UserInDB, pre_record: FileInDB
 ) -> None:
     """
-    安全清理预检记录
+    安全清理预检记录（仅数据库记录和额度）。
+
+    预检后 FC 若始终没有回调，上传对象不会被应用层主动定位；未打持久化
+    tag 的 OSS 对象由 bucket 生命周期规则自动回收。
     """
     # 解除用户与文件的关联,并更新用户统计信息
     has_other_owners = await unlink_user_from_file(async_session, current_user, pre_record)
@@ -684,9 +548,8 @@ async def safe_cleanup_preflight_record(
         # 还有其他用户持有,只更新 owners
         logger.debug(f"preflight cleanup: removed user={current_user.id} from file_id={pre_record.file_id} owners")
     else:
-        # 没有其他用户持有,删除记录(包括物理文件和分片)
-        assert pre_record.file_id is not None
-        await delete_file_and_parts(async_session, pre_record.file_id, current_user)
+        # 预检记录的 path 尚未由回调确认，不能据此清理 OSS 对象。
+        await async_session.delete(pre_record)
         logger.debug(f"preflight cleanup: deleted file_id={pre_record.file_id} completely")
 
 
@@ -694,7 +557,6 @@ async def rollback_simple_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     pre_record: FileInDB | None = None,
-    final_path: "Path | str | None" = None,
 ) -> None:
     """
     简单上传失败时的统一回滚清理
@@ -706,13 +568,9 @@ async def rollback_simple_upload(
     assert pre_record is not None
     _record_id = pre_record.file_id
     _user_id = current_user.id
-    storage_type = pre_record.storage_type
-
     # 回滚事务，撤销已有的数据库操作
     await async_session.rollback()
 
-    if final_path:
-        await delete_file_by_storage(final_path, storage_type)
     if pre_record:
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
@@ -721,69 +579,7 @@ async def rollback_simple_upload(
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效
 
-
-async def rollback_part_upload(async_session: AsyncSession,
-                               path: Path | None,
-                               file_record:FileInDB | None) -> None:
-    """
-    分片上传失败时的统一回滚清理
-    """
-    if path and file_record:
-        await delete_file_by_storage(path, file_record.storage_type)
-
-    await async_session.rollback()
-
-
-#########################
-# Part  - 增
-#########################
-async def merge_parts_to_file(
-    async_session: AsyncSession,
-    file_record: FileInDB,
-    parts: list[PartInDB],
-    current_user: UserInDB,
-) -> None:
-    """
-    执行分片合并,将所有分片写入最终文件
-
-    事务管理:不 commit,由调用方(API 层)统一管理
-    """
-    part_paths = [Path(part.temp_path) for part in parts]
-    final_path = None
-    assert file_record.file_id is not None
-
-    try:
-        # 分片上传预检时 path 为空，合并前构建最终存储路径
-        if not file_record.path:
-            final_path = LocalStorage.prepare_storage_path(file_record.filename, file_record.file_type)
-            file_record.path = str(final_path)
-            async_session.add(file_record)
-        else:
-            final_path = Path(file_record.path)
-        # 使用 helper 层函数合并文件并验证哈希
-        await merge_files_and_get_hash(part_paths, final_path, file_record.file_verify_code)
-
-    except FileNotFoundError as exc:
-        # 分片文件丢失
-        logger.error(f"part file missing file_id={file_record.file_id} error={exc}")
-        await delete_file_and_parts(async_session, file_record.file_id, current_user)
-        raise part_file_missing_exception from exc
-
-    except ValueError as exc:
-        # 哈希不匹配
-        logger.error(f"merged file hash mismatch file_id={file_record.file_id} error={exc}")
-        await delete_file_and_parts(async_session, file_record.file_id, current_user)
-        raise merged_file_hash_mismatch_exception from exc
-
-    # 合并成功,更新首次上传时的 download 时间 (等于 uploaded_at)
-    file_record.uploaded_at = utc_time()
-    file_record.last_downloaded_at = file_record.uploaded_at
-    async_session.add(file_record)
-
-    # 清理分片临时文件和记录
-    await delete_parts_by_file_id(async_session, file_record.file_id)
-
-
+    
 async def assert_origin_files_ready(
     session: AsyncSession,
     file_record: FileInDB,
@@ -867,17 +663,16 @@ async def _handle_packup_status_check(
     packup: dict | None = None,
     oss_packup_key: str | None = None,
     oss_packup_lock_key: str | None = None,
-) -> tuple[bool, str | None, str | None, str | None]:
+) -> tuple[bool, str | None, str | None]:
     """
     检查Redis中的打包状态并处理相应逻辑
 
     Returns:
-        tuple: (should_pack, zip_download_url, zip_path, fc_request_id)
+        tuple: (should_pack, zip_download_url, zip_path)
     """
     should_pack = False
     zip_download_url = None
     zip_path = None
-    fc_request_id = None
 
     if not packup:
         if not await OssStorage.check_file_exist(file_record.path):
@@ -909,7 +704,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.COMPLETED:
         zip_path = packup.get("file_path")
-        fc_request_id = packup.get("fc_request_id")
         zip_download_url = packup.get("download_url")
         if not zip_path:
             logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
@@ -920,7 +714,6 @@ async def _handle_packup_status_check(
 
     elif packup.get("status") == PackupStatus.FAILED:
         logger.error("packup failed, filename=%s", file_record.filename)
-        fc_request_id = packup.get("fc_request_id")
         await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
         raise file_content_missing_exception
 
@@ -928,13 +721,12 @@ async def _handle_packup_status_check(
         logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
         should_pack = True
 
-    return should_pack, zip_download_url, zip_path, fc_request_id
+    return should_pack, zip_download_url, zip_path
 
 
 async def _prepare_download_url_for_completed_packup(
     file_record: FileInDB,
     zip_path: str,
-    fc_request_id: str | None,
     oss_packup_key: str | None,
 ) -> str | None:
     """为已完成的打包生成下载URL"""
@@ -976,191 +768,22 @@ async def _execute_packup_flow(
     """
     origin_path = await get_origin_path_for_packup(session, file_record)
 
+    # packup zip 使用 file_id 命名，与原始文件名解耦（同名文件秒传复用场景不冲突）
     fc_request_id = await packup_oss_file(
         filename=file_record.filename,
         packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{Path(file_record.filename).stem}.zip",  # type: ignore
+        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
     )
 
     if fc_request_id is None:
         logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
         raise internal_server_error_exception
 
-    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING, "fc_request_id": fc_request_id})  # type: ignore
+    # 不再把 fc_request_id 写入 Redis：FC 日志回捞链路已删除，此处仅用于判断触发是否成功
+    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
 
     return "<PACKING>"
-
-
-#########################
-# Part  - 查
-#########################
-async def validate_part_upload(
-    async_session: AsyncSession,
-    file_record: FileInDB,
-    current_user: UserInDB,
-    part_data: PartCreate,
-) -> None:
-    """
-    分片上传前置验证(编号范围 + 重复检查)
-
-    Raises:
-        part_number_out_of_range_exception: 分片编号越界
-        part_already_exists_exception: 分片已上传
-    """
-    # 1. 分片编号范围校验
-    if not part_data.part_number or not file_record.total_parts:
-        raise part_number_out_of_range_exception
-
-    if not 1 <= part_data.part_number <= file_record.total_parts:
-        raise part_number_out_of_range_exception
-
-    # 2. 重复检查
-    if not file_record.file_id or not current_user.id:
-        raise invalid_request_parameters_exception
-    if await validate_part_duplicate(async_session,
-                                     file_record.file_id,
-                                     part_data.part_number,
-                                     current_user.id):
-        raise part_already_exists_exception
-
-
-async def validate_part_duplicate(
-    async_session: AsyncSession,
-    file_id: int,
-    part_number: int,
-    owner_id: int,
-) -> bool:
-    """
-    检查分片是否已重复上传
-    Returns:
-        True 表示分片已存在,False 表示不存在
-    """
-    stmt = select(exists().where(
-        and_(
-            PartInDB.file_id == file_id,
-            PartInDB.part_number == part_number,
-            PartInDB.owner_id == owner_id,
-        )
-    ))
-    # 返回布尔值
-    return (await async_session.exec(stmt)).one()
-
-
-async def validate_and_merge_parts_business(
-    session: AsyncSession, file_record: FileInDB, current_user: UserInDB
-) -> bool:
-    """
-    验证分片完整性并尝试合并
-
-    Raises:
-        part_file_missing_exception: 分片文件丢失
-        merged_file_hash_mismatch_exception: 合并后哈希不匹配
-    """
-    # 1. 查询该文件的所有分片记录
-    parts = (
-        await session.exec(
-            select(PartInDB)
-            .where(
-                PartInDB.file_id == file_record.file_id,
-                PartInDB.owner_id == current_user.id,
-            )
-            .order_by(PartInDB.part_number) # type: ignore
-        )
-    ).all()
-
-    if not parts:
-        logger.warning(f"no parts found for file_id={file_record.file_id} user={current_user.id}")
-        return False
-
-    expected_total_parts = file_record.total_parts
-    if not expected_total_parts:
-        logger.error("total_parts not set for file_id=%s", file_record.file_id)
-        return False
-
-    # 2. 检查分片完整性(数量和序列)
-    uploaded_parts = sorted([part.part_number for part in parts])
-    expected_parts = list(range(1, expected_total_parts + 1))
-    logger.info(f"part status file_id={file_record.file_id} uploaded={uploaded_parts} expected={expected_parts}")
-
-    # 3. 分片不完整,等待更多分片
-    if len(uploaded_parts) < expected_total_parts:
-        return False
-
-    # 分片序列不连续(这是正常的中间状态,等待缺失的分片)
-    if uploaded_parts != expected_parts:
-        logger.warning(f"part sequence incomplete file_id={file_record.file_id} uploaded={uploaded_parts} expected={expected_parts}")
-        return False
-
-    # 4. 所有分片已上传,开始合并
-    logger.info(f"all parts uploaded, starting merge file_id={file_record.file_id} user={current_user.id}")
-    parts = sorted(parts, key=lambda c: c.part_number)
-
-    # 5. 执行分片合并
-    await merge_parts_to_file(session, file_record, parts, current_user)
-
-    await session.commit()
-    await session.refresh(file_record)
-    await session.refresh(current_user) #TODO 此处确实会破坏事物原子性
-    logger.info(f"parts merged successfully file_id={file_record.file_id} user={current_user.id}")
-    return True
-
-
-#########################
-# Part  - 删
-#########################
-async def delete_parts_by_file_id(
-    session: AsyncSession,
-    file_id: int,
-) -> int:
-    """
-    根据 file_id 删除分片记录(物理文件 + 数据库记录)
-
-    Returns:
-        删除的分片数量
-
-    Raises:
-        OSError: 物理文件删除失败时
-    """
-    # 构建查询条件
-    parts = await session.exec(
-        select(PartInDB).where(
-            PartInDB.file_id == file_id,
-        )
-    )
-
-    parts = parts.all()
-
-    if not parts:
-        logger.debug(
-            "no parts found for file_id=%s owner_id=%s",
-            file_id,
-        )
-        return 0
-
-    deleted_count = 0
-
-    # 先删除物理文件,再删除数据库记录
-    for part in parts:
-        # 删除分片物理文件
-        LocalStorage.delete_file(part.temp_path)
-        logger.debug(
-            "deleted part file part_id=%s temp_path=%s",
-            part.part_id,
-            part.temp_path
-        )
-
-        # 删除数据库记录
-        await session.delete(part)
-        deleted_count += 1
-
-    logger.info(
-        "deleted %s parts for file_id=%s",
-        deleted_count,
-        file_id,
-    )
-
-    return deleted_count
 
 
 async def validate_upload_request(

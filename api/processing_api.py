@@ -15,9 +15,10 @@ from api_services.processing_service import (
     get_origin_for_processing,
     get_process_run_by_id,
     get_user_runs,
+    mark_clustering_run,
     rollback_process_run,
     validate_process_request,
-    get_storage_type_by_source_file_id,
+    validate_clustering_request,
 )
 from api_helpers.processing_helper import assert_run_ownership
 from api.user_api import token_authen
@@ -34,10 +35,11 @@ from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
     ExperimentProcessRunRawConvert,
+    ProcessingStatus,
 )
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 
-from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task
+from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task, trigger_fc_clustering_task
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api")
@@ -56,7 +58,7 @@ async def create_algorithm_task(
             raise invalid_process_request_exception
 
         # 2. 查文件归属 + 就绪 origin，同时获取文件名和元数据
-        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user)
+        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user, allow_public=True)
 
         assert current_user.id is not None
         run_record = await create_process_run(
@@ -203,8 +205,7 @@ async def delete_process_run_endpoint(
     if not assert_run_ownership(run_record.user_id, current_user.id):  # type: ignore
         raise invalid_process_request_exception
 
-    storage_type = await get_storage_type_by_source_file_id(async_session, run_record.source_file_id)
-    await delete_process_run(async_session, run_record, storage_type)
+    await delete_process_run(async_session, run_record)
     await async_session.commit()
 
     return {"run_id": run_id, "status": "deleted"}
@@ -220,23 +221,26 @@ async def get_zarr_folder_access(
 
     返回文件夹路径和 OSS STS Token，前端凭此通过 OSS SDK 直连读取，
     无需逐个文件签名，支持 Range 请求和 zarr 随机分块读取。
-    """
 
+    聚类结果写回算法处理结果 zarr 内部，统一返回 run_record.out_path。
+    """
     run_record = await assert_zarr_folder_access(async_session, run_id, current_user)
 
-    # Redis 缓存：同一 run_id 1 小时内复用同一个 STS Token
+    target_path = run_record.out_path
+
+    # Redis 缓存：同一 run_id 复用同一个 STS Token
     cache_key = f"zarr_sts:{run_id}"
     cached = await redis_client.get(cache_key)  # type: ignore
     if cached:
         return ZarrFolderAccess(**json.loads(cached))
 
     expires = SIGNED_URL_EXPIRE_SECONDS
-    sts_token = await OssStorage.get_zarr_read_sts_token(run_record.out_path, expires)  # type: ignore
+    sts_token = await OssStorage.get_zarr_read_sts_token(target_path, expires)  # type: ignore
     if sts_token is None:
         raise internal_server_error_exception
 
     access = ZarrFolderAccess(
-        folder_path=run_record.out_path,  # type: ignore
+        folder_path=target_path,  # type: ignore
         bucket=OSS_BUCKET_NAME,           # type: ignore
         region=OSS_REGION_ID,             # type: ignore
         sts_token=sts_token,
@@ -248,9 +252,44 @@ async def get_zarr_folder_access(
     return access
 
 
+async def create_clustering_task(
+    run_id: int,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> ExperimentProcessRunPublic:
+    """创建聚类分析任务 — 对已完成的算法 run 执行 UMAP/KMeans 聚类，结果写回源 zarr"""
+    try:
+        run_record = await validate_clustering_request(async_session, run_id, current_user)
+
+        # 聚类已完成或处理中，直接返回
+        if run_record.clustering_status in (ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING):
+            return ExperimentProcessRunPublic(**run_record.model_dump())
+
+        # 标记聚类状态为 processing
+        await mark_clustering_run(async_session, run_record, status=ProcessingStatus.PROCESSING)
+        await async_session.commit()
+        await async_session.refresh(run_record)
+
+        # 异步触发 FC 聚类函数（聚类结果写回 run_record.out_path 内部）
+        trigger_fc_clustering_task.delay(  # type: ignore
+            run_id=run_id,
+            source_zarr_path=run_record.out_path,
+        )
+
+        return ExperimentProcessRunPublic(**run_record.model_dump())
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("create clustering task failed run_id=%s", run_id)
+        await async_session.rollback()
+        raise internal_server_error_exception from e
+
+
 # 依赖注入类型别名
 CreateAlgorithmTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_algorithm_task)]
 CreateRawConvertTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_raw_convert_task)]
+CreateClusteringTaskDep = Annotated[ExperimentProcessRunPublic, Depends(create_clustering_task)]
 ListMyRunsDep = Annotated[ListDataResponse, Depends(list_my_process_runs)]
 DeleteProcessRunDep = Annotated[dict[str, int | str], Depends(delete_process_run_endpoint)]
 ZarrFolderDep = Annotated[ZarrFolderAccess, Depends(get_zarr_folder_access)]

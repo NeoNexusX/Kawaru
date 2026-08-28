@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -73,11 +75,8 @@ class EmailSettings(BaseModel):
 
 class StorageSettings(BaseModel):
     """文件存储配置模型"""
-    root: str
-    local_root: str
-    chunk_buffer_size_mb: int
     max_chunks_per_upload: int
-    allowed_storage_types: list[str]
+    allowed_storage_types: list[Literal["oss"]] = Field(min_length=1)
     allowed_file_types: list[str]
     allowed_experiment_types: list[str]
     max_path_length: int
@@ -111,10 +110,12 @@ class OSSSettings(BaseModel):
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
     fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
     fc_tic_timeout_seconds: int | None = Field(default=60, description="FC TIC 处理调用超时时间，单位秒")
-    fc_feature_endpoint: str | None = Field(default=None, description="FC 特征分析函数HTTP触发地址")
-    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC 特征分析调用超时时间，单位秒")
+    fc_feature_endpoint: str | None = Field(default=None, description="FC UMAP预览图函数HTTP触发地址")
+    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC UMAP预览图调用超时时间，单位秒")
     fc_raw_convert_endpoint: str | None = Field(default=None, description="FC raw_convert 直转函数HTTP触发地址")
     fc_raw_convert_timeout_seconds: int | None = Field(default=120, description="FC raw_convert 调用超时时间，单位秒")
+    fc_clustering_endpoint: str | None = Field(default=None, description="FC 聚类分析函数HTTP触发地址")
+    fc_clustering_timeout_seconds: int | None = Field(default=180, description="FC 聚类分析调用超时时间，单位秒")
 
 
 class UserSettings(BaseModel):

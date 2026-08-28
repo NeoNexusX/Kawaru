@@ -1,6 +1,7 @@
-# Dev 应用配置：挂载到容器 /app/config/dev-config.yaml（服务器上可直接改后重启生效）。
+# 本地开发配置示例；复制为 config.yaml 后按实际环境修改。
 # 业务密钥（DB/Redis/SMTP/OSS 凭证）不在这里，放 .env。
-# 与 docker/docker-compose.dev.yml 配套：database.host/redis.host 用 compose 服务名。
+# 若用于 dev/prod Compose，请把数据库改为 mariadb:3306、Redis 改为 redis:6379，
+# 并将 CONFIG_PATH 指向容器内挂载的配置文件。
 server:
   name: SpatialXomics
   port: 8000
@@ -9,7 +10,7 @@ server:
 cors:
   allow_origins: ["*"]            # dev：按需收紧到前端域名
   allow_credentials: false
-  allow_methods: ["GET", "POST", "DELETE", "OPTIONS"]
+  allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
   allow_headers: ["Authorization", "Content-Type", "Accept", "Origin"]
   expose_headers: ["Content-Disposition", "Content-Length"]
 
@@ -28,8 +29,8 @@ email:
   email_send_cooldown_seconds: 60   # 同一邮箱两次发送验证码邮件的最小间隔（秒），不区分用途，防邮件轰炸
 
 database:
-  host: 47.98.174.83            # compose 服务名
-  db_name: kawaru_test
+  host: 127.0.0.1
+  db_name: kawaru
   db_type: mariadb
   db_username: root        # 用 root 连接；密码复用 .env 的 DATABASE_PASSWORD(=MARIADB_ROOT_PASSWORD)
   pool_size: 20
@@ -40,7 +41,7 @@ database:
 
 redis:
   username: default
-  host: 47.98.174.83              # compose 服务名
+  host: 127.0.0.1
   port: 16379
   max_connection: 50
   default_db_index: 0
@@ -58,11 +59,8 @@ celery:
   large_file_poll_time: 1000
 
 storage:
-  root: /app/data          # 落盘根；compose 把 ./data/app 挂到此
-  local_root: local
-  chunk_buffer_size_mb: 1
   max_chunks_per_upload: 40
-  allowed_storage_types: ["local", "oss"]
+  allowed_storage_types: ["oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
   max_path_length: 255
@@ -99,6 +97,8 @@ oss:
   fc_feature_timeout_seconds: 60
   fc_raw_convert_endpoint: http://imz-to-zarr-xrujfuejtn.cn-hangzhou.fcapp.run
   fc_raw_convert_timeout_seconds: 60
+  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou.fcapp.run
+  fc_clustering_timeout_seconds: 60
 
 admin_info:
   username: kawaru

@@ -1,11 +1,9 @@
 #########################
 # Processing Service - 业务逻辑层
-# 职责：算法处理运行记录的增删改查与磁盘结果清理。无 FastAPI 依赖。
+# 职责：算法处理运行记录的增删改查与 OSS 结果清理。无 FastAPI 依赖。
 #########################
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from typing import Sequence
 
 from sqlmodel import select, func, col
@@ -27,10 +25,9 @@ from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_helpers.processing_helper import (
     assert_origin_ready,
     check_processing_quota,
-    create_run_output_dir,
     validate_algorithms_config,
 )
-from storage_backend.storage import OssStorage
+from storage.oss.oss_storage import OssStorage
 from exceptions.experiment_exceptions import (
     invalid_process_request_exception,
     process_run_not_found_exception,
@@ -119,7 +116,6 @@ async def create_raw_convert_run(
 async def delete_process_run(
     async_session: AsyncSession,
     run_record: ExperimentProcessRunInDB,
-    storage_type: str,
 ) -> None:
     """
     删除算法处理运行记录及磁盘结果文件
@@ -128,7 +124,9 @@ async def delete_process_run(
     在并发场景（同一用户并行删除多条 run 记录）下的丢失更新问题。
     """
     if run_record.out_path:
-        await cleanup_output_dir(run_record.out_path, storage_type)
+        await cleanup_output_dir(run_record.out_path)
+
+    # 聚类结果写回 out_path 内部，随 out_path 一并清理，无需单独处理
 
     # 如果删除的是 raw_convert 直转 run（无算法处理），清除文件表的 default_run_id
     if run_record.params_json == RAW_CONVERT_MARKER:
@@ -157,16 +155,13 @@ async def delete_process_run(
     logger.info("deleted process run id=%s", run_record.id)
 
 
-async def cleanup_output_dir(out_path: str, storage_type: str) -> None:
-    """清理输出目录及其文件"""
+async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
+    """清理 OSS 输出目录；storage_type 参数为兼容既有内部调用而保留。"""
+    if storage_type != "oss":
+        raise ValueError(f"invalid storage type: {storage_type}")
     try:
-        abs_path = Path(out_path)
-        if storage_type == "local" and abs_path.exists():
-            shutil.rmtree(abs_path)
-            logger.debug("cleaned up run directory path=%s", abs_path)
-        elif storage_type == "oss":
-            await OssStorage.delete_file(out_path)
-    except OSError as e:
+        await OssStorage.delete_file(out_path)
+    except Exception as e:
         logger.warning("failed to cleanup output path=%s error=%s", out_path, e)
 
 
@@ -194,6 +189,21 @@ async def mark_process_run(
     async_session.add(run_record)
 
 
+async def mark_clustering_run(
+    async_session: AsyncSession,
+    run_record: ExperimentProcessRunInDB,
+    *,
+    status: str = ProcessingStatus.COMPLETED,
+    error_message: str | None = None,
+) -> None:
+    """更新聚类分析运行状态（聚类结果写回 out_path，不单独记录路径/大小）"""
+    run_record.clustering_status = status
+    if error_message:
+        run_record.error_message = error_message
+
+    async_session.add(run_record)
+
+
 #########################
 # 查
 #########################
@@ -207,34 +217,6 @@ async def get_process_run_by_id(
         await async_session.exec(
             select(ExperimentProcessRunInDB).where(
                 ExperimentProcessRunInDB.id == run_id))).first()
-
-
-async def get_process_runs_by_experiment_id(
-    async_session: AsyncSession,
-    experiment_id: int,
-) -> Sequence[ExperimentProcessRunInDB]:
-    """根据 experiment ID 查询所有 process_run"""
-    return (
-        await async_session.exec(
-            select(ExperimentProcessRunInDB)
-            .where(ExperimentProcessRunInDB.experiment_id == experiment_id))).all()
-
-
-async def list_user_runs(
-    async_session: AsyncSession,
-    user_id: int,
-    page: int = 1,
-    size: int = 10,
-) -> tuple[Sequence[ExperimentProcessRunInDB], int]:
-    """分页查询当前用户的所有 run"""
-    base_query = select(ExperimentProcessRunInDB).where(
-        ExperimentProcessRunInDB.user_id == user_id,
-    )
-    total = (await async_session.exec(
-        select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable
-    rows = (await async_session.exec(
-        base_query.offset((page - 1) * size).limit(size))).all()
-    return rows, total
 
 
 async def get_user_runs(
@@ -291,6 +273,48 @@ async def validate_process_request(
     return True
 
 
+async def validate_clustering_request(
+    async_session: AsyncSession,
+    run_id: int,
+    current_user: UserInDB,
+) -> ExperimentProcessRunInDB:
+    """
+    校验聚类分析请求，返回通过校验的 run_record。
+
+    校验链：
+    1. run 记录存在
+    2. 权限：管理员或记录所有者
+    3. 算法处理已完成
+    4. 算法输出路径不为空
+    5. 聚类未在处理中
+
+    Raises:
+        invalid_process_request_exception
+    """
+    run_record = await get_process_run_by_id(async_session, run_id)
+    if not run_record:
+        logger.warning("run not found for clustering run_id=%s", run_id)
+        raise invalid_process_request_exception
+
+    if not (current_user.identity == "admin" or run_record.user_id == current_user.id):
+        logger.warning("clustering permission denied run_id=%s user=%s", run_id, current_user.id)
+        raise invalid_process_request_exception
+
+    if run_record.status != ProcessingStatus.COMPLETED:
+        logger.warning("clustering run not completed run_id=%s status=%s", run_id, run_record.status)
+        raise invalid_process_request_exception
+
+    if not run_record.out_path:
+        logger.warning("clustering run out_path empty run_id=%s", run_id)
+        raise invalid_process_request_exception
+
+    if run_record.clustering_status == ProcessingStatus.PROCESSING:
+        logger.info("clustering already in progress run_id=%s", run_id)
+        return run_record
+
+    return run_record
+
+
 async def get_origin_for_processing(
     async_session: AsyncSession,
     file_id: int,
@@ -344,26 +368,6 @@ async def get_origin_for_processing(
     return origin, file_record.filename, metadata, file_record.default_run_id
 
 
-async def get_storage_type_by_source_file_id(
-    async_session: AsyncSession,
-    source_file_id: int,
-) -> str:
-    """根据 source_file_id 查询存储类型，默认返回 local"""
-    result = await async_session.exec(
-        select(FileInDB).where(FileInDB.file_id == source_file_id)
-    )
-    file_record = result.first()
-    return file_record.storage_type if file_record else "local"
-
-
-def cleanup_output_files(run_id: int) -> None:
-    """清理 run 输出目录及文件（磁盘操作，无 DB 依赖）"""
-    output_dir = create_run_output_dir(run_id)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-        logger.debug("cleaned up run output dir path=%s", output_dir)
-
-
 async def rollback_process_run(
     async_session: AsyncSession,
     run_record: ExperimentProcessRunInDB | None,
@@ -372,8 +376,10 @@ async def rollback_process_run(
     算法处理运行失败时的统一回滚
 
     1. 回滚当前 DB 事务
-    2. 清理磁盘上的输出目录
-    3. 开新 session 删除 PROCESSING 状态的 run 记录
+    2. 开新 session 删除 PROCESSING 状态的 run 记录
+
+    FC 未正常回调时无法从 run 记录获得可靠对象键，未持久化的 OSS 输出由
+    bucket 生命周期规则清理。
     """
     if run_record is None:
         await async_session.rollback()
@@ -382,9 +388,6 @@ async def rollback_process_run(
     _run_id = run_record.id
 
     await async_session.rollback()
-
-    if _run_id is not None:
-        cleanup_output_files(_run_id)
 
     if _run_id is not None:
         async with AsyncSession(get_async_engine()) as cleanup_session:
@@ -413,6 +416,8 @@ async def assert_zarr_folder_access(
     3. 状态必须为 COMPLETED
     4. 输出路径不为空
 
+    聚类结果写回 out_path 内部，统一按算法结果 zarr 校验。
+
     Returns:
         通过校验的 run_record
 
@@ -422,17 +427,13 @@ async def assert_zarr_folder_access(
         process_run_not_completed_exception
         zarr_folder_not_found_exception
     """
-
     # 1. 查询 run 记录
     run_record = await get_process_run_by_id(async_session, run_id)
     if not run_record:
         raise process_run_not_found_exception
 
     # 2. 权限校验：管理员 / 记录所有者 / 公开文件的 raw_convert run
-    is_authorized = (
-        current_user.identity == "admin"
-        or run_record.user_id == current_user.id
-    )
+    is_authorized = current_user.identity == "admin" or run_record.user_id == current_user.id
     if not is_authorized and run_record.params_json == RAW_CONVERT_MARKER:
         # 公开文件的 raw_convert run 允许任何登录用户查看
         file_record = (

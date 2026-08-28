@@ -1,5 +1,4 @@
 """存储和文件相关的常量定义"""
-from pathlib import Path
 from boot.config import get_config
 
 # 字节单位常量
@@ -14,17 +13,10 @@ if not config:
     raise RuntimeError("Application configuration is not loaded")
 storage_config = config.storage
 
-# 存储路径常量
-STORAGE_ROOT = Path(storage_config.root)
-LOCAL_STORAGE_ROOT = STORAGE_ROOT / storage_config.local_root
-TEMP_PARTS_ROOT = STORAGE_ROOT / "temp_chunks"
 OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
-OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
+OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 
-
-# 文件大小限制
-CHUNK_BUFFER_SIZE = int(storage_config.chunk_buffer_size_mb) * BYTES_IN_MB
 
 # 单次上传最大允许分片数限制
 MAX_PARTS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
@@ -68,6 +60,8 @@ FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
 FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
 FC_RAW_CONVERT_ENDPOINT = config.oss.fc_raw_convert_endpoint
 FC_RAW_CONVERT_TIMEOUT_SECONDS = config.oss.fc_raw_convert_timeout_seconds
+FC_CLUSTERING_ENDPOINT = config.oss.fc_clustering_endpoint
+FC_CLUSTERING_TIMEOUT_SECONDS = config.oss.fc_clustering_timeout_seconds
 
 
 __all__ = [
@@ -75,10 +69,6 @@ __all__ = [
     "BYTES_IN_MB",
     "BYTES_IN_GB",
     "BYTES_IN_TB",
-    "STORAGE_ROOT",
-    "LOCAL_STORAGE_ROOT",
-    "TEMP_PARTS_ROOT",
-    "CHUNK_BUFFER_SIZE",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
     "ALLOWED_EXPERIMENT_TYPES",
@@ -103,6 +93,8 @@ __all__ = [
     "FC_FEATURE_TIMEOUT_SECONDS",
     "FC_RAW_CONVERT_ENDPOINT",
     "FC_RAW_CONVERT_TIMEOUT_SECONDS",
+    "FC_CLUSTERING_ENDPOINT",
+    "FC_CLUSTERING_TIMEOUT_SECONDS",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
