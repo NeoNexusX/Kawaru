@@ -29,7 +29,7 @@ from api_services.experiment_service import (
     get_origin_imzml_by_file_id,
     update_origin,
 )
-from api_services.processing_service import cleanup_output_dir
+from api_services.processing_service import cleanup_output_dir, refund_processed_quota_for_file
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB
@@ -131,11 +131,12 @@ async def delete_file_completely(
     删除一个文件的全部资源（OSS 对象 + DB 记录）。
 
     编排逻辑：
-    1. 清理 process_run 输出目录（无 origin 记录时需手动处理）
-    2. 删除 origin 相关文件（imzML/ibd + 目录）
-    3. 删除图像文件
-    4. 删除主 OSS 文件
-    5. 删除 DB 记录（级联删除 origin、UserFileLink 等）
+    1. 清理 process_run 输出目录（无 origin 记录时需手动处理，有 origin 时由 delete_origin_files 处理）
+    2. 退还所有 process_run 占用的处理配额（run 行随第 6 步级联删除，必须先退）
+    3. 删除 origin 相关文件（imzML/ibd + 目录）
+    4. 删除图像文件
+    5. 删除主 OSS 文件
+    6. 删除 DB 记录（级联删除 origin、UserFileLink 等）
 
     注意：不处理用户关联解除和所有权校验，由调用方负责。
 
@@ -160,16 +161,20 @@ async def delete_file_completely(
             if out_path:
                 await cleanup_output_dir(out_path, storage_type)
 
-    # 2. 删除 origin 相关文件（imzML/ibd + 目录）
+    # 2. 退还所有 process_run 占用的处理配额。run 行随后随文件记录级联删除，
+    #    必须在级联前按行退（口径同 delete_process_run），否则配额永久虚占。
+    await refund_processed_quota_for_file(session, file_id)
+
+    # 3. 删除 origin 相关文件（imzML/ibd + 目录）
     if file_record.experiment_type == "imzML":
         await delete_origin_files(session, file_id, storage_type)
 
-    # 3. 删除图像文件
+    # 4. 删除图像文件
     if file_record.image_path:
         await OssStorage.delete_file(file_record.image_path)
         logger.info("deleted image file file_id=%s image_path=%s", file_id, file_record.image_path)
 
-    # 4. 删除主 OSS 文件
+    # 5. 删除主 OSS 文件
     # TODO：删除与正在执行的 packup 仍有竞态，后续统一调整 packup 回调落库流程时处理。
     path = (file_record.path or "").strip()
     if path and path != SOURCE_FILE_PATH_CLEARED:
@@ -178,6 +183,6 @@ async def delete_file_completely(
             raise OSError(f"Failed to delete file: {path}")
     logger.debug("deleted file physical file path=%s file_id=%s", file_record.path, file_id)
 
-    # 5. 删除 DB 记录（级联删除 origin、UserFileLink 等）
+    # 6. 删除 DB 记录（级联删除 origin、UserFileLink 等）
     await session.delete(file_record)
     logger.info("deleted file completely file_id=%s user=%s", file_id, current_user_id)

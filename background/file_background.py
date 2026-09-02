@@ -4,6 +4,7 @@ from sqlmodel import select, func, or_
 
 
 from api_services.composite_service import delete_file_completely
+from api_services.processing_service import refund_processed_quota_for_file
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
@@ -233,6 +234,11 @@ async def cleanup_failed_experiments(
                         "updated user stats via atomic decrement: user_id=%s file_id=%s",
                         user_id, file_record.file_id,
                     )
+
+                # 1.1 退还该文件所有 run 占用的处理配额。run 行随文件记录级联删除，
+                #     必须在级联前按行退（口径同 delete_process_run），否则配额永久虚占；
+                #     退还对象是 run.user_id（执行处理的用户），可能不同于文件 owner。
+                await refund_processed_quota_for_file(session, exp.source_file_id)
 
                 # 2. 收集所有 OSS 路径，一次批量删除，避免逐个 celery round-trip。
                 #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。

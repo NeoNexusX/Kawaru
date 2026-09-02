@@ -145,14 +145,64 @@ async def delete_process_run(
 
     # 扣除用户已处理配额（原子操作，防止并发丢失更新；GREATEST 保证不低于 0）
     if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:
-        await atomic_decrement(
-            async_session, UserInDB, run_record.user_id,
-            "processed_file_size", run_record.output_size,
+        await refund_processed_quota(
+            async_session, run_record.user_id, run_record.output_size,
         )
 
     await async_session.delete(run_record)
 
     logger.info("deleted process run id=%s", run_record.id)
+
+
+async def refund_processed_quota(
+    async_session: AsyncSession,
+    user_id: int,
+    output_size: int,
+) -> None:
+    """
+    退还单个 run 占用的用户处理配额
+
+    原子操作（UPDATE SET processed_file_size = GREATEST(processed_file_size - N, 0)），
+    防止并发丢失更新；GREATEST 保证结果不低于 0。
+    """
+    await atomic_decrement(
+        async_session, UserInDB, user_id,
+        "processed_file_size", output_size,
+    )
+
+
+async def refund_processed_quota_for_file(
+    async_session: AsyncSession,
+    file_id: int,
+) -> int:
+    """
+    退还指定文件所有 process_run 占用的处理配额（文件级删除路径专用）。
+
+    delete_file_completely / cleanup_failed_experiments 删除文件记录时，
+    run 行由 FK 级联删除、out_path 物理清理；若不在删除前按行退还，
+    user_id / output_size 随行消失，processed_file_size 将永久虚占。
+    必须在 session.delete(file_record) 之前调用。
+
+    Returns:
+        实际退还配额的 run 数量
+    """
+    runs = (await async_session.exec(
+        select(ExperimentProcessRunInDB.user_id, ExperimentProcessRunInDB.output_size).where(
+            ExperimentProcessRunInDB.source_file_id == file_id
+        )
+    )).all()
+
+    refunded = 0
+    for run_user_id, output_size in runs:
+        if run_user_id is None or not output_size or output_size <= 0:
+            continue
+        await refund_processed_quota(async_session, run_user_id, output_size)
+        refunded += 1
+
+    if refunded:
+        logger.info("refunded processed quota for file_id=%s runs=%s", file_id, refunded)
+
+    return refunded
 
 
 async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
