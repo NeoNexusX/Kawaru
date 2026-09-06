@@ -23,6 +23,9 @@ class FileStatus(str, Enum):
     UPLOADING = "uploading"
     COMPLETED = "completed"
     FAILED = "failed"
+    # 删除流程状态位（OSS 先删、DB 后删、失败标记，见 docs/zh/删除状态位改造方案.md）
+    DELETING = "deleting"            # 删除已登记：OSS 清理进行中，读侧拒绝、回调丢弃
+    DELETE_FAILED = "delete_failed"  # OSS 清理失败：行保留作为任务记录，等兜底重投
 
 
 class PackupStatus(str, Enum):
@@ -88,7 +91,7 @@ class FilePublic(FileBase):
     """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）"""
 
     file_id: int
-    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed")
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed, deleting, delete_failed")
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
@@ -113,7 +116,7 @@ class FileInDB(FileBase, table=True):
     is_public: bool = Field(default=False, description="是否公开文件")
     path: str = Field(max_length=getattr(storage_config, "max_path_length", 128))  # 存储路径(长度限制取ext4文件系统限制路径最大长度255字符)
 
-    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed")
+    status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed, deleting, delete_failed")
     first_uploaded_by: str | None = Field(default=None, max_length=user_config.max_username_length, description="首次上传该文件的用户名")
     # 与 UserInDB 的多对多关系
     owners: list[UserInDB] = Relationship(back_populates="files", link_model=UserFileLink)
@@ -129,6 +132,11 @@ class FileInDB(FileBase, table=True):
         default=None,
         sa_column=Column(Float, nullable=True),
         description="压缩率 = zip实际大小 / 压缩前大小，FC 回调时写入",
+    )
+    # 删除登记时间：置 DELETING 时写入，兜底扫描据此判定「停留过久的 DELETING」
+    delete_marked_at: datetime | None = Field(
+        default=None,
+        description="删除登记时间（DELETING/DELETE_FAILED 状态的置位时间）",
     )
 
 class FileDownloadMeta(FileBase):

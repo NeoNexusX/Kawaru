@@ -122,14 +122,19 @@ async def valid_user_duplicate_file_hash(
 async def get_file_record_by_id(
     file_id: int,
     async_session: AsyncSession,
+    *,
+    include_deleting: bool = False,
 ) -> FileInDB:
     """
     根据文件ID查询文件记录
 
+    默认拒绝删除流程中的文件：DELETING / DELETE_FAILED 一律按不存在处理
+    （404 不泄露「删除中」状态），删除登记等管理路径用 include_deleting=True 显式放行。
+
     Returns:
         文件记录对象
     Raises:
-        file_not_found_exception: 文件记录不存在
+        file_not_found_exception: 文件记录不存在（或处于删除流程且未放行）
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
 
@@ -137,6 +142,13 @@ async def get_file_record_by_id(
 
     if not file_record:
         logger.warning("file record not found file_id=%s", file_id)
+        raise file_not_found_exception
+
+    if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        logger.warning(
+            "file is being deleted, treat as not found file_id=%s status=%s",
+            file_id, file_record.status,
+        )
         raise file_not_found_exception
 
     return file_record

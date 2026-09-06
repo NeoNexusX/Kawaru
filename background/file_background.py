@@ -3,7 +3,11 @@ from datetime import timedelta
 from sqlmodel import select, func, or_
 
 
-from api_services.composite_service import delete_file_completely
+from api_services.composite_service import (
+    delete_file_completely,
+    finalize_file_deletion,
+    finalize_run_deletion,
+)
 from api_services.processing_service import refund_processed_quota_for_file
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
@@ -11,16 +15,22 @@ from api_services.file_service import (
     safe_cleanup_preflight_record,
 )
 from storage.oss.oss_storage import OssStorage
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
+from background.file_background_helper import delete_oss_objects
+from constants.file_constants import (
+    PREFLIGHT_TTL_MINUTES,
+    DOWNLOAD_ZIP_TTL_MINUTES,
+)
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
+from database.redis_client import redis_client
 from database.atomic_ops import atomic_decrement
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus
+
 
 from celery_runtime.state import get_celery_app
 
@@ -348,6 +358,89 @@ async def cleanup_stale_process_runs(
 
         logger.info("cleanup_stale_process_runs completed, marked %d as failed", total_cleaned)
     return total_cleaned
+
+
+@celery_app.task()  # type: ignore
+async def delete_objects_task(
+    kind: str,
+    resource_id: int,
+    paths: list[str],
+    redis_keys: list[str] | None = None,
+) -> bool:
+    """
+    统一的 OSS 删除执行任务（② 执行，全系统删除主流程只此一处碰 OSS 删除）。
+
+    kind 取值：file（场景 1，删文件）/ run（场景 2，删算法/聚类 run 输出）。
+    幂等：底层 delete_oss_objects 删不存在的 key 返回 204 也算成功，可无限重试。
+    流程：
+    - 任一对象删除失败 → 行置 DELETE_FAILED 保留（「要么都保留」），等重试
+    - 全部成功 → finalize[kind] 在同一 DB 事务内删行（「要么都删除」）
+    finalize 容忍行已不在（重复投递时直接算成功）。
+    """
+    # 1. 清理 Redis 状态键（best-effort，键自身有 TTL，失败不影响主流程）
+    for key in redis_keys or []:
+        try:
+            await redis_client.delete(key)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("delete_objects_task: delete redis key failed key=%s error=%s", key, exc)
+
+    # 2. 删除 OSS 对象（幂等，可无限重试）
+    ok = await delete_oss_objects(paths)
+    if not ok:
+        await _mark_delete_failed(kind, resource_id)
+        return False
+
+    # 3. finalize：同一 DB 事务内收尾
+    async with get_standalone_async_session() as session:
+        if kind == "file":
+            await finalize_file_deletion(session, resource_id)
+        elif kind == "run":
+            await finalize_run_deletion(session, resource_id)
+        else:
+            logger.error("delete_objects_task: unknown kind=%s resource_id=%s", kind, resource_id)
+            return False
+        await session.commit()
+    return True
+
+
+async def _mark_delete_failed(kind: str, resource_id: int) -> None:
+    """OSS 删除失败后，把对应资源行置 DELETE_FAILED（按 kind 分表，行保留等重试）。"""
+    async with get_standalone_async_session() as session:
+        if kind == "file":
+            record = (await session.exec(
+                select(FileInDB)
+                .where(FileInDB.file_id == resource_id)
+                .with_for_update()
+            )).first()
+            deleting_states = (FileStatus.DELETING, FileStatus.DELETE_FAILED)
+        elif kind == "run":
+            record = (await session.exec(
+                select(ExperimentProcessRunInDB)
+                .where(ExperimentProcessRunInDB.id == resource_id)
+                .with_for_update()
+            )).first()
+            deleting_states = (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)
+        else:
+            logger.error("_mark_delete_failed: unknown kind=%s resource_id=%s", kind, resource_id)
+            return
+
+        if record is not None and record.status in deleting_states:
+            if kind == "file":
+                record.status = FileStatus.DELETE_FAILED
+            else:
+                record.status = ProcessingStatus.DELETE_FAILED
+            session.add(record)
+            await session.commit()
+            logger.error(
+                "delete_objects_task: oss delete failed, marked DELETE_FAILED kind=%s resource_id=%s",
+                kind, resource_id,
+            )
+        else:
+            # 行已被并发 finalize 删除或状态异常：只记日志，不覆盖状态
+            logger.info(
+                "delete_objects_task: oss delete failed but row gone/skipped kind=%s resource_id=%s",
+                kind, resource_id,
+            )
 
 
 @celery_app.task()

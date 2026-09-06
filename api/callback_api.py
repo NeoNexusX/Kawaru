@@ -15,6 +15,7 @@ from storage.oss.oss_storage import OssStorage
 from api_services.file_service import get_file_record_by_id, update_file_record
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
+from background.file_background_helper import cleanup_oss_objects_best_effort
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
 from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, UmapCallback, ClusteringCallback
@@ -41,6 +42,9 @@ logger = get_logger("api.callback_api")
 
 # FC 回调验证 Token（从环境变量读取，与 FC 控制台配置一致）
 FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
+
+# 删除流程状态（run 处于其一即丢弃回调，见 algorithm/clustering 回调内联检查）
+_DELETING_RUN_STATUSES = (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)
 
 # TODO: 针对此处每个api，需要验证签名，目前使用的是token验证，后续可以考虑使用签名验证，签名验证需要FC端配合
 
@@ -248,9 +252,22 @@ async def algorithm_callback(
     error_message = callback_info.error_message
 
     try:
-        run_record = await get_process_run_by_id(async_session, run_id)
+        # include_deleting=True：需要看到删除流程中的 run 才能拦截并清理对象
+        run_record = await get_process_run_by_id(async_session, run_id, include_deleting=True)
         if not run_record:
+            # 迟到对象由 bucket 生命周期规则兜底
             logger.error("process run not found for algorithm callback run_id=%s", run_id)
+            raise invalid_process_request_exception
+
+        # 删除流程中的 run：丢弃回调，并删掉 FC 刚写的输出对象防孤儿
+        # （成功回调会无条件覆盖状态，不拦截会把 DELETING 翻转成 COMPLETED）
+        if run_record.status in _DELETING_RUN_STATUSES:
+            logger.warning(
+                "algorithm callback dropped: run is being deleted run_id=%s status=%s",
+                run_id, run_record.status,
+            )
+            if is_success:
+                await cleanup_oss_objects_best_effort(out_path, context="late algorithm callback output")
             raise invalid_process_request_exception
 
         # 处理失败：仅 PROCESSING 在途时落 FAILED，终态不被迟到/重复失败回调覆盖
@@ -464,9 +481,18 @@ async def clustering_callback(
     error_message = callback_info.error_message
 
     try:
-        run_record = await get_process_run_by_id(async_session, run_id)
+        # include_deleting=True：需要看到删除流程中的 run 才能拦截
+        run_record = await get_process_run_by_id(async_session, run_id, include_deleting=True)
         if not run_record:
             logger.error("process run not found for clustering callback run_id=%s", run_id)
+            raise invalid_process_request_exception
+
+        # 删除流程中的 run：丢弃回调（聚类结果写回源 zarr 内部，无独立输出路径
+        if run_record.status in _DELETING_RUN_STATUSES:
+            logger.warning(
+                "clustering callback dropped: run is being deleted run_id=%s status=%s",
+                run_id, run_record.status,
+            )
             raise invalid_process_request_exception
 
         # 处理失败

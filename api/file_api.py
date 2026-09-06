@@ -8,7 +8,7 @@ from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
 from api_helpers.file_helper import check_user_quota
-from api_services.composite_service import delete_file_completely
+from api_services.composite_service import mark_file_for_deletion
 from api_services.file_service import (
     assert_file_owner,
     get_user_file_ids,
@@ -18,13 +18,13 @@ from api_services.file_service import (
     rollback_simple_upload,
     get_reuse_file_by_hash,
     set_file_public_service,
-    unlink_user_from_file,
     update_download_stats,
     validate_simple_upload,
     validate_upload_request,
     get_file_record_by_id,
     update_file_record,
 )
+from background.file_background import delete_objects_task
 from api_services.user_service import count_items
 from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, PACKUP_CACHE_TTL_SECONDS
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
@@ -326,15 +326,23 @@ async def delete_user_file(
     - 通过 file_record.owners 列表判断是否有其他用户持有该文件
     - 移除当前用户后,如果 owners 为空,则执行完全删除
 
+    删除状态位流程（OSS 先删、DB 后删、失败标记）:
+    - 完全删除不再同步等待 OSS 删除完成，而是登记 DELETING 后立即返回
+    - unlink + 扣配额（用户可见语义）在登记事务内完成并提交
+    - worker 删完全部 OSS 对象后才删 DB 行（「要么都删除」）；任一失败则
+      行置 DELETE_FAILED 保留（「要么都保留」），等重试（兜底任务待全部
+      删除场景改造完成后统一上线，期间管理员重复删除即为手动重试）
+    - 重复请求幂等:已处于 DELETING 的文件直接再次投递删除任务
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    # include_deleting=True: 对已处于 DELETING 的文件重复发起删除时走幂等分支而非 404
+    file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
-    # 解除用户与文件的关联(业务层)
-    has_other_owners = await unlink_user_from_file(session, current_user, file_record)
+    # 登记删除:行锁抢占 → 置 DELETING → unlink + 扣配额 → 收集路径快照（同一事务）
+    snapshot = await mark_file_for_deletion(session, current_user, file_record)
 
-    if has_other_owners:
+    if snapshot is None:
         # 还有其他用户持有,只解除关联
         await session.commit()
         await session.refresh(current_user)
@@ -342,12 +350,20 @@ async def delete_user_file(
         logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
         return {"file_id": file_id, "status": "unlinked"}
 
-    # 没有其他用户持有该文件,执行完全删除
-    await delete_file_completely(session, file_id, file_record.storage_type, current_user.id)
-
+    # 先 commit（配额已扣、关联已解除，用户可见语义立即生效），再投递删除任务。
+    # 投递失败只留下 DELETING 行（管理员重复删除即可手动重投，兜底任务统一
+    # 上线后自动收敛）;
+    # 顺序不能反:先投后 commit 的崩溃会留下「对象已删、行未标记」的不可自愈形态
     await session.commit()
+    delete_objects_task.delay( # type: ignore
+        kind="file",
+        resource_id=file_id,
+        paths=list(snapshot.paths),
+        redis_keys=list(snapshot.redis_keys),
+    )
+
     await session.refresh(current_user)
-    logger.info(f"deleted file completely user={current_user.id} file_id={file_id}")
+    logger.info(f"marked file for deletion user={current_user.id} file_id={file_id}")
 
     return {"file_id": file_id, "status": "deleted"}
 

@@ -18,7 +18,7 @@ from models.processing_models import (
     RAW_CONVERT_MARKER,
 )
 from models.experiment_models import OriginImzMLInDB
-from models.file_models import FileInDB
+from models.file_models import FileInDB, FileStatus
 from models.user_models import UserInDB
 from api_services.file_service import assert_file_owner
 from api_services.experiment_service import get_origin_imzml_by_file_id
@@ -111,47 +111,10 @@ async def create_raw_convert_run(
 
 #########################
 # 删
+# 删除流程已切换到删除状态位架构（docs/zh/删除状态位改造方案.md 场景 2）：
+# 登记（mark_run_for_deletion）在 composite 层，执行/收尾在 delete_objects_task。
+# 旧 delete_process_run 已退役；cleanup_output_dir 保留供文件级删除链路使用。
 #########################
-
-async def delete_process_run(
-    async_session: AsyncSession,
-    run_record: ExperimentProcessRunInDB,
-) -> None:
-    """
-    删除算法处理运行记录及磁盘结果文件
-
-    并发安全：使用原子 SQL UPDATE 递减用户已处理配额，避免 read-modify-write
-    在并发场景（同一用户并行删除多条 run 记录）下的丢失更新问题。
-    """
-    if run_record.out_path:
-        await cleanup_output_dir(run_record.out_path)
-
-    # 聚类结果写回 out_path 内部，随 out_path 一并清理，无需单独处理
-
-    # 如果删除的是 raw_convert 直转 run（无算法处理），清除文件表的 default_run_id
-    if run_record.params_json == RAW_CONVERT_MARKER:
-        file_record = (
-            await async_session.exec(
-                select(FileInDB).where(FileInDB.file_id == run_record.source_file_id)
-            )
-        ).first()
-        if file_record and file_record.default_run_id == run_record.id:
-            file_record.default_run_id = None
-            async_session.add(file_record)
-            logger.info(
-                "cleared default_run_id for file_id=%s (deleting raw_convert run_id=%s)",
-                run_record.source_file_id, run_record.id,
-            )
-
-    # 扣除用户已处理配额（原子操作，防止并发丢失更新；GREATEST 保证不低于 0）
-    if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:
-        await refund_processed_quota(
-            async_session, run_record.user_id, run_record.output_size,
-        )
-
-    await async_session.delete(run_record)
-
-    logger.info("deleted process run id=%s", run_record.id)
 
 
 async def refund_processed_quota(
@@ -264,12 +227,30 @@ async def mark_clustering_run(
 async def get_process_run_by_id(
     async_session: AsyncSession,
     run_id: int,
+    *,
+    include_deleting: bool = False,
 ) -> ExperimentProcessRunInDB | None:
-    """根据 run ID 查询记录"""
-    return (
+    """根据 run ID 查询记录。
+
+    默认拒绝删除流程中的 run：DELETING / DELETE_FAILED 一律按不存在处理
+    （返回 None，调用方已有的 not-found 分支天然拦截），删除登记与回调
+    检查用 include_deleting=True 显式放行。
+    """
+    record = (
         await async_session.exec(
             select(ExperimentProcessRunInDB).where(
                 ExperimentProcessRunInDB.id == run_id))).first()
+
+    if (not include_deleting
+            and record is not None
+            and record.status in (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)):
+        logger.warning(
+            "run is being deleted, treat as not found run_id=%s status=%s",
+            run_id, record.status,
+        )
+        return None
+
+    return record
 
 
 async def get_user_runs(
@@ -278,11 +259,18 @@ async def get_user_runs(
     page: int = 1,
     size: int = 10,
 ) -> tuple[Sequence[dict], int]:
-    """分页查询当前用户的所有 run（含源文件名）"""
+    """分页查询当前用户的所有 run（含源文件名）。
+
+    删除流程中的 run（DELETING / DELETE_FAILED）不展示：删除登记后立即从
+    列表消失，接口语义与文件删除一致（前端零改动）。
+    """
     base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(ExperimentProcessRunInDB.user_id == user_id)
+        .where(ExperimentProcessRunInDB.status.notin_(( # pylint: disable=no-member # type: ignore
+            ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED,
+        )))
     )
 
     total = (await async_session.exec(
@@ -349,6 +337,16 @@ async def validate_clustering_request(
         logger.warning("run not found for clustering run_id=%s", run_id)
         raise invalid_process_request_exception
 
+    # 删除流程中的文件不接受聚类请求：聚类结果写回源 zarr，而快照删除可能
+    # 已清掉该目录，迟到的 FC 写入会成为孤儿对象
+    file_status = (await async_session.exec(
+        select(FileInDB.status).where(FileInDB.file_id == run_record.source_file_id)
+    )).first()
+    if file_status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        logger.warning("file is being deleted, reject clustering run_id=%s file_id=%s",
+                       run_id, run_record.source_file_id)
+        raise invalid_process_request_exception
+
     if not (current_user.identity == "admin" or run_record.user_id == current_user.id):
         logger.warning("clustering permission denied run_id=%s user=%s", run_id, current_user.id)
         raise invalid_process_request_exception
@@ -393,6 +391,13 @@ async def get_origin_for_processing(
     ).first()
     if not file_record:
         logger.warning("file not found file_id=%s user=%s", file_id, current_user.id)
+        raise invalid_process_request_exception
+
+    # 删除流程中的文件不接受新处理请求：run 的 out_path 不会进入删除快照，
+    # 登记后创建的 run 输出会成为孤儿对象
+    if file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        logger.warning("file is being deleted, reject processing file_id=%s user=%s",
+                       file_id, current_user.id)
         raise invalid_process_request_exception
 
     skip_ownership = allow_public and file_record.is_public
