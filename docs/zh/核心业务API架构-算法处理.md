@@ -43,7 +43,7 @@ flowchart LR
 | `POST /processes` | 前端 | 创建算法处理任务 |
 | `POST /processes/raw-convert` | 前端 | 创建 imzML 直转 zarr 任务 |
 | `POST /processes/{run_id}/clustering` | 前端 | 对已完成的 run 发起聚类分析 |
-| `GET /processes/mine` | 前端 | 分页查询当前用户的运行记录 |
+| `POST /processes/mine` | 前端 | 分页查询当前用户的运行记录（body 传 RunFilter，支持文件名/算法参数模糊搜索） |
 | `GET /processes/{run_id}/zarr` | 前端 | 获取 zarr 结果目录的只读凭证 |
 | `DELETE /processes/{run_id}` | 前端 | 删除运行记录并清理结果 |
 | `POST /callback/algorithm_callback` | 处理 FC | 报告算法处理或直转结果 |

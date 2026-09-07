@@ -18,6 +18,7 @@ from models.processing_models import (
     RAW_CONVERT_MARKER,
 )
 from models.experiment_models import OriginImzMLInDB
+from models.filter_models import RunFilter
 from models.file_models import FileInDB, FileStatus
 from models.user_models import UserInDB
 from api_services.file_service import assert_file_owner
@@ -256,10 +257,11 @@ async def get_process_run_by_id(
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,
+    filters: RunFilter,
     page: int = 1,
     size: int = 10,
 ) -> tuple[Sequence[dict], int]:
-    """分页查询当前用户的所有 run（含源文件名）。
+    """分页查询当前用户的所有 run（含源文件名），支持文件名/参数模糊搜索。
 
     删除流程中的 run（DELETING / DELETE_FAILED）不展示：删除登记后立即从
     列表消失，接口语义与文件删除一致（前端零改动）。
@@ -271,6 +273,10 @@ async def get_user_runs(
         .where(ExperimentProcessRunInDB.status.notin_(( # pylint: disable=no-member # type: ignore
             ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED,
         )))
+        # 模糊过滤（file_api 惯例：传了才匹配，没传恒真不过滤）；
+        # 直转 run 的 params_json 为 __RAW_CONVERT__ 标记，天然参与 LIKE 匹配
+        .where(col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True)  # pylint: disable=no-member
+        .where(col(ExperimentProcessRunInDB.params_json).like(f"%{filters.params}%") if filters.params else True)
     )
 
     total = (await async_session.exec(

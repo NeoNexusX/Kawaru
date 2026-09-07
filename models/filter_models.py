@@ -36,6 +36,12 @@ class FileFilter(SQLModel):
     solvent: str | None = Field(default=None, description="使用溶剂")
 
 
+class RunFilter(SQLModel):
+    """运行记录筛选模型"""
+    filename: str | None = Field(default=None, description="源文件名(模糊匹配)")
+    params: str | None = Field(default=None, description="算法参数关键词(模糊匹配 params_json)")
+
+
 class ListDataResponse(SQLModel):
     """数据列表响应模型"""
     meta: PaginationMeta = Field(description="分页元数据")

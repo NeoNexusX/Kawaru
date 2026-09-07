@@ -30,7 +30,7 @@ from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
 from models.user_models import UserInDB
-from models.filter_models import ListDataResponse, PaginationMeta
+from models.filter_models import ListDataResponse, PaginationMeta, RunFilter
 from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
@@ -167,13 +167,14 @@ async def create_raw_convert_task(
 async def list_my_process_runs(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
+    filters: RunFilter,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
-    """分页查询当前用户的所有运行记录"""
+    """分页查询当前用户的所有运行记录（RunFilter 走 body，支持文件名/算法参数模糊搜索）"""
     try:
         assert current_user.id is not None
-        runs, total_records = await get_user_runs(async_session, current_user.id, page, size)
+        runs, total_records = await get_user_runs(async_session, current_user.id, filters, page, size)
 
         total_pages = (total_records + size - 1) // size if total_records > 0 else 0
         pagination_meta = PaginationMeta(
