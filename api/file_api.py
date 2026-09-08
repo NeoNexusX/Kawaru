@@ -436,6 +436,7 @@ async def patch_file_metadata(
     await update_file_metadata(async_session, file_record, patch)
     await async_session.commit()
     await async_session.refresh(file_record)
+    await async_session.refresh(current_user)
 
     logger.info(f"patch file metadata user={current_user.id} file_id={file_id}")
     return FilePublic.model_validate(file_record)

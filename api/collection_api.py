@@ -17,7 +17,7 @@ from api_services.collection_service import (
     get_owned_collection,
     get_public_collection_by_public_id,
     list_user_collections,
-    remove_member,
+    remove_members,
     reorder_members,
     update_collection,
 )
@@ -137,6 +137,7 @@ async def delete_collection_api(
 
     await delete_collection(async_session, collection)
     await async_session.commit()
+    await async_session.refresh(current_user)
 
     logger.info(f"delete collection user={current_user.id} collection_id={collection_id}")
     return {"collection_id": collection_id, "deleted": True}
@@ -168,28 +169,33 @@ async def add_members_api(
     return detail
 
 
-async def remove_member_api(
+async def remove_members_api(
     collection_id: int,
-    file_id: int,
+    operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> dict:
     """
-    【移除成员接口】
+    【批量移除成员接口】
 
-    功能:移除集合成员——只删 CollectionMember 链接行，不动文件；owner 对垃圾成员的清理主力
+    功能:批量移除集合成员——只删 CollectionMember 链接行，不动文件（单个移除即传长度为 1 的数组）
 
     权限:集合 owner 或 admin（两者权限相同）
+
+    幂等:不在集合内的 file_id 跳过、不报错（与批量添加的幂等语义对称），
+    响应返回 removed / skipped 两个列表供前端对账
     """
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    await remove_member(async_session, collection, file_id)
+    removed, skipped = await remove_members(async_session, collection, operation.file_ids)
     await async_session.commit()
+    await async_session.refresh(current_user)
 
     logger.info(
-        f"remove collection member user={current_user.id} collection_id={collection_id} file_id={file_id}"
+        f"remove collection members user={current_user.id} collection_id={collection_id} "
+        f"removed={len(removed)} skipped={len(skipped)}"
     )
-    return {"collection_id": collection_id, "file_id": file_id, "removed": True}
+    return {"collection_id": collection_id, "removed": removed, "skipped": skipped}
 
 
 async def reorder_members_api(
@@ -252,6 +258,6 @@ GetCollectionDep = Annotated[CollectionDetail, Depends(get_collection_api)]
 PatchCollectionDep = Annotated[CollectionDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]
 AddMembersDep = Annotated[CollectionDetail, Depends(add_members_api)]
-RemoveMemberDep = Annotated[dict, Depends(remove_member_api)]
+RemoveMembersDep = Annotated[dict, Depends(remove_members_api)]
 ReorderMembersDep = Annotated[CollectionDetail, Depends(reorder_members_api)]
 GetPublicCollectionDep = Annotated[CollectionDetail, Depends(get_public_collection_api)]

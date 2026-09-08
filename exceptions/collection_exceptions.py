@@ -10,12 +10,6 @@ collection_not_found_exception = HTTPException(
     detail=format_exception_detail("collection not found")
 )
 
-# 集合成员不存在异常（移除/排序时引用了不在集合内的文件）
-collection_member_not_found_exception = HTTPException(
-    status_code=status.HTTP_404_NOT_FOUND,
-    detail=format_exception_detail("collection member not found")
-)
-
 # 无权限操作集合异常（修改/删除/移除成员/排序 仅限 owner 或 admin）
 collection_permission_denied_exception = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN,
@@ -43,7 +37,6 @@ member_order_conflict_exception = HTTPException(
 
 __all__ = [
     "collection_not_found_exception",
-    "collection_member_not_found_exception",
     "collection_permission_denied_exception",
     "collection_member_limit_exception",
     "invalid_members_exception",

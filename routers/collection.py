@@ -11,7 +11,7 @@ from api.collection_api import (
     PatchCollectionDep,
     DeleteCollectionDep,
     AddMembersDep,
-    RemoveMemberDep,
+    RemoveMembersDep,
     ReorderMembersDep,
     GetPublicCollectionDep,
 )
@@ -74,7 +74,7 @@ async def reorder_collection_members(detail: ReorderMembersDep):
     return detail
 
 
-@collection_router.delete("/{collection_id}/members/{file_id}")
-async def remove_collection_member(result: RemoveMemberDep):
-    """移除成员（owner 或 admin；只删链接行，不动文件）"""
+@collection_router.delete("/{collection_id}/members")
+async def remove_collection_members(result: RemoveMembersDep):
+    """批量移除成员（owner 或 admin；单个移除即传长度为 1 的数组；不在集合内的 file_id 跳过不报错）"""
     return result

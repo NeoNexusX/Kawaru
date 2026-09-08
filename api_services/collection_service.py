@@ -4,7 +4,7 @@
 #########################
 from __future__ import annotations
 
-from sqlmodel import select, and_, func
+from sqlmodel import select, and_, delete, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.user_service import get_user_by_id
@@ -14,7 +14,6 @@ from constants.collection_constants import (
 )
 from exceptions.collection_exceptions import (
     collection_not_found_exception,
-    collection_member_not_found_exception,
     collection_member_limit_exception,
     collection_permission_denied_exception,
     invalid_members_exception,
@@ -437,40 +436,46 @@ async def add_members(
     return len(files)
 
 
-async def remove_member(
+async def remove_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    file_id: int,
-) -> None:
-    """移除集合成员（owner 或 admin，权限由 api 层校验）：只删链接行，不动文件
+    file_ids: list[int],
+) -> tuple[list[int], list[int]]:
+    """批量移除集合成员（owner 或 admin，权限由 api 层校验）：只删链接行，不动文件
 
-    position 空洞保留不重排（相对顺序不变，下次全量调序自然压紧）。
+    与批量添加的幂等语义对称：不在集合内的 file_id 跳过、不报错——
+    批量场景下误选一个不存在的 id 不应让整批失败。
+    与单删一致：position 空洞保留不重排（下次全量调序自然压紧）。
 
-    Raises:
-        collection_member_not_found_exception: 该文件不在集合内
+    Returns:
+        (实际移除的 file_id 列表, 跳过的 file_id 列表)
     """
     assert collection.id is not None
-    member = (
+    if not file_ids:
+        return [], []
+
+    unique_ids = list(dict.fromkeys(file_ids))
+    current_ids = set(await get_member_file_ids(session, collection.id))
+    to_remove = [file_id for file_id in unique_ids if file_id in current_ids]
+    skipped = [file_id for file_id in unique_ids if file_id not in current_ids]
+
+    if to_remove:
         await session.exec(
-            select(CollectionMember).where(
+            delete(CollectionMember).where(
                 and_(
                     CollectionMember.collection_id == collection.id,
-                    CollectionMember.file_id == file_id,
+                    CollectionMember.file_id.in_(to_remove),  # type: ignore
                 )
             )
         )
-    ).first()
-    if not member:
-        logger.warning(
-            "collection member not found collection_id=%s file_id=%s",
-            collection.id, file_id,
-        )
-        raise collection_member_not_found_exception
+        collection.updated_at = utc_time()
+        session.add(collection)
 
-    await session.delete(member)
     logger.info(
-        "collection member removed collection_id=%s file_id=%s", collection.id, file_id
+        "collection members removed collection_id=%s removed=%s skipped=%s",
+        collection.id, len(to_remove), len(skipped),
     )
+    return to_remove, skipped
 
 
 async def reorder_members(
