@@ -8,6 +8,7 @@ MODEL_MODULES = (
     "models.file_models",
     "models.experiment_models",
     "models.processing_models",
+    "models.collection_models",
 )
 
 

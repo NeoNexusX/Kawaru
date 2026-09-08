@@ -44,7 +44,7 @@ from exceptions import (
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, FileStatus, PackupStatus, OssDownloadFile
+from models.file_models import FileCreate, FileInDB, FilePatch, FileStatus, PackupStatus, OssDownloadFile
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
@@ -398,6 +398,24 @@ async def set_file_public_service(
     """将文件标记为公开"""
     await update_file_record(async_session, file_record, is_public=True)
     await async_session.flush()
+
+
+async def update_file_metadata(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+    patch: "FilePatch",
+) -> None:
+    """部分更新文件元数据（持有者即可修改，权限由 api 层校验）
+
+    只改请求中出现的字段（exclude_unset）；可改范围见 FilePatch 注释。
+    公开状态（is_public）不在修改范围，走 set_public 专用接口（公开不可逆）。
+    spectrum_mode / storage_mode 的合法取值由请求模型 Literal 约束（非法值 422）。
+    """
+    updates = patch.model_dump(exclude_unset=True)
+
+    for field, value in updates.items():
+        setattr(file_record, field, value)
+    async_session.add(file_record)
 
 
 async def update_download_stats(

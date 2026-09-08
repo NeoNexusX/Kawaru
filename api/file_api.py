@@ -19,6 +19,7 @@ from api_services.file_service import (
     get_reuse_file_by_hash,
     set_file_public_service,
     update_download_stats,
+    update_file_metadata,
     validate_simple_upload,
     validate_upload_request,
     get_file_record_by_id,
@@ -32,6 +33,7 @@ from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
+    file_not_found_exception,
     file_persist_failed_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,
@@ -43,6 +45,7 @@ from models.file_models import (
     FileCreate,
     FileDownloadMeta,
     FileInDB,
+    FilePatch,
     FilePublic,
     FileOssUploadResponse,
     FileStatus,
@@ -401,6 +404,43 @@ async def set_file_public(
     return {"file_id": file_id, "is_public": file_record.is_public}
 
 
+async def patch_file_metadata(
+    file_id: int,
+    patch: FilePatch,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> FilePublic:
+    """
+    【文件元数据修改接口】
+
+    功能:部分更新文件元数据,只改请求中出现的字段
+    可改:样本属性、spectrum_mode、storage_mode
+    禁改:is_public(走 set_public 专用接口,公开不可逆)、experiment_type、filename 及系统字段
+
+    权限:任一持有者即可修改(UserFileLink 存在记录即持有,admin 旁路),
+    与现有 assert_file_owner 语义一致——共享文件的任一持有者修改,其余持有者可见
+
+    流程:
+    1. 查询文件记录
+    2. 权限校验(持有者或管理员)
+    3. 部分更新元数据
+
+    注意:
+    - spectrum_mode/storage_mode 非法取值由请求模型约束,直接返回 422
+    - 请求中出现 is_public 等白名单外字段会被静默忽略(不报错、不生效)
+    """
+    file_record = await get_file_record_by_id(file_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+
+    await update_file_metadata(async_session, file_record, patch)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+
+    logger.info(f"patch file metadata user={current_user.id} file_id={file_id}")
+    return FilePublic.model_validate(file_record)
+
+
 async def get_download_file_metadata(
     file_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -581,6 +621,13 @@ async def get_raw_download_metadata_noauth(
     file_record = await get_file_record_by_id(file_id, session)
 
     logger.debug(f"raw download noauth request file_id={file_id}")
+
+    # 免登录下载仅服务公开文件（404 不暴露存在性）。
+    # 该接口是集合公开页下载的免登录入口，任意 file_id 均可触达且无登录态，
+    # 必须以 is_public 为闸——否则私有文件可被匿名直链遍历下载
+    if not file_record.is_public:
+        logger.warning(f"raw download noauth denied, file not public file_id={file_id}")
+        raise file_not_found_exception
 
     # 只支持 OSS + imzML
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
@@ -772,3 +819,4 @@ ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
+PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]

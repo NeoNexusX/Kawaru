@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, Integer, BigInteger, Float
 from tools import utc_time
@@ -85,6 +86,29 @@ class FileBase(SQLModel):
 class FileCreate(FileBase):
     """创建文件时的请求模型"""
     total_parts: int | None = Field(default=None, description="兼容保留的总分片数字段")
+
+
+class FilePatch(SQLModel):
+    """修改文件元数据的请求模型（部分更新，只改请求中出现的字段）
+
+    可改范围：样本属性 + 谱图/存储模式。
+    公开状态（is_public）不在修改范围：仅允许 False→True 的单向变更，
+    走 set_public 专用接口。
+    禁改：experiment_type（定位实验表，改动会断裂 origin 关联）、filename
+    （影响下载文件名与秒传复用判定，需与前端单独对齐）及一切系统字段
+    （size、path、status、file_verify_code、storage_type 等）。
+    """
+    organism: str | None = Field(default=None, max_length=sample_config.max_organism_length)
+    organism_part: str | None = Field(default=None, max_length=sample_config.max_organism_part_length)
+    condition: str | None = Field(default=None, max_length=sample_config.max_condition_length)
+    sample_growth_conditions: str | None = Field(default=None, max_length=sample_config.max_sample_growth_conditions_length)
+    sample_stabilization: str | None = Field(default=None, max_length=sample_config.max_sample_stabilization_length)
+    tissue_modification: str | None = Field(default=None, max_length=sample_config.max_tissue_modification_length)
+    maldi_matrix: str | None = Field(default=None, max_length=sample_config.max_maldi_matrix_length)
+    maldi_matrix_application: str | None = Field(default=None, max_length=sample_config.max_maldi_matrix_application_length)
+    solvent: str | None = Field(default=None, max_length=sample_config.max_solvent_length)
+    spectrum_mode: Literal["profile", "centroid"] | None = Field(default=None, description="谱图模式")
+    storage_mode: Literal["continuous", "processed"] | None = Field(default=None, description="存储模式")
 
 
 class FilePublic(FileBase):
