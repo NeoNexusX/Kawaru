@@ -27,7 +27,7 @@ from database.redis_client import redis_client
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
 from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
-from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
+from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS, ZARR_STS_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
 from models.user_models import UserInDB
 from models.filter_models import ListDataResponse, PaginationMeta, RunFilter
@@ -252,7 +252,7 @@ async def get_zarr_folder_access(
     if cached:
         return ZarrFolderAccess(**json.loads(cached))
 
-    expires = SIGNED_URL_EXPIRE_SECONDS
+    expires = OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS
     sts_token = await OssStorage.get_zarr_read_sts_token(target_path, expires)  # type: ignore
     if sts_token is None:
         raise internal_server_error_exception
@@ -265,7 +265,7 @@ async def get_zarr_folder_access(
         expires_in=expires,
     )
 
-    await redis_client.set(cache_key, access.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)  # type: ignore
+    await redis_client.set(cache_key, access.model_dump_json(), ex=ZARR_STS_CACHE_TTL_SECONDS)  # type: ignore
 
     return access
 

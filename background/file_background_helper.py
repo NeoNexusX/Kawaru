@@ -26,7 +26,7 @@ from celery_runtime.state import get_celery_app
 from storage.oss.oss_client import create_oss_client_context, create_oss_sync_client
 
 from constants.file_constants import (
-    OSS_REGION_ID, OSS_BUCKET_NAME
+    OSS_REGION_ID, OSS_BUCKET_NAME, OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS
 )
 
 from tools.logger import get_logger
@@ -183,8 +183,11 @@ def get_oss_upload_sts_token_task(file_path: str) -> dict:
     code = hashlib.md5(str(Path(file_path).stem).encode()).hexdigest()
     role_session_name = f"upload-{code}-{datetime.now().timestamp()}"
 
-    # 调用STS API获取上传STS Token
-    result = _get_oss_sts_token(policy, role_session_name)
+    # 调用STS API获取上传STS Token（有效期由配置文件控制）
+    result = _get_oss_sts_token(
+        policy, role_session_name,
+        duration_seconds=OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS,
+    )
 
     return result
 
