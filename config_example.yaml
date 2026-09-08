@@ -80,7 +80,10 @@ oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）
   region_id: cn-hangzhou
   bucket_name: kawaru-oss
-  oss_upload_sts_token_expire_minutes: 15
+  # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 240 = 4 小时，
+  # 且必须 <= 阿里云 RAM 角色「最大会话时长」（控制台：RAM 访问管理 → 角色 → 编辑最大会话时长）
+  oss_upload_sts_token_expire_minutes: 180
+  # 下载（zarr 只读）STS Token 有效期（分钟），上限同上
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
   oss_packup_zip_storage_root: packup/

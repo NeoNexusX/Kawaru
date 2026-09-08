@@ -49,6 +49,11 @@ PACKUP_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
+# STS Token 有效期（单位秒；分钟值上限 240 需对齐阿里云 RAM 角色「最大会话时长」设置）
+OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_upload_sts_token_expire_minutes", 60)) * 60
+OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_download_sts_token_expire_minutes", 60)) * 60
+# zarr 读 STS 的 Redis 缓存过期时间（比 Token 早过期5分钟，确保缓存过期后旧 Token 仍有效）
+ZARR_STS_CACHE_TTL_SECONDS = max(60, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS - 300)
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
 FC_PACKUP_ENDPOINT = config.oss.fc_packup_endpoint
 FC_PACKUP_TIMEOUT_SECONDS = config.oss.fc_packup_timeout_seconds
@@ -81,6 +86,9 @@ __all__ = [
     "CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES",
     "SIGNED_URL_EXPIRE_SECONDS",
     "PACKUP_CACHE_TTL_SECONDS",
+    "OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS",
+    "OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS",
+    "ZARR_STS_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
     "OSS_ORIGIN_STORAGE_ROOT",
     "FC_PACKUP_ENDPOINT",
