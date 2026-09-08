@@ -97,8 +97,9 @@ class OSSSettings(BaseModel):
     """OSS配置模型"""
     region_id: str | None  = None
     bucket_name: str | None = None
-    oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
-    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=60)
+    # 上限 240 分钟 = 4 小时，需与阿里云 RAM 角色「最大会话时长」设置对齐（AssumeRole 不能超过该值）
+    oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
+    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
     oss_packup_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
