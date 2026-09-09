@@ -33,17 +33,20 @@ def _file_md5(path: Path) -> str:
 def make_test_zip_to_local(
     imzml_size: int = TEST_IMZML_SIZE,
     ibd_size: int = TEST_IBD_SIZE,
+    filename: str = TEST_FILENAME,
 ) -> tuple[Path, str, str]:
     """创建合法包含 imzML 和 ibd 文件的 zip 包到本地临时目录。
+
+    filename 可自定义（删除测试用独立文件名与 oss 组隔离，互不残留影响）。
 
     Returns:
         (zip_path, imzml_md5, ibd_md5)
     """
     temp_dir = Path("../test_temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = temp_dir / TEST_FILENAME
+    zip_path = temp_dir / filename
 
-    stem = Path(TEST_FILENAME).stem  # 统一 stem，保证内外文件名一致
+    stem = Path(filename).stem  # 统一 stem，保证内外文件名一致
 
     # 分块创建 imzML 文件
     _CHUNK_BUFFER_SIZE = 1024  # 1 KB # pylint:disable = invalid-name

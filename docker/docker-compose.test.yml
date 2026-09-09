@@ -3,7 +3,7 @@
 # 本地手动跑：
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test up -d --build
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -u root app sh -lc 'mkdir -p /test_temp && chown -R appuser /test_temp'
-#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or perf_concurrent or password_reset" -q
+#   docker compose -f docker/docker-compose.test.yml -p kawaru-test exec -T app python -m pytest -m "oss or deletion or perf_concurrent or password_reset" -q
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 name: kawaru-test
 

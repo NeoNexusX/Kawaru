@@ -1,20 +1,19 @@
 #########################
 # File Helper - 底层工具函数
 # 职责：纯工具函数/存储IO,无业务逻辑,无数据库会话依赖
-# 包含：文件校验、OSS 删除、OSS 回调签名校验
+# 包含：文件校验、OSS 回调签名校验
+# 注意：OSS 删除统一走 OssStorage.delete_file（单 key / 多 key / 目录前缀均可），
+#      本层不再提供删除包装函数
 #########################
 from __future__ import annotations
 
 import base64
 import hashlib
-from pathlib import Path
 from urllib.parse import unquote
 
 from M2Crypto import RSA, BIO
 from httpx import AsyncClient
 
-from storage.oss.oss_storage import OssStorage
-from background.file_background_helper import delete_oss_file_task
 from models.user_models import UserInDB
 from constants.file_constants import (
     MAX_FILENAME_LENGTH,
@@ -28,65 +27,6 @@ logger = get_logger("api_helpers.file_helper")
 # OSS回调公钥常量
 OSS_CALLBACK_PUBLIC_KEY = None
 
-
-########
-# file 删
-########
-async def delete_multiple_files_by_storage(file_paths: list[str | Path], storage_type: str) -> int:
-    """
-    异步删除多个文件
-
-    Args:
-        file_paths: 文件路径列表
-
-    Returns:
-        成功删除的文件数量
-    """
-
-    deleted_count = 0
-    for file_path in file_paths:
-        if storage_type != "oss":
-            raise NotImplementedError(f"Unsupported storage type: {storage_type}")
-        delete_oss_file_task.delay(str(file_path)) # type: ignore # 直接调用任务队列删除避免阻塞
-        deleted_count += 1
-    return deleted_count
-
-
-async def delete_file_by_storage(
-    path: str | Path,
-    storage_type: str,
-    *,
-    include_packup: bool = False,
-    file_id: int | None = None,
-) -> None:
-    """
-    删除 OSS 文件。保留 storage_type 参数以维持既有 service 调用契约。
-
-    Args:
-        include_packup: 是否连带删除同名的临时打包 zip 文件。
-            仅删除用户上传的原始文件时需要——打包 zip 由下载流程产生、无独立
-            DB 记录，不连带删除会残留为 OSS 孤儿对象；
-            删除算法输出/图像目录/下载 zip 等场景不需要。
-        file_id: include_packup=True 时用于推导 packup zip 路径
-            （packup/{file_id}.zip）。
-
-    异常处理：不捕获,让异常传播到调用方
-
-    Raises:
-        NotImplementedError: 不支持的存储类型
-        OSError: 文件删除失败时
-    """
-    if storage_type != "oss":
-        raise NotImplementedError(f"Unsupported storage type: {storage_type}")
-
-    if include_packup:
-        res = await OssStorage.delete_file_and_packup(str(path), file_id=file_id)
-    else:
-        res = await OssStorage.delete_file(str(path))
-    if res is None:
-        return
-    elif res is False:
-        raise OSError(f"Failed to delete file: {path}")
 
 ########
 # file 查

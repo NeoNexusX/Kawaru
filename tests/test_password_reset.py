@@ -29,8 +29,8 @@ from .helpers.totp import (
 )
 
 REQUEST_TIMEOUT = 60  # 秒，单个请求超时
-# 发送冷却默认 60s，等待 70s 以确保过期，并据此验证"冷却后恢复"
-COOLDOWN_WAIT_SECONDS = 70
+# 等待时间按当前测试栈配置动态计算，避免和默认冷却值耦合。
+COOLDOWN_WAIT_BUFFER_SECONDS = 10
 
 
 def _wrong_code(real_code: str) -> str:
@@ -93,7 +93,10 @@ async def test_password_reset_flow():
     old_password = "OldPass123456!"
     new_password = "NewPass654321!"
 
-    max_attempts = get_config().email.reset_password_max_attempts
+    email_config = get_config().email
+    max_attempts = email_config.reset_password_max_attempts
+    cooldown_seconds = email_config.email_send_cooldown_seconds
+    cooldown_wait_seconds = cooldown_seconds + COOLDOWN_WAIT_BUFFER_SECONDS
 
     async with AsyncClient(base_url=BASE_URL, timeout=REQUEST_TIMEOUT) as client:
         # ---------- Setup：专用账号 ----------
@@ -147,8 +150,12 @@ async def test_password_reset_flow():
         )
 
         # ---------- 3) 冷却恢复 + 正常重置 ----------
-        logger.info("waiting %ss for send cooldown to expire ...", COOLDOWN_WAIT_SECONDS)
-        await asyncio.sleep(COOLDOWN_WAIT_SECONDS)
+        logger.info(
+            "waiting %ss for send cooldown (%ss) to expire ...",
+            cooldown_wait_seconds,
+            cooldown_seconds,
+        )
+        await asyncio.sleep(cooldown_wait_seconds)
 
         code2, meta = await fetch_verify_code_from_logs(
             base_url=BASE_URL,

@@ -69,11 +69,15 @@ storage:
   cleanup_preflights_interval_minutes: 60
   cleanup_download_zip_interval_minutes: 60
   cleanup_failed_experiments_interval_minutes: 60
-  preflight_ttl_minutes: 30
+  preflight_ttl_minutes: 600      # 预检记录 TTL 下限（分钟）；与下方带宽公式计算值取较大者
+  max_file_size_gb: 20            # 允许的最大单文件（GB）；预检校验 + TTL 公式输入，不配置则不启用
+  min_upload_bandwidth_mbps: 10   # 最低上传带宽假设（Mbps），TTL 公式输入，不配置则不启用公式
+  upload_ttl_safety_factor: 1.5   # TTL 安全余量系数（乘式）
   download_zip_ttl_minutes: 30
   signed_url_ttl_minutes: 60
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
+  stale_clustering_run_timeout_minutes: 120
   cleanup_stale_process_runs_interval_minutes: 30
 
 oss:
@@ -90,17 +94,19 @@ oss:
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
-  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
+  oss_delete_object_timeout_seconds: 30
+  oss_delete_prefix_timeout_seconds: 300
+  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou-vpc.fcapp.run
   fc_packup_timeout_seconds: 200
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
   fc_algorithm_timeout_seconds: 60
-  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou.fcapp.run
+  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou-vpc.fcapp.run
   fc_tic_timeout_seconds: 60
-  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
+  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou-vpc.fcapp.run
   fc_feature_timeout_seconds: 60
-  fc_raw_convert_endpoint: http://imz-to-zarr-xrujfuejtn.cn-hangzhou.fcapp.run
+  fc_raw_convert_endpoint: https://imz-to-zarr-xrujfuejtn.cn-hangzhou-vpc.fcapp.run
   fc_raw_convert_timeout_seconds: 60
-  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou.fcapp.run
+  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou-vpc.fcapp.run
   fc_clustering_timeout_seconds: 60
 
 admin_info:

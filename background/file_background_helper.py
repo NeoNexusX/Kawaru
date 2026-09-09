@@ -238,12 +238,32 @@ def _get_oss_sts_token(policy: dict, role_session_name: str,
 @celery_app.task()
 async def delete_oss_file_task(file_path: str) -> bool | None:
     """
-    删除OSS文件
+    删除OSS文件（celery 任务壳，供 OssStorage.delete_file 的存量调用方过渡期使用；
+    删除主流程统一走 delete_objects_task + delete_oss_objects 原语）
 
     :param file_path: OSS文件路径（如"folder/file.zip")
 
     :return: bool 是否删除成功
     """
+    return await delete_oss_objects(file_path)
+
+
+async def delete_oss_objects(file_paths: str | list[str]) -> bool:
+    """
+    删除一个或多个 OSS 对象/目录前缀（纯 async 原语，进程内直接调用，不投递 celery 任务）。
+
+    幂等：删不存在的 key 返回 204 同样算成功，可无限重试——这是删除状态位
+    方案「DELETING 卡死可重投」的基石。目录前缀（尾带 /）走 list + 批量删除，
+    并清理目录占位对象。
+
+    :param file_paths: 单个 OSS 路径或路径列表
+
+    :return: True 全部删除成功（含输入为空）；False 任一对象删除失败
+    """
+    paths = [file_paths] if isinstance(file_paths, str) else [p for p in file_paths if p]
+    if not paths:
+        return True
+
     async with create_oss_client_context() as oss_client:
         try:
             # 判断oss客户端是否能正常使用
@@ -257,70 +277,107 @@ async def delete_oss_file_task(file_path: str) -> bool | None:
                 logger.error("oss bucket name not set")
                 return False
 
-            keys = []
             err_count = 0
-            is_folder = False
-            if file_path.endswith('/'): # 针对文件夹进行处理
-                is_folder = True
-                continuation_token = None
-                while True:
-                    req = ListObjectsV2Request(
-                        bucket=bucket_name,
-                        prefix=file_path,
-                        continuation_token=continuation_token,
-                    ) # type: ignore
-                    res = await oss_client.list_objects_v2(req)
-                    if res.contents:
-                        keys.extend(obj.key for obj in res.contents)
-                    if not res.is_truncated:
-                        break
-                    continuation_token = res.next_continuation_token
-
-            if not keys:
-                keys = [file_path]
-            if is_folder and len(keys) > 1:
-                # 批量删除：每批最多 1000 个对象，一次 HTTP 请求
-                batch_size = 1000
-                for i in range(0, len(keys), batch_size):
-                    batch = keys[i:i + batch_size]
-                    req = DeleteMultipleObjectsRequest(
-                        bucket=bucket_name,
-                        objects=[DeleteObject(key=k) for k in batch],
-                        quiet=True,
-                    ) # type: ignore
-                    res = await oss_client.delete_multiple_objects(req)
-                    if res.status_code != 200:
-                        logger.error(
-                            "oss batch delete failed batch=%d-%d status=%s",
-                            i, i + len(batch), res.status_code,
-                        )
-                        err_count += 1
-                    else:
-                        logger.info("oss batch deleted %d objects", len(batch))
-            else:
-                for key in keys:
-                    req = DeleteObjectRequest(bucket=bucket_name, key=key) # type: ignore
+            for file_path in paths:
+                if file_path.endswith("/"):
+                    err_count += await _delete_oss_prefix(oss_client, bucket_name, file_path)
+                else:
+                    req = DeleteObjectRequest(bucket=bucket_name, key=file_path)  # type: ignore
                     res = await oss_client.delete_object(req)
                     if res.status_code != 204:
-                        logger.error(f"oss file {key} deleted failed")
+                        logger.error("oss file %s deleted failed", file_path)
                         err_count += 1
                         continue
-                    logger.info(f"oss file {key} deleted")
+                    logger.info("oss file %s deleted", file_path)
 
-            if is_folder:
-                req = DeleteObjectRequest(bucket=bucket_name, key=file_path) # type: ignore
-                res = await oss_client.delete_object(req)
-                if res.status_code != 204:
-                    logger.error(f"oss folder {file_path} deleted failed")
-                    err_count += 1
-
-            if err_count > 0:
-                return False
-
-            return True
-        except Exception as e: # pylint:disable = broad-exception-caught
-            logger.error(f"failed to delete oss file: {e}")
+            return err_count == 0
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"failed to delete oss objects: {e}")
             return False
+
+
+async def cleanup_oss_objects_best_effort(out_path: str | None, context: str = "") -> None:
+    """
+    best-effort 删除单个 OSS 对象/目录前缀，失败仅记日志、绝不抛异常。
+
+    用于回调丢弃后的善后（FC 迟到写入的输出对象无人认领，防孤儿）等
+    「删除失败可接受」的场景：底层 delete_oss_objects 幂等（204 算成功），
+    未删净的对象由 bucket 生命周期规则兜底。
+
+    :param out_path: OSS 路径；None/空字符串直接返回
+    :param context: 日志用途的场景标注（如 "late algorithm callback output"）
+    """
+    if not out_path:
+        return
+    try:
+        ok = await delete_oss_objects(out_path)
+        if ok:
+            logger.info("cleaned up %s path=%s", context or "oss objects", out_path)
+        else:
+            logger.warning("failed to clean up %s path=%s", context or "oss objects", out_path)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("cleanup %s failed path=%s error=%s", context or "oss objects", out_path, exc)
+
+
+async def _delete_oss_prefix(oss_client, bucket_name: str, prefix: str) -> int:
+    """
+    删除一个目录前缀（尾带 /）下的全部对象及目录占位对象。
+
+    :return: 失败计数
+    """
+    keys: list[str] = []
+    continuation_token = None
+    while True:
+        req = ListObjectsV2Request(
+            bucket=bucket_name,
+            prefix=prefix,
+            continuation_token=continuation_token,
+        )  # type: ignore
+        res = await oss_client.list_objects_v2(req)
+        if res.contents:
+            keys.extend(obj.key for obj in res.contents)
+        if not res.is_truncated:
+            break
+        continuation_token = res.next_continuation_token
+
+    err_count = 0
+    if len(keys) > 1:
+        # 批量删除：每批最多 1000 个对象，一次 HTTP 请求
+        batch_size = 1000
+        for i in range(0, len(keys), batch_size):
+            batch = keys[i:i + batch_size]
+            req = DeleteMultipleObjectsRequest(
+                bucket=bucket_name,
+                objects=[DeleteObject(key=k) for k in batch],
+                quiet=True,
+            )  # type: ignore
+            res = await oss_client.delete_multiple_objects(req)
+            if res.status_code != 200:
+                logger.error(
+                    "oss batch delete failed batch=%d-%d status=%s",
+                    i, i + len(batch), res.status_code,
+                )
+                err_count += 1
+            else:
+                logger.info("oss batch deleted %d objects", len(batch))
+    else:
+        for key in keys:
+            req = DeleteObjectRequest(bucket=bucket_name, key=key)  # type: ignore
+            res = await oss_client.delete_object(req)
+            if res.status_code != 204:
+                logger.error(f"oss file {key} deleted failed")
+                err_count += 1
+                continue
+            logger.info(f"oss file {key} deleted")
+
+    # 清理目录占位对象
+    req = DeleteObjectRequest(bucket=bucket_name, key=prefix)  # type: ignore
+    res = await oss_client.delete_object(req)
+    if res.status_code != 204:
+        logger.error(f"oss folder {prefix} deleted failed")
+        err_count += 1
+
+    return err_count
 
 
 @celery_app.task()

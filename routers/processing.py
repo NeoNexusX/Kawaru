@@ -42,9 +42,9 @@ async def create_clustering(record: CreateClusteringTaskDep):
     return record
 
 
-@processing_router.get("/mine", response_model=ListDataResponse)
+@processing_router.post("/mine", response_model=ListDataResponse)
 async def list_mine(result: ListMyRunsDep):
-    """分页查询当前用户的运行记录"""
+    """分页查询当前用户的运行记录（RunFilter 走 body 模糊搜索，page/size 走 query）"""
     return result
 
 
