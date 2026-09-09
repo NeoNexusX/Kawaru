@@ -27,6 +27,9 @@ class ProcessingStatus(str, Enum):
     PROCESSING = "processing"  # worker 正在执行
     COMPLETED = "completed"    # 全部算法执行成功
     FAILED = "failed"          # 执行失败
+    # 删除流程状态位（OSS 先删、DB 后删、失败标记，见 docs/zh/删除状态位改造方案.md）
+    DELETING = "deleting"            # 删除已登记：OSS 清理进行中，读侧拒绝、回调丢弃
+    DELETE_FAILED = "delete_failed"  # OSS 清理失败：行保留作为任务记录，等兜底重投
 
 
 #########################
@@ -106,6 +109,8 @@ class ExperimentProcessRunBase(SQLModel):
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     finished_at: datetime | None = Field(default=None, description="结束时间")
     clustering_status: str | None = Field(default=None, max_length=32, description="聚类状态: processing/completed/failed，None 表示未执行")
+    clustering_error_message: str | None = Field(default=None, max_length=1024, description="聚类错误信息(失败时)")
+    clustering_started_at: datetime | None = Field(default=None, description="聚类开始时间，超时巡检判定僵尸聚类 run 的依据")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
@@ -145,6 +150,11 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     )
 
     created_at: datetime = Field(default_factory=utc_time, description="创建时间")
+    # 删除登记时间：置 DELETING 时写入，兜底扫描据此判定「停留过久的 DELETING」
+    delete_marked_at: datetime | None = Field(
+        default=None,
+        description="删除登记时间（DELETING/DELETE_FAILED 状态的置位时间）",
+    )
 
     # 输出路径和大小仅 DB 层存储，不对外暴露
     # 聚类结果直接写回该 zarr 内部，不单独记录路径

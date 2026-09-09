@@ -7,11 +7,10 @@ from fastapi import Depends, Form, Query, HTTPException
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
-from api_helpers.file_helper import delete_file_by_storage
-from api_services.composite_service import delete_origin_files
+from api_helpers.file_helper import check_user_quota
+from api_services.composite_service import mark_file_for_deletion
 from api_services.file_service import (
     assert_file_owner,
-    delete_file_and_parts,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
@@ -19,30 +18,34 @@ from api_services.file_service import (
     rollback_simple_upload,
     get_reuse_file_by_hash,
     set_file_public_service,
-    unlink_user_from_file,
     update_download_stats,
+    update_file_metadata,
     validate_simple_upload,
     validate_upload_request,
     get_file_record_by_id,
     update_file_record,
 )
+from background.file_background import delete_objects_task
 from api_services.user_service import count_items
-from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
+from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, PACKUP_CACHE_TTL_SECONDS
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
-    file_content_missing_exception,
+    file_not_found_exception,
     file_persist_failed_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,
     user_download_limit_exception,
+    user_file_limit_exception,
     download_not_implemented_exception,
 )
 from models.file_models import (
     FileCreate,
     FileDownloadMeta,
     FileInDB,
+    FilePatch,
     FilePublic,
     FileOssUploadResponse,
     FileStatus,
@@ -89,8 +92,29 @@ async def preflight_create_file(
 
     reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
+    # 复用前确认 OSS 对象真实存在（对象可能已被清理任务删除）。
+    # 对象丢失时降级为正常新上传，不产生"幽灵文件"秒传。
+    # path 为哨兵时跳过检查：zip 虽已被定时清理，但 origin（imzML/ibd）仍在
+    # （COMPLETED 蕴含 origin 完整，origin 不存在随 file 记录独立删除的路径），
+    # 下载侧可从 origin 重新打包，不影响复用。
+    if (reused_file and reused_file.path != SOURCE_FILE_PATH_CLEARED
+            and not await OssStorage.check_file_exist(reused_file.path)):
+        logger.warning(
+            "reuse target object missing, fallback to new upload file_id=%s path=%s",
+            reused_file.file_id, reused_file.path,
+        )
+        reused_file = None
+
     is_reuse = False
     if reused_file:
+        # 秒传按被复用记录的实际 size 计费和核对配额（该 size 已经回调核对，可信），
+        # 不能用客户端本次声明值——否则声明 1 字节即可秒传大文件绕过配额
+        if not check_user_quota(current_user, reused_file.size):
+            logger.error(
+                "reuse quota exceeded user=%s file_id=%s size=%s",
+                current_user.id, reused_file.file_id, reused_file.size,
+            )
+            raise user_file_limit_exception
         file_record = reused_file
         is_reuse = True
     else:
@@ -102,8 +126,9 @@ async def preflight_create_file(
         async_session.add(file_record)
         await async_session.flush()  # 获取 file_id
 
-    # 统一建立用户关联
-    await link_file_to_user(async_session, current_user, file_record, file_data.size)
+    # 统一建立用户关联（秒传按记录实际 size 计费，新上传按声明值预占）
+    billed_size = file_record.size if is_reuse else file_data.size
+    await link_file_to_user(async_session, current_user, file_record, billed_size)
     await async_session.commit()
     await async_session.refresh(file_record)
     await async_session.refresh(current_user)
@@ -304,15 +329,23 @@ async def delete_user_file(
     - 通过 file_record.owners 列表判断是否有其他用户持有该文件
     - 移除当前用户后,如果 owners 为空,则执行完全删除
 
+    删除状态位流程（OSS 先删、DB 后删、失败标记）:
+    - 完全删除不再同步等待 OSS 删除完成，而是登记 DELETING 后立即返回
+    - unlink + 扣配额（用户可见语义）在登记事务内完成并提交
+    - worker 删完全部 OSS 对象后才删 DB 行（「要么都删除」）；任一失败则
+      行置 DELETE_FAILED 保留（「要么都保留」），等重试（兜底任务待全部
+      删除场景改造完成后统一上线，期间管理员重复删除即为手动重试）
+    - 重复请求幂等:已处于 DELETING 的文件直接再次投递删除任务
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    # include_deleting=True: 对已处于 DELETING 的文件重复发起删除时走幂等分支而非 404
+    file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
 
-    # 解除用户与文件的关联(业务层)
-    has_other_owners = await unlink_user_from_file(session, current_user, file_record)
+    # 登记删除:行锁抢占 → 置 DELETING → unlink + 扣配额 → 收集路径快照（同一事务）
+    snapshot = await mark_file_for_deletion(session, current_user, file_record)
 
-    if has_other_owners:
+    if snapshot is None:
         # 还有其他用户持有,只解除关联
         await session.commit()
         await session.refresh(current_user)
@@ -320,21 +353,20 @@ async def delete_user_file(
         logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
         return {"file_id": file_id, "status": "unlinked"}
 
-    # 没有其他用户持有该文件,执行完全删除
-    # 删除 origin 相关文件(如果有)
-    if file_record.experiment_type == "imzML":
-        await delete_origin_files(session, file_id, file_record.storage_type)
-        # 同步删除对应的图像目录
-        if file_record.image_path:
-            await delete_file_by_storage(file_record.image_path, file_record.storage_type)
-            logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
-
-    # 删除 OSS 文件和数据库记录
-    await delete_file_and_parts(session, file_id, current_user.id)
-
+    # 先 commit（配额已扣、关联已解除，用户可见语义立即生效），再投递删除任务。
+    # 投递失败只留下 DELETING 行（管理员重复删除即可手动重投，兜底任务统一
+    # 上线后自动收敛）;
+    # 顺序不能反:先投后 commit 的崩溃会留下「对象已删、行未标记」的不可自愈形态
     await session.commit()
+    delete_objects_task.delay( # type: ignore
+        kind="file",
+        resource_id=file_id,
+        paths=list(snapshot.paths),
+        redis_keys=list(snapshot.redis_keys),
+    )
+
     await session.refresh(current_user)
-    logger.info(f"deleted file completely user={current_user.id} file_id={file_id}")
+    logger.info(f"marked file for deletion user={current_user.id} file_id={file_id}")
 
     return {"file_id": file_id, "status": "deleted"}
 
@@ -370,6 +402,44 @@ async def set_file_public(
 
     logger.info(f"file set to public user={current_user.id} file_id={file_id}")
     return {"file_id": file_id, "is_public": file_record.is_public}
+
+
+async def patch_file_metadata(
+    file_id: int,
+    patch: FilePatch,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+) -> FilePublic:
+    """
+    【文件元数据修改接口】
+
+    功能:部分更新文件元数据,只改请求中出现的字段
+    可改:样本属性、spectrum_mode、storage_mode
+    禁改:is_public(走 set_public 专用接口,公开不可逆)、experiment_type、filename 及系统字段
+
+    权限:任一持有者即可修改(UserFileLink 存在记录即持有,admin 旁路),
+    与现有 assert_file_owner 语义一致——共享文件的任一持有者修改,其余持有者可见
+
+    流程:
+    1. 查询文件记录
+    2. 权限校验(持有者或管理员)
+    3. 部分更新元数据
+
+    注意:
+    - spectrum_mode/storage_mode 非法取值由请求模型约束,直接返回 422
+    - 请求中出现 is_public 等白名单外字段会被静默忽略(不报错、不生效)
+    """
+    file_record = await get_file_record_by_id(file_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+
+    await update_file_metadata(async_session, file_record, patch)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+    await async_session.refresh(current_user)
+
+    logger.info(f"patch file metadata user={current_user.id} file_id={file_id}")
+    return FilePublic.model_validate(file_record)
 
 
 async def get_download_file_metadata(
@@ -552,6 +622,13 @@ async def get_raw_download_metadata_noauth(
     file_record = await get_file_record_by_id(file_id, session)
 
     logger.debug(f"raw download noauth request file_id={file_id}")
+
+    # 免登录下载仅服务公开文件（404 不暴露存在性）。
+    # 该接口是集合公开页下载的免登录入口，任意 file_id 均可触达且无登录态，
+    # 必须以 is_public 为闸——否则私有文件可被匿名直链遍历下载
+    if not file_record.is_public:
+        logger.warning(f"raw download noauth denied, file not public file_id={file_id}")
+        raise file_not_found_exception
 
     # 只支持 OSS + imzML
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
@@ -743,3 +820,4 @@ ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
+PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]

@@ -7,7 +7,7 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
     ListPublicFilesDep,
-    OssUploadDep, FileMetadataDep, SetFilePublicDep
+    OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep
 )
 from database.visit_stats import incr_visit
 
@@ -86,3 +86,9 @@ async def get_file_metadata(metadata: FileMetadataDep):
 async def set_file_public(result: SetFilePublicDep):
     """将文件设为公开"""
     return result
+
+
+@file_router.patch("/{file_id}", response_model=FilePublic)
+async def patch_file_metadata(metadata: PatchFileMetadataDep):
+    """修改文件元数据（持有者；部分更新；公开状态走 set_public 专用接口）"""
+    return metadata

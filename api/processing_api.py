@@ -7,11 +7,11 @@ from typing import Annotated
 from fastapi import Depends, Query
 from fastapi.exceptions import HTTPException
 
+from api_services.composite_service import mark_run_for_deletion
 from api_services.processing_service import (
     assert_zarr_folder_access,
     create_process_run,
     create_raw_convert_run,
-    delete_process_run,
     get_origin_for_processing,
     get_process_run_by_id,
     get_user_runs,
@@ -30,7 +30,7 @@ from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS, ZARR_STS_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
 from models.user_models import UserInDB
-from models.filter_models import ListDataResponse, PaginationMeta
+from models.filter_models import ListDataResponse, PaginationMeta, RunFilter
 from models.processing_models import (
     ExperimentProcessRunCreate,
     ExperimentProcessRunPublic,
@@ -40,6 +40,7 @@ from models.processing_models import (
 from storage.oss.oss_storage import OssStorage
 
 from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task, trigger_fc_clustering_task
+from background.file_background import delete_objects_task
 from tools.logger import get_logger
 
 logger = get_logger("api.processing_api")
@@ -166,13 +167,14 @@ async def create_raw_convert_task(
 async def list_my_process_runs(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
+    filters: RunFilter,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
-    """分页查询当前用户的所有运行记录"""
+    """分页查询当前用户的所有运行记录（RunFilter 走 body，支持文件名/算法参数模糊搜索）"""
     try:
         assert current_user.id is not None
-        runs, total_records = await get_user_runs(async_session, current_user.id, page, size)
+        runs, total_records = await get_user_runs(async_session, current_user.id, filters, page, size)
 
         total_pages = (total_records + size - 1) // size if total_records > 0 else 0
         pagination_meta = PaginationMeta(
@@ -197,17 +199,33 @@ async def delete_process_run_endpoint(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> dict[str, int | str]:
-    """根据 run_id 删除算法处理运行记录"""
-    run_record = await get_process_run_by_id(async_session, run_id)
+    """根据 run_id 删除算法处理运行记录
+
+    删除状态位流程（OSS 先删、DB 后删、失败标记，方案场景 2）：
+    - 登记事务内置 DELETING 后立即返回（不再同步等待 OSS 目录删除）
+    - worker 删完 out_path 全部对象后 finalize：删行 + 退 processed 配额 +
+      清 default_run_id（同一事务，天然幂等）；任一失败置 DELETE_FAILED，
+    """
+    # include_deleting=True: 对删除流程中的 run 重复发起删除时走幂等分支而非 404
+    run_record = await get_process_run_by_id(async_session, run_id, include_deleting=True)
     if not run_record:
         raise invalid_process_request_exception
 
     if not assert_run_ownership(run_record.user_id, current_user.id):  # type: ignore
         raise invalid_process_request_exception
 
-    await delete_process_run(async_session, run_record)
-    await async_session.commit()
+    # 登记删除:行锁抢占 → 置 DELETING → 收集路径快照（同一事务）
+    snapshot = await mark_run_for_deletion(async_session, run_record)
 
+    # 先 commit（登记对 worker 可见），再投递删除任务；投递失败只留下
+    await async_session.commit()
+    delete_objects_task.delay( # type: ignore
+        kind="run",
+        resource_id=run_id,
+        paths=list(snapshot.paths),
+    )
+
+    logger.info("marked run for deletion user=%s run_id=%s", current_user.id, run_id)
     return {"run_id": run_id, "status": "deleted"}
 
 
@@ -261,8 +279,13 @@ async def create_clustering_task(
     try:
         run_record = await validate_clustering_request(async_session, run_id, current_user)
 
-        # 聚类已完成或处理中，直接返回
-        if run_record.clustering_status in (ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING):
+        # 聚类已完成 / 处理中 / 已失败，直接返回（幂等；failed 不自动重试，
+        # 如需重跑由运维将 clustering_status 置空后再触发）
+        if run_record.clustering_status in (
+            ProcessingStatus.COMPLETED,
+            ProcessingStatus.PROCESSING,
+            ProcessingStatus.FAILED,
+        ):
             return ExperimentProcessRunPublic(**run_record.model_dump())
 
         # 标记聚类状态为 processing

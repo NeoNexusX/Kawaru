@@ -22,16 +22,17 @@ from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
     validate_total_parts,
-    delete_file_by_storage,
 )
 from storage.oss.oss_storage import OssStorage
 
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
+    MAX_SINGLE_FILE_SIZE_BYTES,
     OSS_PACKUP_ZIP_STORAGE_ROOT,
     SIGNED_URL_EXPIRE_SECONDS,
     PACKUP_CACHE_TTL_SECONDS,
 )
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from exceptions import (
     duplicate_file_exception,
     file_not_found_exception,
@@ -43,7 +44,7 @@ from exceptions import (
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, FileStatus, PackupStatus, OssDownloadFile
+from models.file_models import FileCreate, FileInDB, FilePatch, FileStatus, PackupStatus, OssDownloadFile
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
@@ -121,14 +122,19 @@ async def valid_user_duplicate_file_hash(
 async def get_file_record_by_id(
     file_id: int,
     async_session: AsyncSession,
+    *,
+    include_deleting: bool = False,
 ) -> FileInDB:
     """
     根据文件ID查询文件记录
 
+    默认拒绝删除流程中的文件：DELETING / DELETE_FAILED 一律按不存在处理
+    （404 不泄露「删除中」状态），删除登记等管理路径用 include_deleting=True 显式放行。
+
     Returns:
         文件记录对象
     Raises:
-        file_not_found_exception: 文件记录不存在
+        file_not_found_exception: 文件记录不存在（或处于删除流程且未放行）
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
 
@@ -136,6 +142,13 @@ async def get_file_record_by_id(
 
     if not file_record:
         logger.warning("file record not found file_id=%s", file_id)
+        raise file_not_found_exception
+
+    if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        logger.warning(
+            "file is being deleted, treat as not found file_id=%s status=%s",
+            file_id, file_record.status,
+        )
         raise file_not_found_exception
 
     return file_record
@@ -227,12 +240,19 @@ async def get_reuse_file_by_hash(
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
     """
-    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件
+    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件。
+    # 只允许复用 COMPLETED 记录：COMPLETED 由回调在哈希校验、大小核对、
+    # 路径落库全部通过后才设置，蕴含"origin 完整、哈希有效"；
+    # UPLOADING / FAILED / 预检初始态（""）一概禁止复用。
+    # path != "" 与 size > 0 进一步排除路径未确认或大小异常的记录。
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
             .where(FileInDB.file_verify_code == hash_md5)
             .where(FileInDB.storage_type == "oss")
+            .where(FileInDB.status == FileStatus.COMPLETED)
+            .where(FileInDB.path != "")
+            .where(FileInDB.size > 0)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -289,6 +309,12 @@ async def prepare_download_file_oss(
     """
     oss_packup_key = f"oss_packup-{file_record.filename}"
     oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
+
+    # path 为空说明上传从未完成（预检记录或上传中断），既无源 zip 可签、
+    # origin 也不存在（无法打包），直接判定内容缺失，避免对空路径走 OSS 签名。
+    if not file_record.path:
+        logger.warning("download requested but file path is empty, filename=%s", file_record.filename)
+        raise file_content_missing_exception
 
     try:
         packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
@@ -374,6 +400,24 @@ async def set_file_public_service(
     await async_session.flush()
 
 
+async def update_file_metadata(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+    patch: "FilePatch",
+) -> None:
+    """部分更新文件元数据（持有者即可修改，权限由 api 层校验）
+
+    只改请求中出现的字段（exclude_unset）；可改范围见 FilePatch 注释。
+    公开状态（is_public）不在修改范围，走 set_public 专用接口（公开不可逆）。
+    spectrum_mode / storage_mode 的合法取值由请求模型 Literal 约束（非法值 422）。
+    """
+    updates = patch.model_dump(exclude_unset=True)
+
+    for field, value in updates.items():
+        setattr(file_record, field, value)
+    async_session.add(file_record)
+
+
 async def update_download_stats(
     session: AsyncSession,
     file_record: FileInDB,
@@ -438,36 +482,6 @@ async def update_file_record(
         if value is not None:
             setattr(file_record, field, value)
     async_session.add(file_record)
-
-
-#########################
-# File  - 删
-#########################
-async def delete_file_and_parts(
-    async_session: AsyncSession,
-    file_id: int,
-    current_user_id: int|None = None,
-) -> None:
-    """
-    根据 file_id 删除 OSS 对象和文件记录。
-    函数名为兼容现有调用保留
-    Raises:
-        ValueError: 文件不存在
-        PermissionError: 用户无权限删除该文件
-        OSError: 物理文件删除失败时
-    """
-    file_record = await get_file_record_by_id(file_id, async_session)
-    # TODO：这里删除存在竞态，可能存在已经触发在打包的状态了，但是文件还没打包完，这里不好处理得考虑下。
-    await delete_file_by_storage(
-        file_record.path,
-        file_record.storage_type,
-        include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
-        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
-    )
-    logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
-
-    await async_session.delete(file_record)
-    logger.info(f"deleted OSS file file_id={file_id} user={current_user_id}")
 
 
 async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
@@ -675,7 +689,11 @@ async def _handle_packup_status_check(
     zip_path = None
 
     if not packup:
-        if not await OssStorage.check_file_exist(file_record.path):
+        if file_record.path == SOURCE_FILE_PATH_CLEARED:
+            # 源 zip 已被定时清理（删除统一按 path 执行，删后必写哨兵），
+            # origin imzML/ibd 仍在 → 触发重新打包。
+            # 不做 check_file_exist 兜底：秒传链路（preflight_create_file）已保证
+            # zip 被清理后该记录不可复用，不会有新对象写回原 key。
             # 原子加锁（SET NX EX），防止多个并发请求同时触发打包。
             # SET key value NX EX seconds 是 Redis 单条原子命令：
             #   - NX：仅当 key 不存在时才设置成功
@@ -739,14 +757,17 @@ async def _prepare_download_url_for_completed_packup(
     await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
 
+    # 回写 path 指向 packup zip：cleanup_old_download_zips 靠它定位清理对象，
+    # 且 FileDownloadMeta 返回的 path 与实际下载内容一致。
+    # 注意：此处不 flush/commit，依赖外层 get_download_file_metadata 的事务提交生效。
+    # 绝不回写 size：size 是计费字段，恒为压缩前大小，不能被 packup zip 大小污染。
     file_record.path = zip_path
-    file_record.size = zip_size  # type: ignore
 
     logger.info(
-        "prepared download zip file_id=%s path=%s size=%s",
+        "prepared download zip file_id=%s path=%s zip_size=%s",
         file_record.file_id,
         zip_path,
-        file_record.size,
+        zip_size,
     )
 
     return zip_download_url
@@ -813,15 +834,20 @@ async def validate_upload_request(
     if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
         return False
 
-    # 5. 用户配额检查
+    # 5. 单文件大小上限校验（max_file_size_gb 未配置时不限制）
+    if MAX_SINGLE_FILE_SIZE_BYTES and file_data.size and file_data.size > MAX_SINGLE_FILE_SIZE_BYTES:
+        logger.error(f"file size exceeds limit user={current_user.id} size={file_data.size} limit={MAX_SINGLE_FILE_SIZE_BYTES}")
+        return False
+
+    # 6. 用户配额检查
     if not check_user_quota(current_user, file_data.size):
         raise user_file_limit_exception
 
-    # 6. 重复文件名检查
+    # 7. 重复文件名检查
     if await valid_duplicate_filename(async_session, current_user, file_data.filename):
         raise duplicate_file_exception
 
-    # 7. 重复文件哈希检查
+    # 8. 重复文件哈希检查
     assert file_data.file_verify_code is not None
     if await valid_user_duplicate_file_hash(async_session, current_user, file_data.file_verify_code):
         raise duplicate_file_exception

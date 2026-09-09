@@ -3,23 +3,34 @@ from datetime import timedelta
 from sqlmodel import select, func, or_
 
 
-from api_services.composite_service import delete_origin_files
+from api_services.composite_service import (
+    delete_file_completely,
+    finalize_file_deletion,
+    finalize_run_deletion,
+)
+from api_services.processing_service import refund_processed_quota_for_file
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
     safe_cleanup_preflight_record,
-    delete_file_and_parts,
 )
-from api_helpers.file_helper import delete_file_by_storage
-from constants.file_constants import PREFLIGHT_TTL_MINUTES, DOWNLOAD_ZIP_TTL_MINUTES
-from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES
+from storage.oss.oss_storage import OssStorage
+from background.file_background_helper import delete_oss_objects
+from constants.file_constants import (
+    PREFLIGHT_TTL_MINUTES,
+    DOWNLOAD_ZIP_TTL_MINUTES,
+)
+from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
+from database.redis_client import redis_client
+from database.atomic_ops import atomic_decrement
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus
+
 
 from celery_runtime.state import get_celery_app
 
@@ -110,7 +121,7 @@ async def cleanup_old_download_zips(
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
                 continue
             try:
-                await delete_file_by_storage(file_path, rec.storage_type)
+                await OssStorage.delete_file(file_path)
                 rec.path = SOURCE_FILE_PATH_CLEARED
                 session.add(rec)
                 cleaned += 1
@@ -157,10 +168,7 @@ async def clean_user_all_task(
                 else:
                     # 没有其他用户持有，执行完全删除
                     file_record = await get_file_record_by_id(file_id, session)
-                    if file_record.experiment_type == "imzML":
-                        await delete_origin_files(session, file_id, file_record.storage_type)
-
-                    await delete_file_and_parts(session, file_id, deleted_user_id)                                          
+                    await delete_file_completely(session, file_id, file_record.storage_type, deleted_user_id)
                     total_deleted += 1
 
                 await session.commit()
@@ -217,39 +225,56 @@ async def cleanup_failed_experiments(
                     )
                     continue
 
-                # 1. 查询所有关联的用户，手动更新 file_count 和 total_file_size
+                # 1. 查询所有关联的用户，使用 atomic_decrement 原子更新统计信息
+                #    与 unlink_user_from_file 的语义一致，避免 skip_locked 或
+                #    read-modify-write 导致的配额漂移。
                 user_ids = (await session.exec(
-                    select(UserFileLink.user_id).where(UserFileLink.file_id == exp.source_file_id))).all()
+                    select(UserFileLink.user_id).where(
+                        UserFileLink.file_id == exp.source_file_id
+                    )
+                )).all()
 
                 for user_id in user_ids:
-                    user_record = (await session.exec(select(UserInDB).where(UserInDB.id == user_id).with_for_update(skip_locked=True))).first()
+                    assert user_id is not None
+                    await atomic_decrement(session, UserInDB, user_id, "file_count")
+                    await atomic_decrement(
+                        session, UserInDB, user_id, "total_file_size", file_record.size or 0
+                    )
+                    logger.debug(
+                        "updated user stats via atomic decrement: user_id=%s file_id=%s",
+                        user_id, file_record.file_id,
+                    )
 
-                    if user_record:
-                        user_record.file_count = max(0, (user_record.file_count or 0) - 1)  #TODO 风险，后面加锁
-                        user_record.total_file_size = max(
-                            0, (user_record.total_file_size or 0) - (file_record.size or 0)) # type: ignore[attr-defined]
-                        session.add(user_record)
-                        logger.debug("updated user stats: user_id=%s file_count=%s total_size=%s",user_id,user_record.file_count,
-                            user_record.total_file_size,)
+                # 1.1 退还该文件所有 run 占用的处理配额。run 行随文件记录级联删除，
+                #     必须在级联前按行退（口径同 delete_process_run），否则配额永久虚占；
+                #     退还对象是 run.user_id（执行处理的用户），可能不同于文件 owner。
+                await refund_processed_quota_for_file(session, exp.source_file_id)
 
-                # 2. 先按路径删除 OSS 对象（含可能已打 persistent tag 的对象——tag 只挡
-                #    生命周期规则，挡不住显式删除），再删 DB 记录，避免孤儿残留。
-                #    只有成功分支第一次 commit 已完成时，数据库才保证保留三个路径。
-                for obj_path in (
-                    (file_record.path or "").strip() if file_record else "",
-                    (exp.imzml_path or "").strip(),
-                    (exp.ibd_path or "").strip(),
-                ):
-                    if not obj_path:
-                        continue
+                # 2. 收集所有 OSS 路径，一次批量删除，避免逐个 celery round-trip。
+                #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。
+                #    同时补删该文件所有 run 的输出目录（zarr）：run 行随 file 级联删除，
+                #    不提前收集 out_path 会成为孤儿对象。
+                run_out_paths = (await session.exec(
+                    select(ExperimentProcessRunInDB.out_path).where(
+                        ExperimentProcessRunInDB.source_file_id == exp.source_file_id
+                    )
+                )).all()
+                paths_to_delete = [
+                    p for p in (
+                        (file_record.path or "").strip(),
+                        (exp.imzml_path or "").strip(),
+                        (exp.ibd_path or "").strip(),
+                        *((pp or "").strip() for pp in run_out_paths),
+                    )
+                    if p
+                ]
+                if paths_to_delete:
                     try:
-                        await delete_file_by_storage(
-                            obj_path, (file_record.storage_type if file_record else "oss")
-                        )
+                        await OssStorage.delete_file(paths_to_delete)
                     except Exception as exc:  # pylint: disable=broad-exception-caught
                         logger.warning(
-                            "cleanup_failed_experiments delete oss object failed path=%s error=%s",
-                            obj_path, exc,
+                            "cleanup_failed_experiments delete oss objects failed paths=%s error=%s",
+                            paths_to_delete, exc,
                         )
 
                 # 3. 删除文件表记录。
@@ -270,19 +295,27 @@ async def cleanup_failed_experiments(
 @celery_app.task()  # type: ignore
 async def cleanup_stale_process_runs(
     timeout_minutes: int = STALE_PROCESS_RUN_TIMEOUT_MINUTES,
+    clustering_timeout_minutes: int = STALE_CLUSTERING_RUN_TIMEOUT_MINUTES,
     batch_size: int = 100,
 ) -> int:
     """
-    清理僵尸算法/转换 run：将超过 timeout 仍为 processing 的记录标记为 failed。
+    清理僵尸算法/转换/聚类 run：将超过 timeout 仍为 processing 的记录标记为 failed。
 
     FC 函数异步执行后通过回调更新状态，若 FC 超时/崩溃/回调丢失，
     run 会永久卡在 processing。此任务定期扫描并标记为 failed。
+
+    两个阶段独立判定超时，互不覆盖对方的错误字段：
+    - 算法处理：status + error_message，以 created_at 为开始时间
+    - 聚类：clustering_status + clustering_error_message，以 clustering_started_at
+      为开始时间（聚类由用户在处理完成后手动触发，不能用 created_at/finished_at
+      判定；历史数据该字段为 NULL，不参与扫描，由运维手动处理）
     """
     async with get_standalone_async_session() as session:
         now = utc_time()
-        cutoff_time = now - timedelta(minutes=timeout_minutes)
         total_cleaned = 0
 
+        # 阶段一：算法处理超时
+        cutoff_time = now - timedelta(minutes=timeout_minutes)
         records = (await session.exec(
             select(ExperimentProcessRunInDB).where(
                 ExperimentProcessRunInDB.status == ProcessingStatus.PROCESSING,
@@ -300,11 +333,114 @@ async def cleanup_stale_process_runs(
                 run_record.id, run_record.created_at,
             )
 
+        # 阶段二：聚类超时（处理阶段已 COMPLETED 的 run 才可能处于聚类 processing，
+        # 只置 clustering_status/clustering_error_message，不动处理阶段字段；
+        # 若 FC 回调迟到，真实回调会无条件覆盖此处标记）
+        clustering_cutoff_time = now - timedelta(minutes=clustering_timeout_minutes)
+        clustering_records = (await session.exec(
+            select(ExperimentProcessRunInDB).where(
+                ExperimentProcessRunInDB.clustering_status == ProcessingStatus.PROCESSING,
+                ExperimentProcessRunInDB.clustering_started_at < clustering_cutoff_time,).limit(batch_size) # type: ignore[call-overload]
+            .with_for_update(skip_locked=True))).all()
+
+        for run_record in clustering_records:
+            run_record.clustering_status = ProcessingStatus.FAILED
+            run_record.clustering_error_message = "FC clustering task timeout: no callback received"
+            session.add(run_record)
+            total_cleaned += 1
+            logger.info(
+                "marked stale clustering run as failed run_id=%s clustering_started_at=%s",
+                run_record.id, run_record.clustering_started_at,
+            )
+
         if total_cleaned:
             await session.commit()
 
         logger.info("cleanup_stale_process_runs completed, marked %d as failed", total_cleaned)
     return total_cleaned
+
+
+@celery_app.task()  # type: ignore
+async def delete_objects_task(
+    kind: str,
+    resource_id: int,
+    paths: list[str],
+    redis_keys: list[str] | None = None,
+) -> bool:
+    """
+    统一的 OSS 删除执行任务（② 执行，全系统删除主流程只此一处碰 OSS 删除）。
+
+    kind 取值：file（场景 1，删文件）/ run（场景 2，删算法/聚类 run 输出）。
+    幂等：底层 delete_oss_objects 删不存在的 key 返回 204 也算成功，可无限重试。
+    流程：
+    - 任一对象删除失败 → 行置 DELETE_FAILED 保留（「要么都保留」），等重试
+    - 全部成功 → finalize[kind] 在同一 DB 事务内删行（「要么都删除」）
+    finalize 容忍行已不在（重复投递时直接算成功）。
+    """
+    # 1. 清理 Redis 状态键（best-effort，键自身有 TTL，失败不影响主流程）
+    for key in redis_keys or []:
+        try:
+            await redis_client.delete(key)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("delete_objects_task: delete redis key failed key=%s error=%s", key, exc)
+
+    # 2. 删除 OSS 对象（幂等，可无限重试）
+    ok = await delete_oss_objects(paths)
+    if not ok:
+        await _mark_delete_failed(kind, resource_id)
+        return False
+
+    # 3. finalize：同一 DB 事务内收尾
+    async with get_standalone_async_session() as session:
+        if kind == "file":
+            await finalize_file_deletion(session, resource_id)
+        elif kind == "run":
+            await finalize_run_deletion(session, resource_id)
+        else:
+            logger.error("delete_objects_task: unknown kind=%s resource_id=%s", kind, resource_id)
+            return False
+        await session.commit()
+    return True
+
+
+async def _mark_delete_failed(kind: str, resource_id: int) -> None:
+    """OSS 删除失败后，把对应资源行置 DELETE_FAILED（按 kind 分表，行保留等重试）。"""
+    async with get_standalone_async_session() as session:
+        if kind == "file":
+            record = (await session.exec(
+                select(FileInDB)
+                .where(FileInDB.file_id == resource_id)
+                .with_for_update()
+            )).first()
+            deleting_states = (FileStatus.DELETING, FileStatus.DELETE_FAILED)
+        elif kind == "run":
+            record = (await session.exec(
+                select(ExperimentProcessRunInDB)
+                .where(ExperimentProcessRunInDB.id == resource_id)
+                .with_for_update()
+            )).first()
+            deleting_states = (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)
+        else:
+            logger.error("_mark_delete_failed: unknown kind=%s resource_id=%s", kind, resource_id)
+            return
+
+        if record is not None and record.status in deleting_states:
+            if kind == "file":
+                record.status = FileStatus.DELETE_FAILED
+            else:
+                record.status = ProcessingStatus.DELETE_FAILED
+            session.add(record)
+            await session.commit()
+            logger.error(
+                "delete_objects_task: oss delete failed, marked DELETE_FAILED kind=%s resource_id=%s",
+                kind, resource_id,
+            )
+        else:
+            # 行已被并发 finalize 删除或状态异常：只记日志，不覆盖状态
+            logger.info(
+                "delete_objects_task: oss delete failed but row gone/skipped kind=%s resource_id=%s",
+                kind, resource_id,
+            )
 
 
 @celery_app.task()
