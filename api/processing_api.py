@@ -219,6 +219,7 @@ async def delete_process_run_endpoint(
 
     # 先 commit（登记对 worker 可见），再投递删除任务；投递失败只留下
     await async_session.commit()
+    await async_session.refresh(current_user)
     delete_objects_task.delay( # type: ignore
         kind="run",
         resource_id=run_id,
