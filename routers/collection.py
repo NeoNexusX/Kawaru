@@ -6,8 +6,8 @@ from fastapi import APIRouter
 from models.collection_models import (
     CollectionDetail,
     CollectionOwnedDetail,
-    CollectionOwnedPublic,
 )
+from models.filter_models import ListDataResponse
 from api.collection_api import (
     CreateCollectionDep,
     ListCollectionsDep,
@@ -42,9 +42,9 @@ async def create_collection(detail: CreateCollectionDep):
     return detail
 
 
-@collection_router.get("", response_model=list[CollectionOwnedPublic])
+@collection_router.get("", response_model=ListDataResponse)
 async def list_collections(collections: ListCollectionsDep):
-    """当前用户自己的集合列表（按 updated_at 倒序）"""
+    """当前用户自己的集合列表（按 updated_at 倒序；分页 page/size）"""
     return collections
 
 

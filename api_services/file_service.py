@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func
+from sqlmodel import select, exists, and_, not_, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -222,6 +223,21 @@ async def link_file_to_user(
 #########################
 # File  - 查
 #########################
+def build_file_order(sort_by: str, order: str) -> tuple[Any, Any]:
+    """文件列表排序子句：sort_by/order 映射为排序列 + file_id DESC 兜底
+
+    供个人文件列表与公共文件列表共用。取值白名单由接口层 Query pattern 约束
+    （sort_by: uploaded_at|size，order: asc|desc），未命中时回落默认排序
+    （uploaded_at 倒序，与接口默认值一致）。
+
+    Returns:
+        (主排序子句, 兜底排序子句)——同值行之间按 file_id 倒序，保证翻页不重不漏
+    """
+    column = FileInDB.size if sort_by == "size" else FileInDB.uploaded_at
+    primary = col(column).asc() if order == "asc" else col(column).desc()
+    return (primary, col(FileInDB.file_id).desc()) # pylint: disable=no-member
+
+
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | None]:
     """获取用户所有文件 ID,不加载文件对象"""
     stmt = select(UserFileLink.file_id).where(UserFileLink.user_id == user_id)

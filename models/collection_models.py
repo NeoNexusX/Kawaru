@@ -8,13 +8,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import uuid4
 
 from sqlalchemy import JSON, Column, Text
 from sqlmodel import Field, SQLModel
 
 from models.file_models import FilePublic
-from tools import utc_time
+from tools import generate_public_id, utc_time
 
 
 class DataCollectionInDB(SQLModel, table=True):
@@ -23,8 +22,8 @@ class DataCollectionInDB(SQLModel, table=True):
     __tablename__ = "datacollection" # type: ignore
 
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    # 公开页 URL 标识：uuid4 hex，不可枚举（禁止用自增 id 对外）
-    public_id: str = Field(default_factory=lambda: uuid4().hex, max_length=32, index=True, unique=True)
+    # 公开页 URL 标识：base62 随机串 16 位（62^16 ≈ 2^95），不可枚举（禁止用自增 id 对外）
+    public_id: str = Field(default_factory=generate_public_id, max_length=16, index=True, unique=True)
     owner_id: int = Field(foreign_key="userindb.id", index=True)
 
     name: str = Field(max_length=128)

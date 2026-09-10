@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Query
 
 from api.user_api import token_authen
 from api_services.collection_service import (
@@ -22,12 +22,12 @@ from api_services.collection_service import (
     update_collection,
 )
 from database.db import AsyncSessionDep
+from models.filter_models import ListDataResponse, PaginationMeta
 from models.collection_models import (
     CollectionCreate,
     CollectionDetail,
     CollectionMembersOperation,
     CollectionOwnedDetail,
-    CollectionOwnedPublic,
     CollectionPatch,
     CollectionPublic,
 )
@@ -68,16 +68,33 @@ async def create_collection_api(
 async def list_collections_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> list[CollectionOwnedPublic]:
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+) -> ListDataResponse:
     """
     【集合列表接口】
 
-    功能:返回当前用户自己的集合（按 updated_at 倒序）
+    功能:分页返回当前用户自己的集合（按 updated_at 倒序）
     用途:集合管理列表与"加入集合"选择器；公开发现页本期不做（靠链接分发）
+
+    注意:
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 响应结构与 list_user_files / list_files 一致（meta + data）
     """
-    collections = await list_user_collections(async_session, current_user)
-    logger.info(f"list collections user={current_user.id} count={len(collections)}")
-    return collections
+    collections, total_records = await list_user_collections(
+        async_session, current_user, page, size
+    )
+    total_pages = (total_records + size - 1) // size
+    pagination_meta = PaginationMeta(
+        current_page=page,
+        current_records=len(collections),
+        total_pages=total_pages,
+        total_records=total_records,
+    )
+    logger.info(
+        f"list collections user={current_user.id} page={page} size={size} total={total_records}"
+    )
+    return ListDataResponse(meta=pagination_meta, data=collections)
 
 
 async def get_collection_api(
@@ -258,7 +275,7 @@ async def get_public_collection_api(
 # 依赖注入别名（供 routers 使用）
 #########################
 CreateCollectionDep = Annotated[CollectionOwnedDetail, Depends(create_collection_api)]
-ListCollectionsDep = Annotated[list[CollectionOwnedPublic], Depends(list_collections_api)]
+ListCollectionsDep = Annotated[ListDataResponse, Depends(list_collections_api)]
 GetCollectionDep = Annotated[CollectionOwnedDetail, Depends(get_collection_api)]
 PatchCollectionDep = Annotated[CollectionOwnedDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]

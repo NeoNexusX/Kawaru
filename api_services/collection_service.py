@@ -7,7 +7,7 @@ from __future__ import annotations
 from sqlmodel import select, and_, delete, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from api_services.user_service import get_user_by_id
+from api_services.user_service import count_items, get_user_by_id
 from constants.collection_constants import (
     MAX_COLLECTION_MEMBERS,
     ALLOWED_MEMBER_EXPERIMENT_TYPES,
@@ -181,19 +181,31 @@ async def delete_collection(
 async def list_user_collections(
     session: AsyncSession,
     current_user: UserInDB,
-) -> list[CollectionOwnedPublic]:
-    """当前用户自己的集合列表（按 updated_at 倒序），供集合管理与"加入集合"选择器"""
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """当前用户自己的集合列表分页查询（按 updated_at 倒序），供集合管理与"加入集合"选择器
+
+    Returns:
+        (当前页集合列表, 符合条件的记录总数)
+    """
+    base_query = select(DataCollectionInDB).where(DataCollectionInDB.owner_id == current_user.id)
+
+    # 总数（分页元数据；口径与列表查询一致）
+    total_records = await count_items(session, base_query, DataCollectionInDB)
+
     collections = (
         await session.exec(
-            select(DataCollectionInDB)
-            .where(DataCollectionInDB.owner_id == current_user.id)
+            base_query
             .order_by(DataCollectionInDB.updated_at.desc()) # type: ignore # pylint: disable=no-member
+            .offset((page - 1) * size)
+            .limit(size)
         )
     ).all()
     if not collections:
-        return []
+        return [], total_records
 
-    # 单条分组查询聚合全部集合的成员数与总大小（避免逐集合 2N+1 查询）
+    # 单条分组查询聚合当前页集合的成员数与总大小（避免逐集合 2N+1 查询）
     stats_rows = (
         await session.exec(
             select(
@@ -223,7 +235,7 @@ async def list_user_collections(
                 },
             )
         )
-    return result
+    return result, total_records
 
 
 async def build_collection_detail(

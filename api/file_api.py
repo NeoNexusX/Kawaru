@@ -11,6 +11,7 @@ from api_helpers.file_helper import check_user_quota
 from api_services.composite_service import mark_file_for_deletion
 from api_services.file_service import (
     assert_file_owner,
+    build_file_order,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
@@ -214,23 +215,27 @@ async def list_user_files(
     session: AsyncSessionDep,
     filters: FileFilter,
     page: int ,
-    size: int
+    size: int,
+    sort_by: str = Query("uploaded_at", pattern="^(uploaded_at|size)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ListDataResponse:
     """
     【个人文件列表查询接口】
 
-    功能:查询当前用户的文件记录，支持分页和过滤
+    功能:查询当前用户的文件记录，支持分页、过滤和排序
     返回:包含分页元数据和文件列表的JSON对象
 
     查询逻辑:
     - 从用户的 file_ids 列表中获取文件ID
     - 应用过滤器（文件名模糊匹配、实验类型等）
-    - 分页查询文件记录
+    - 按前端指定排序规则分页查询文件记录
 
     注意:
     - 只返回用户拥有的文件，包括预检记录
     - 支持模糊查询文件名
-    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
+    - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
+      非法取值由 FastAPI 返回 422
+    - 结果按 sort_by 方向排序，file_id DESC 兜底，保证分页稳定
     """
     try:
         # 1. 获取用户文件ID列表
@@ -275,7 +280,7 @@ async def list_user_files(
         offset = (page - 1) * size
         data = (await session.exec(
             file_query
-            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()).offset(offset).limit(size))).all() or [] # pylint: disable=no-member
+            .order_by(*build_file_order(sort_by, order)).offset(offset).limit(size))).all() or [] # pylint: disable=no-member
 
         # 7. 分页元数据
         pagination_meta = PaginationMeta(
@@ -675,6 +680,8 @@ async def get_file_list(
     async_session: AsyncSessionDep,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
+    sort_by: str = Query("uploaded_at", pattern="^(uploaded_at|size)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ListDataResponse:
     """
     【公共文件列表接口】
@@ -683,12 +690,14 @@ async def get_file_list(
     时机:在前端查询文件列表时调用
 
     流程:
-    1. 按上传时间倒序分页查询文件列表(根据查询参数)
+    1. 按前端指定排序规则分页查询文件列表(根据查询参数)
     2. 返回文件列表和分页元数据
 
     注意:
     - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
-    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
+    - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
+      非法取值由 FastAPI 返回 422
+    - 结果按 sort_by 方向排序，file_id DESC 兜底，保证分页稳定
     - 查询参数(filters)默认值为空字典
 
     """
@@ -740,7 +749,7 @@ async def get_file_list(
 
         data = (await async_session.exec(
             file_query
-            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()) # pylint: disable=no-member
+            .order_by(*build_file_order(sort_by, order)) # pylint: disable=no-member
             .offset(offset)
             .limit(size)
         )).all() or None
