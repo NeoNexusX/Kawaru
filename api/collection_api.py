@@ -26,6 +26,8 @@ from models.collection_models import (
     CollectionCreate,
     CollectionDetail,
     CollectionMembersOperation,
+    CollectionOwnedDetail,
+    CollectionOwnedPublic,
     CollectionPatch,
     CollectionPublic,
 )
@@ -42,7 +44,7 @@ async def create_collection_api(
     data: CollectionCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【创建集合接口】
 
@@ -66,7 +68,7 @@ async def create_collection_api(
 async def list_collections_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> list[CollectionPublic]:
+) -> list[CollectionOwnedPublic]:
     """
     【集合列表接口】
 
@@ -82,7 +84,7 @@ async def get_collection_api(
     collection_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【集合详情接口】
 
@@ -102,7 +104,7 @@ async def patch_collection_api(
     patch: CollectionPatch,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【修改集合元数据接口】
 
@@ -148,7 +150,7 @@ async def add_members_api(
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【批量添加成员接口】
 
@@ -203,7 +205,7 @@ async def reorder_members_api(
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【调整成员顺序接口】
 
@@ -240,11 +242,14 @@ async def get_public_collection_api(
     安全:
     - 非公开集合即使 public_id 正确也返回 404（不暴露存在性）
     - 成员仅返回 status == completed 的文件
-    - 响应包含集合数字 id 与 owner 用户名：登录用户在公开页发起"加文件"时
-      前端需要用数字 id 调管理端加成员接口（不构成枚举风险）
+    - 响应不包含集合数字 id：公开页禁止暴露自增 id，对外标识一律用 public_id
+      （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿数字 id，
+      非 owner 拿到 id 也无权调用，故无暴露必要）
     """
     collection = await get_public_collection_by_public_id(async_session, public_id)
-    detail = await build_collection_detail(async_session, collection, only_completed=True)
+    owned_detail = await build_collection_detail(async_session, collection, only_completed=True)
+    # 剥掉内部数字 id 后返回公开详情模型（id 为多余字段，model_validate 默认忽略）
+    detail = CollectionDetail.model_validate(owned_detail)
     logger.info(f"get public collection public_id={public_id}")
     return detail
 
@@ -252,12 +257,12 @@ async def get_public_collection_api(
 #########################
 # 依赖注入别名（供 routers 使用）
 #########################
-CreateCollectionDep = Annotated[CollectionDetail, Depends(create_collection_api)]
-ListCollectionsDep = Annotated[list[CollectionPublic], Depends(list_collections_api)]
-GetCollectionDep = Annotated[CollectionDetail, Depends(get_collection_api)]
-PatchCollectionDep = Annotated[CollectionDetail, Depends(patch_collection_api)]
+CreateCollectionDep = Annotated[CollectionOwnedDetail, Depends(create_collection_api)]
+ListCollectionsDep = Annotated[list[CollectionOwnedPublic], Depends(list_collections_api)]
+GetCollectionDep = Annotated[CollectionOwnedDetail, Depends(get_collection_api)]
+PatchCollectionDep = Annotated[CollectionOwnedDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]
-AddMembersDep = Annotated[CollectionDetail, Depends(add_members_api)]
+AddMembersDep = Annotated[CollectionOwnedDetail, Depends(add_members_api)]
 RemoveMembersDep = Annotated[dict, Depends(remove_members_api)]
-ReorderMembersDep = Annotated[CollectionDetail, Depends(reorder_members_api)]
+ReorderMembersDep = Annotated[CollectionOwnedDetail, Depends(reorder_members_api)]
 GetPublicCollectionDep = Annotated[CollectionDetail, Depends(get_public_collection_api)]

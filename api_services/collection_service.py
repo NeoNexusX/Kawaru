@@ -21,10 +21,10 @@ from exceptions.collection_exceptions import (
 )
 from models.collection_models import (
     CollectionCreate,
-    CollectionDetail,
     CollectionMember,
+    CollectionOwnedDetail,
+    CollectionOwnedPublic,
     CollectionPatch,
-    CollectionPublic,
     DataCollectionInDB,
 )
 from models.file_models import FileInDB, FilePublic, FileStatus
@@ -181,7 +181,7 @@ async def delete_collection(
 async def list_user_collections(
     session: AsyncSession,
     current_user: UserInDB,
-) -> list[CollectionPublic]:
+) -> list[CollectionOwnedPublic]:
     """当前用户自己的集合列表（按 updated_at 倒序），供集合管理与"加入集合"选择器"""
     collections = (
         await session.exec(
@@ -214,7 +214,7 @@ async def list_user_collections(
     for collection in collections:
         member_count, total_size = stats.get(collection.id, (0, 0))
         result.append(
-            CollectionPublic.model_validate(
+            CollectionOwnedPublic.model_validate(
                 collection,
                 update={
                     "owner_username": current_user.username,
@@ -231,7 +231,7 @@ async def build_collection_detail(
     collection: DataCollectionInDB,
     *,
     only_completed: bool = False,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """聚合集合详情：元数据 + 成员文件列表（按 position 排序）+ 成员数/总大小 + owner 用户名
 
     Args:
@@ -244,10 +244,11 @@ async def build_collection_detail(
     )
     owner = await get_user_by_id(collection.owner_id, session)
 
-    return CollectionDetail.model_validate(
+    return CollectionOwnedDetail.model_validate(
         collection,
         update={
-            # 公开页响应需包含数字 id 与 owner 用户名（登录用户在公开页发起"加文件"时用）
+            # owner 用户名供公开页展示；响应含数字 id（管理端用），
+            # 公开端在 api 层转 CollectionDetail 剥掉
             "owner_username": owner.username if owner else "",
             "member_count": member_count,
             "total_size": total_size,
