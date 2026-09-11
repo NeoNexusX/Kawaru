@@ -8,13 +8,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import uuid4
 
 from sqlalchemy import JSON, Column, Text
 from sqlmodel import Field, SQLModel
 
 from models.file_models import FilePublic
-from tools import utc_time
+from tools import generate_public_id, utc_time
 
 
 class DataCollectionInDB(SQLModel, table=True):
@@ -23,8 +22,8 @@ class DataCollectionInDB(SQLModel, table=True):
     __tablename__ = "datacollection" # type: ignore
 
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
-    # 公开页 URL 标识：uuid4 hex，不可枚举（禁止用自增 id 对外）
-    public_id: str = Field(default_factory=lambda: uuid4().hex, max_length=32, index=True, unique=True)
+    # 公开页 URL 标识：base62 随机串 16 位（62^16 ≈ 2^95），不可枚举（禁止用自增 id 对外）
+    public_id: str = Field(default_factory=generate_public_id, max_length=16, index=True, unique=True)
     owner_id: int = Field(foreign_key="userindb.id", index=True)
 
     name: str = Field(max_length=128)
@@ -56,14 +55,10 @@ class DataCollectionInDB(SQLModel, table=True):
     sample_growth_conditions: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     tissue_modification: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
 
-    # 仪器信息汇总（多值 → JSON 列）
+    # 仪器信息汇总（多值 → JSON 列；数值型仪器参数不汇总，需要时由成员文件实时聚合）
     polarity: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     ionisation_source: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     analyzer: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
-    pixel_size_horizontal: list[float] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
-    pixel_size_vertical: list[float] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
-    resolving_power: list[float] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
-    mz: list[float] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
 
     created_at: datetime = Field(default_factory=utc_time, index=True)
     updated_at: datetime = Field(default_factory=utc_time)
@@ -114,10 +109,6 @@ class CollectionCreate(SQLModel):
     polarity: list[str] = Field(default_factory=list)
     ionisation_source: list[str] = Field(default_factory=list)
     analyzer: list[str] = Field(default_factory=list)
-    pixel_size_horizontal: list[float] = Field(default_factory=list)
-    pixel_size_vertical: list[float] = Field(default_factory=list)
-    resolving_power: list[float] = Field(default_factory=list)
-    mz: list[float] = Field(default_factory=list)
     file_ids: list[int] = Field(default_factory=list, description="初始成员文件 ID，数组顺序即初始顺序")
 
 
@@ -142,10 +133,6 @@ class CollectionPatch(SQLModel):
     polarity: list[str] | None = Field(default=None)
     ionisation_source: list[str] | None = Field(default=None)
     analyzer: list[str] | None = Field(default=None)
-    pixel_size_horizontal: list[float] | None = Field(default=None)
-    pixel_size_vertical: list[float] | None = Field(default=None)
-    resolving_power: list[float] | None = Field(default=None)
-    mz: list[float] | None = Field(default=None)
 
 
 class CollectionMembersOperation(SQLModel):
@@ -155,9 +142,12 @@ class CollectionMembersOperation(SQLModel):
 
 
 class CollectionPublic(SQLModel):
-    """集合对外返回模型（列表/详情共用骨架；成员数与总大小由成员实时聚合）"""
+    """集合公开返回骨架（公开端与管理端共用字段；成员数与总大小由成员实时聚合）
 
-    id: int
+    不含内部数字 id：公开页禁止暴露自增 id（可枚举），对外标识一律用 public_id；
+    管理端响应在此基础上扩展 CollectionOwnedPublic / CollectionOwnedDetail。
+    """
+
     public_id: str
     owner_id: int
     owner_username: str = Field(default="", description="owner 用户名（公开页发起加文件时前端展示用）")
@@ -179,10 +169,6 @@ class CollectionPublic(SQLModel):
     polarity: list[str]
     ionisation_source: list[str]
     analyzer: list[str]
-    pixel_size_horizontal: list[float]
-    pixel_size_vertical: list[float]
-    resolving_power: list[float]
-    mz: list[float]
     member_count: int = Field(default=0, description="成员数（实时聚合）")
     total_size: int = Field(default=0, description="成员文件总大小（实时聚合）")
     created_at: datetime
@@ -190,6 +176,18 @@ class CollectionPublic(SQLModel):
 
 
 class CollectionDetail(CollectionPublic):
-    """集合详情响应：骨架 + 成员文件列表（按 position 排序）"""
+    """公开页集合详情响应：公开骨架 + 成员文件列表（按 position 排序，不含数字 id）"""
+
+    members: list[FilePublic] = Field(default_factory=list)
+
+
+class CollectionOwnedPublic(CollectionPublic):
+    """管理端列表项：公开骨架 + 内部数字 id（前端用数字 id 调管理端接口；登录态接口，无枚举风险）"""
+
+    id: int
+
+
+class CollectionOwnedDetail(CollectionOwnedPublic):
+    """管理端集合详情响应：管理端骨架 + 成员文件列表（按 position 排序）"""
 
     members: list[FilePublic] = Field(default_factory=list)

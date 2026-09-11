@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 from sqlmodel import select, and_, delete, func
+from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from api_services.user_service import get_user_by_id
+from api_services.user_service import count_items, get_user_by_id
 from constants.collection_constants import (
     MAX_COLLECTION_MEMBERS,
     ALLOWED_MEMBER_EXPERIMENT_TYPES,
@@ -21,10 +22,10 @@ from exceptions.collection_exceptions import (
 )
 from models.collection_models import (
     CollectionCreate,
-    CollectionDetail,
     CollectionMember,
+    CollectionOwnedDetail,
+    CollectionOwnedPublic,
     CollectionPatch,
-    CollectionPublic,
     DataCollectionInDB,
 )
 from models.file_models import FileInDB, FilePublic, FileStatus
@@ -181,19 +182,53 @@ async def delete_collection(
 async def list_user_collections(
     session: AsyncSession,
     current_user: UserInDB,
-) -> list[CollectionPublic]:
-    """当前用户自己的集合列表（按 updated_at 倒序），供集合管理与"加入集合"选择器"""
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """当前用户自己的集合列表分页查询（按 updated_at 倒序），供集合管理与"加入集合"选择器
+
+    Returns:
+        (当前页集合列表, 符合条件的记录总数)
+    """
+    base_query = select(DataCollectionInDB).where(DataCollectionInDB.owner_id == current_user.id)
+    return await _paginate_collections(session, base_query, page, size)
+
+
+async def list_all_collections(
+    session: AsyncSession,
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """数据表内所有用户的集合列表分页查询（按 updated_at 倒序），供登录后的全量集合列表
+
+    Returns:
+        (当前页集合列表, 符合条件的记录总数)
+    """
+    return await _paginate_collections(session, select(DataCollectionInDB), page, size)
+
+
+async def _paginate_collections(
+    session: AsyncSession,
+    base_query: SelectOfScalar[DataCollectionInDB],
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """集合列表分页公共实现：分页查询 + 当前页成员数/总大小聚合 + owner 用户名回填"""
+    # 总数（分页元数据；口径与列表查询一致）
+    total_records = await count_items(session, base_query, DataCollectionInDB)
+
     collections = (
         await session.exec(
-            select(DataCollectionInDB)
-            .where(DataCollectionInDB.owner_id == current_user.id)
+            base_query
             .order_by(DataCollectionInDB.updated_at.desc()) # type: ignore # pylint: disable=no-member
+            .offset((page - 1) * size)
+            .limit(size)
         )
     ).all()
     if not collections:
-        return []
+        return [], total_records
 
-    # 单条分组查询聚合全部集合的成员数与总大小（避免逐集合 2N+1 查询）
+    # 单条分组查询聚合当前页集合的成员数与总大小（避免逐集合 2N+1 查询）
     stats_rows = (
         await session.exec(
             select(
@@ -210,20 +245,30 @@ async def list_user_collections(
     ).all()
     stats = {row[0]: (int(row[1]), int(row[2])) for row in stats_rows}
 
+    # 单条查询回填当前页集合的 owner 用户名（"我的集合"与全量列表共用同一口径）
+    owner_rows = (
+        await session.exec(
+            select(UserInDB.id, UserInDB.username).where(
+                UserInDB.id.in_(list({collection.owner_id for collection in collections})) # type: ignore # pylint: disable=no-member
+            )
+        )
+    ).all()
+    owner_names = {row[0]: row[1] for row in owner_rows}
+
     result = []
     for collection in collections:
         member_count, total_size = stats.get(collection.id, (0, 0))
         result.append(
-            CollectionPublic.model_validate(
+            CollectionOwnedPublic.model_validate(
                 collection,
                 update={
-                    "owner_username": current_user.username,
+                    "owner_username": owner_names.get(collection.owner_id, ""),
                     "member_count": member_count,
                     "total_size": total_size,
                 },
             )
         )
-    return result
+    return result, total_records
 
 
 async def build_collection_detail(
@@ -231,7 +276,7 @@ async def build_collection_detail(
     collection: DataCollectionInDB,
     *,
     only_completed: bool = False,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """聚合集合详情：元数据 + 成员文件列表（按 position 排序）+ 成员数/总大小 + owner 用户名
 
     Args:
@@ -244,10 +289,11 @@ async def build_collection_detail(
     )
     owner = await get_user_by_id(collection.owner_id, session)
 
-    return CollectionDetail.model_validate(
+    return CollectionOwnedDetail.model_validate(
         collection,
         update={
-            # 公开页响应需包含数字 id 与 owner 用户名（登录用户在公开页发起"加文件"时用）
+            # owner 用户名供公开页展示；响应含数字 id（管理端用），
+            # 公开端在 api 层转 CollectionDetail 剥掉
             "owner_username": owner.username if owner else "",
             "member_count": member_count,
             "total_size": total_size,
