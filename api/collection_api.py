@@ -30,7 +30,6 @@ from models.collection_models import (
     CollectionMembersOperation,
     CollectionOwnedDetail,
     CollectionPatch,
-    CollectionPublic,
 )
 from models.user_models import UserInDB
 
