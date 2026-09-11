@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from sqlmodel import select, and_, delete, func
+from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.user_service import count_items, get_user_by_id
@@ -190,7 +191,29 @@ async def list_user_collections(
         (当前页集合列表, 符合条件的记录总数)
     """
     base_query = select(DataCollectionInDB).where(DataCollectionInDB.owner_id == current_user.id)
+    return await _paginate_collections(session, base_query, page, size)
 
+
+async def list_all_collections(
+    session: AsyncSession,
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """数据表内所有用户的集合列表分页查询（按 updated_at 倒序），供登录后的全量集合列表
+
+    Returns:
+        (当前页集合列表, 符合条件的记录总数)
+    """
+    return await _paginate_collections(session, select(DataCollectionInDB), page, size)
+
+
+async def _paginate_collections(
+    session: AsyncSession,
+    base_query: SelectOfScalar[DataCollectionInDB],
+    page: int,
+    size: int,
+) -> tuple[list[CollectionOwnedPublic], int]:
+    """集合列表分页公共实现：分页查询 + 当前页成员数/总大小聚合 + owner 用户名回填"""
     # 总数（分页元数据；口径与列表查询一致）
     total_records = await count_items(session, base_query, DataCollectionInDB)
 
@@ -222,6 +245,16 @@ async def list_user_collections(
     ).all()
     stats = {row[0]: (int(row[1]), int(row[2])) for row in stats_rows}
 
+    # 单条查询回填当前页集合的 owner 用户名（"我的集合"与全量列表共用同一口径）
+    owner_rows = (
+        await session.exec(
+            select(UserInDB.id, UserInDB.username).where(
+                UserInDB.id.in_(list({collection.owner_id for collection in collections})) # type: ignore # pylint: disable=no-member
+            )
+        )
+    ).all()
+    owner_names = {row[0]: row[1] for row in owner_rows}
+
     result = []
     for collection in collections:
         member_count, total_size = stats.get(collection.id, (0, 0))
@@ -229,7 +262,7 @@ async def list_user_collections(
             CollectionOwnedPublic.model_validate(
                 collection,
                 update={
-                    "owner_username": current_user.username,
+                    "owner_username": owner_names.get(collection.owner_id, ""),
                     "member_count": member_count,
                     "total_size": total_size,
                 },

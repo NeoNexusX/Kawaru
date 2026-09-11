@@ -11,6 +11,7 @@ from models.filter_models import ListDataResponse
 from api.collection_api import (
     CreateCollectionDep,
     ListCollectionsDep,
+    ListAllCollectionsDep,
     GetCollectionDep,
     PatchCollectionDep,
     DeleteCollectionDep,
@@ -45,6 +46,15 @@ async def create_collection(detail: CreateCollectionDep):
 @collection_router.get("", response_model=ListDataResponse)
 async def list_collections(collections: ListCollectionsDep):
     """当前用户自己的集合列表（按 updated_at 倒序；分页 page/size）"""
+    return collections
+
+
+@collection_router.get("/all", response_model=ListDataResponse)
+async def list_all_collections(collections: ListAllCollectionsDep):
+    """全部集合列表（任何登录用户；按 updated_at 倒序；分页 page/size）
+
+    声明先于 /{collection_id}，避免 "all" 被动态段吞掉（动态段为 int 会 422）
+    """
     return collections
 
 

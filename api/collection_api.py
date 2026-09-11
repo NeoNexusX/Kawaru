@@ -16,6 +16,7 @@ from api_services.collection_service import (
     delete_collection,
     get_owned_collection,
     get_public_collection_by_public_id,
+    list_all_collections,
     list_user_collections,
     remove_members,
     reorder_members,
@@ -93,6 +94,38 @@ async def list_collections_api(
     )
     logger.info(
         f"list collections user={current_user.id} page={page} size={size} total={total_records}"
+    )
+    return ListDataResponse(meta=pagination_meta, data=collections)
+
+
+async def list_all_collections_api(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+) -> ListDataResponse:
+    """
+    【全部集合列表接口】
+
+    功能:分页返回数据表内所有用户的集合（按 updated_at 倒序）
+
+    权限:任何登录用户
+
+    注意:
+    - 与 list_collections_api 的区别：不做 owner 过滤，返回全量集合
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 响应结构与 list_collections_api 一致（meta + data，含自增 id）
+    """
+    collections, total_records = await list_all_collections(async_session, page, size)
+    total_pages = (total_records + size - 1) // size
+    pagination_meta = PaginationMeta(
+        current_page=page,
+        current_records=len(collections),
+        total_pages=total_pages,
+        total_records=total_records,
+    )
+    logger.info(
+        f"list all collections user={current_user.id} page={page} size={size} total={total_records}"
     )
     return ListDataResponse(meta=pagination_meta, data=collections)
 
@@ -276,6 +309,7 @@ async def get_public_collection_api(
 #########################
 CreateCollectionDep = Annotated[CollectionOwnedDetail, Depends(create_collection_api)]
 ListCollectionsDep = Annotated[ListDataResponse, Depends(list_collections_api)]
+ListAllCollectionsDep = Annotated[ListDataResponse, Depends(list_all_collections_api)]
 GetCollectionDep = Annotated[CollectionOwnedDetail, Depends(get_collection_api)]
 PatchCollectionDep = Annotated[CollectionOwnedDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]
