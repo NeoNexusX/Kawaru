@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Query
 
 from api.user_api import token_authen
 from api_services.collection_service import (
@@ -16,18 +16,20 @@ from api_services.collection_service import (
     delete_collection,
     get_owned_collection,
     get_public_collection_by_public_id,
+    list_all_collections,
     list_user_collections,
     remove_members,
     reorder_members,
     update_collection,
 )
 from database.db import AsyncSessionDep
+from models.filter_models import ListDataResponse, PaginationMeta
 from models.collection_models import (
     CollectionCreate,
     CollectionDetail,
     CollectionMembersOperation,
+    CollectionOwnedDetail,
     CollectionPatch,
-    CollectionPublic,
 )
 from models.user_models import UserInDB
 
@@ -42,7 +44,7 @@ async def create_collection_api(
     data: CollectionCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【创建集合接口】
 
@@ -66,23 +68,72 @@ async def create_collection_api(
 async def list_collections_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> list[CollectionPublic]:
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+) -> ListDataResponse:
     """
     【集合列表接口】
 
-    功能:返回当前用户自己的集合（按 updated_at 倒序）
+    功能:分页返回当前用户自己的集合（按 updated_at 倒序）
     用途:集合管理列表与"加入集合"选择器；公开发现页本期不做（靠链接分发）
+
+    注意:
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 响应结构与 list_user_files / list_files 一致（meta + data）
     """
-    collections = await list_user_collections(async_session, current_user)
-    logger.info(f"list collections user={current_user.id} count={len(collections)}")
-    return collections
+    collections, total_records = await list_user_collections(
+        async_session, current_user, page, size
+    )
+    total_pages = (total_records + size - 1) // size
+    pagination_meta = PaginationMeta(
+        current_page=page,
+        current_records=len(collections),
+        total_pages=total_pages,
+        total_records=total_records,
+    )
+    logger.info(
+        f"list collections user={current_user.id} page={page} size={size} total={total_records}"
+    )
+    return ListDataResponse(meta=pagination_meta, data=collections)
+
+
+async def list_all_collections_api(
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    async_session: AsyncSessionDep,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+) -> ListDataResponse:
+    """
+    【全部集合列表接口】
+
+    功能:分页返回数据表内所有用户的集合（按 updated_at 倒序）
+
+    权限:任何登录用户
+
+    注意:
+    - 与 list_collections_api 的区别：不做 owner 过滤，返回全量集合
+    - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
+    - 响应结构与 list_collections_api 一致（meta + data，含自增 id）
+    """
+    collections, total_records = await list_all_collections(async_session, page, size)
+    total_pages = (total_records + size - 1) // size
+    pagination_meta = PaginationMeta(
+        current_page=page,
+        current_records=len(collections),
+        total_pages=total_pages,
+        total_records=total_records,
+    )
+    logger.info(
+        f"list all collections user={current_user.id} page={page} size={size} total={total_records}"
+    )
+    return ListDataResponse(meta=pagination_meta, data=collections)
 
 
 async def get_collection_api(
     collection_id: int,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【集合详情接口】
 
@@ -102,7 +153,7 @@ async def patch_collection_api(
     patch: CollectionPatch,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【修改集合元数据接口】
 
@@ -148,7 +199,7 @@ async def add_members_api(
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【批量添加成员接口】
 
@@ -203,7 +254,7 @@ async def reorder_members_api(
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionDetail:
+) -> CollectionOwnedDetail:
     """
     【调整成员顺序接口】
 
@@ -240,11 +291,14 @@ async def get_public_collection_api(
     安全:
     - 非公开集合即使 public_id 正确也返回 404（不暴露存在性）
     - 成员仅返回 status == completed 的文件
-    - 响应包含集合数字 id 与 owner 用户名：登录用户在公开页发起"加文件"时
-      前端需要用数字 id 调管理端加成员接口（不构成枚举风险）
+    - 响应不包含集合数字 id：公开页禁止暴露自增 id，对外标识一律用 public_id
+      （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿数字 id，
+      非 owner 拿到 id 也无权调用，故无暴露必要）
     """
     collection = await get_public_collection_by_public_id(async_session, public_id)
-    detail = await build_collection_detail(async_session, collection, only_completed=True)
+    owned_detail = await build_collection_detail(async_session, collection, only_completed=True)
+    # 剥掉内部数字 id 后返回公开详情模型（id 为多余字段，model_validate 默认忽略）
+    detail = CollectionDetail.model_validate(owned_detail)
     logger.info(f"get public collection public_id={public_id}")
     return detail
 
@@ -252,12 +306,13 @@ async def get_public_collection_api(
 #########################
 # 依赖注入别名（供 routers 使用）
 #########################
-CreateCollectionDep = Annotated[CollectionDetail, Depends(create_collection_api)]
-ListCollectionsDep = Annotated[list[CollectionPublic], Depends(list_collections_api)]
-GetCollectionDep = Annotated[CollectionDetail, Depends(get_collection_api)]
-PatchCollectionDep = Annotated[CollectionDetail, Depends(patch_collection_api)]
+CreateCollectionDep = Annotated[CollectionOwnedDetail, Depends(create_collection_api)]
+ListCollectionsDep = Annotated[ListDataResponse, Depends(list_collections_api)]
+ListAllCollectionsDep = Annotated[ListDataResponse, Depends(list_all_collections_api)]
+GetCollectionDep = Annotated[CollectionOwnedDetail, Depends(get_collection_api)]
+PatchCollectionDep = Annotated[CollectionOwnedDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]
-AddMembersDep = Annotated[CollectionDetail, Depends(add_members_api)]
+AddMembersDep = Annotated[CollectionOwnedDetail, Depends(add_members_api)]
 RemoveMembersDep = Annotated[dict, Depends(remove_members_api)]
-ReorderMembersDep = Annotated[CollectionDetail, Depends(reorder_members_api)]
+ReorderMembersDep = Annotated[CollectionOwnedDetail, Depends(reorder_members_api)]
 GetPublicCollectionDep = Annotated[CollectionDetail, Depends(get_public_collection_api)]

@@ -3,10 +3,15 @@
 """
 from fastapi import APIRouter
 
-from models.collection_models import CollectionDetail, CollectionPublic
+from models.collection_models import (
+    CollectionDetail,
+    CollectionOwnedDetail,
+)
+from models.filter_models import ListDataResponse
 from api.collection_api import (
     CreateCollectionDep,
     ListCollectionsDep,
+    ListAllCollectionsDep,
     GetCollectionDep,
     PatchCollectionDep,
     DeleteCollectionDep,
@@ -32,25 +37,34 @@ async def get_public_collection(detail: GetPublicCollectionDep):
 # 管理端（需登录）
 #########################
 
-@collection_router.post("", response_model=CollectionDetail)
+@collection_router.post("", response_model=CollectionOwnedDetail)
 async def create_collection(detail: CreateCollectionDep):
     """创建集合（可带初始成员 file_ids，数组顺序即初始顺序）"""
     return detail
 
 
-@collection_router.get("", response_model=list[CollectionPublic])
+@collection_router.get("", response_model=ListDataResponse)
 async def list_collections(collections: ListCollectionsDep):
-    """当前用户自己的集合列表（按 updated_at 倒序）"""
+    """当前用户自己的集合列表（按 updated_at 倒序；分页 page/size）"""
     return collections
 
 
-@collection_router.get("/{collection_id}", response_model=CollectionDetail)
+@collection_router.get("/all", response_model=ListDataResponse)
+async def list_all_collections(collections: ListAllCollectionsDep):
+    """全部集合列表（任何登录用户；按 updated_at 倒序；分页 page/size）
+
+    声明先于 /{collection_id}，避免 "all" 被动态段吞掉（动态段为 int 会 422）
+    """
+    return collections
+
+
+@collection_router.get("/{collection_id}", response_model=CollectionOwnedDetail)
 async def get_collection(detail: GetCollectionDep):
     """集合详情 + 成员列表（owner 或 admin，按 position 排序）"""
     return detail
 
 
-@collection_router.patch("/{collection_id}", response_model=CollectionDetail)
+@collection_router.patch("/{collection_id}", response_model=CollectionOwnedDetail)
 async def patch_collection(detail: PatchCollectionDep):
     """修改集合元数据（owner 或 admin；部分更新）"""
     return detail
@@ -62,13 +76,13 @@ async def delete_collection(result: DeleteCollectionDep):
     return result
 
 
-@collection_router.post("/{collection_id}/members", response_model=CollectionDetail)
+@collection_router.post("/{collection_id}/members", response_model=CollectionOwnedDetail)
 async def add_collection_members(detail: AddMembersDep):
     """批量添加成员（owner 或 admin；幂等跳过已在集合内的文件）"""
     return detail
 
 
-@collection_router.patch("/{collection_id}/members/order", response_model=CollectionDetail)
+@collection_router.patch("/{collection_id}/members/order", response_model=CollectionOwnedDetail)
 async def reorder_collection_members(detail: ReorderMembersDep):
     """调整成员顺序（owner 或 admin；全量 [file_id] 数组重写 position）"""
     return detail
