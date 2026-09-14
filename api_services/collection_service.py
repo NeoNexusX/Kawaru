@@ -4,12 +4,19 @@
 #########################
 from __future__ import annotations
 
-from sqlmodel import select, and_, delete, func
+import json
+from typing import Any
+
+from sqlalchemy import false
+from sqlmodel import select, and_, col, delete, func, or_
 from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.user_service import count_items, get_user_by_id
 from constants.collection_constants import (
+    COLLECTION_EXACT_FILTER_FIELDS,
+    COLLECTION_FUZZY_FILTER_FIELDS,
+    COLLECTION_JSON_FILTER_FIELDS,
     MAX_COLLECTION_MEMBERS,
     ALLOWED_MEMBER_EXPERIMENT_TYPES,
 )
@@ -29,6 +36,7 @@ from models.collection_models import (
     DataCollectionInDB,
 )
 from models.file_models import FileInDB, FilePublic, FileStatus
+from models.filter_models import CollectionFilter
 from models.user_models import UserInDB
 from tools import get_logger, utc_time
 
@@ -182,20 +190,25 @@ async def delete_collection(
 async def list_user_collections(
     session: AsyncSession,
     current_user: UserInDB,
+    filters: CollectionFilter,
     page: int,
     size: int,
 ) -> tuple[list[CollectionOwnedPublic], int]:
     """当前用户自己的集合列表分页查询（按 updated_at 倒序），供集合管理与"加入集合"选择器
 
+    filters 对两个列表接口语义一致（"我的集合"下按 owner 筛选通常无意义，但无害）。
+
     Returns:
         (当前页集合列表, 符合条件的记录总数)
     """
     base_query = select(DataCollectionInDB).where(DataCollectionInDB.owner_id == current_user.id)
+    base_query = await _apply_collection_filters(session, base_query, filters)
     return await _paginate_collections(session, base_query, page, size)
 
 
 async def list_all_collections(
     session: AsyncSession,
+    filters: CollectionFilter,
     page: int,
     size: int,
 ) -> tuple[list[CollectionOwnedPublic], int]:
@@ -204,7 +217,78 @@ async def list_all_collections(
     Returns:
         (当前页集合列表, 符合条件的记录总数)
     """
-    return await _paginate_collections(session, select(DataCollectionInDB), page, size)
+    base_query = await _apply_collection_filters(session, select(DataCollectionInDB), filters)
+    return await _paginate_collections(session, base_query, page, size)
+
+
+async def _apply_collection_filters(
+    session: AsyncSession,
+    base_query: SelectOfScalar[DataCollectionInDB],
+    filters: CollectionFilter,
+) -> SelectOfScalar[DataCollectionInDB]:
+    """把 CollectionFilter 生成的谓词挂到查询上（同字段多值 OR、不同字段之间 AND）"""
+    for clause in await build_collection_filters(session, filters):
+        base_query = base_query.where(clause)
+    return base_query
+
+
+async def build_collection_filters(
+    session: AsyncSession,
+    filters: CollectionFilter,
+) -> list[Any]:
+    """CollectionFilter → SQL 谓词列表（同一字段多值 OR，不同字段之间 AND）
+
+    三类字段的匹配方式（字段分组见 constants/collection_constants.py）：
+    - 文本字段（name/title/journal_name）：OR 连接的 LIKE，大小写由列排序规则
+      （utf8mb4_unicode_ci）保证不敏感
+    - 枚举字段（member_type/collection_type）：IN，同上不敏感
+    - JSON 数组字段（organism 等）：元素成员判断——集合内任一成员含该值即命中。
+      用 JSON_OVERLAPS 判交集（多值天然 OR 语义），并强制 LOWER 两侧：
+      JSON 值比较本身大小写敏感（与普通列排序规则不一致），故统一降为小写后比较。
+
+    owner_username 需先模糊查用户 id（owner_id 有索引，无需 join 集合表）。
+
+    空值不产生谓词（归一化已在 Filter 模型内完成，空值一律为 None）。
+    """
+    clauses: list[Any] = []
+
+    for field in COLLECTION_FUZZY_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(
+                or_(*[col(getattr(DataCollectionInDB, field)).like(f"%{value}%") for value in values])
+            )
+
+    for field in COLLECTION_EXACT_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(col(getattr(DataCollectionInDB, field)).in_(values))
+
+    if filters.owner_username:
+        owner_ids = (
+            await session.exec(
+                select(UserInDB.id).where(
+                    or_(*[
+                        col(UserInDB.username).like(f"%{username}%")
+                        for username in filters.owner_username
+                    ])
+                )
+            )
+        ).all()
+        clauses.append(
+            DataCollectionInDB.owner_id.in_(list(owner_ids)) if owner_ids else false() # type: ignore # pylint: disable=no-member
+        )
+
+    for field in COLLECTION_JSON_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            # 值数组交给 JSON_OVERLAPS 判交集：集合含任一选中值即命中（同字段多值 OR）
+            needle = json.dumps([value.lower() for value in values])
+            clauses.append(
+                func.json_overlaps(func.lower(getattr(DataCollectionInDB, field)), needle) == 1 # type: ignore
+            )
+
+    return clauses
 
 
 async def _paginate_collections(
@@ -510,7 +594,7 @@ async def remove_members(
             delete(CollectionMember).where(
                 and_(
                     CollectionMember.collection_id == collection.id,
-                    CollectionMember.file_id.in_(to_remove),  # type: ignore
+                    CollectionMember.file_id.in_(to_remove),  # type: ignore # pylint: disable=no-member
                 )
             )
         )

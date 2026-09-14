@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func, col
+from sqlmodel import select, exists, and_, or_, not_, func, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -46,6 +46,7 @@ from exceptions import (
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
 from models.file_models import FileCreate, FileInDB, FilePatch, FileStatus, PackupStatus, OssDownloadFile
+from models.filter_models import FileFilter
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
@@ -155,6 +156,39 @@ async def get_file_record_by_id(
     return file_record
 
 
+async def get_public_file_by_public_id(
+    async_session: AsyncSession, public_id: str
+) -> FileInDB:
+    """
+    根据 public_id 查询公开文件记录（免登录分享页用）
+
+    与 collection 的 get_public_collection_by_public_id 同构：
+    - 非公开文件即使 public_id 正确也按不存在处理（404 不暴露存在性）
+    - 非 completed（含删除流程状态位）同样 404，避免分享链接返回僵尸记录
+
+    Returns:
+        文件记录对象
+    Raises:
+        file_not_found_exception: 文件不存在、非公开或不可用
+    """
+    statement = select(FileInDB).where(FileInDB.public_id == public_id)
+
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record or not file_record.is_public:
+        logger.warning("public file not found public_id=%s", public_id)
+        raise file_not_found_exception
+
+    if file_record.status != FileStatus.COMPLETED:
+        logger.warning(
+            "public file not available public_id=%s file_id=%s status=%s",
+            public_id, file_record.file_id, file_record.status,
+        )
+        raise file_not_found_exception
+
+    return file_record
+
+
 #########################
 # File  - 增
 #########################
@@ -236,6 +270,58 @@ def build_file_order(sort_by: str, order: str) -> tuple[Any, Any]:
     column = FileInDB.size if sort_by == "size" else FileInDB.uploaded_at
     primary = col(column).asc() if order == "asc" else col(column).desc()
     return (primary, col(FileInDB.file_id).desc()) # pylint: disable=no-member
+
+
+# 精确匹配（IN）的筛选字段：FileInDB 上的单值列，多值语义即为"命中任一值"
+FILE_EXACT_FILTER_FIELDS = (
+    "experiment_type",
+    "organism",
+    "organism_part",
+    "condition",
+    "sample_stabilization",
+    "sample_growth_conditions",
+    "tissue_modification",
+    "maldi_matrix",
+    "maldi_matrix_application",
+    "solvent",
+    "polarity",
+    "ionisation_source",
+    "analyzer",
+)
+
+# 模糊匹配（LIKE %v%）的筛选字段：多值语义为"任一关键词命中"
+FILE_FUZZY_FILTER_FIELDS = (
+    "filename",
+    "first_uploaded_by",
+)
+
+
+def build_file_filters(filters: FileFilter) -> list[Any]:
+    """FileFilter → SQL 谓词列表（同字段多值 OR，不同字段之间由调用方 AND）
+
+    供个人文件列表与公共文件列表共用，口径与 build_file_order 一致：
+    空值不产生谓词（归一化已在 Filter 模型内完成，空值一律为 None）。
+
+    模糊字段为 OR 连接的 LIKE，精确字段为 IN；大小写由列排序规则
+    （utf8mb4_unicode_ci）保证不敏感，无需额外处理。
+
+    注意：username 筛选需要 join 用户-文件关联表，不在此处生成，由调用方单独处理。
+    """
+    clauses: list[Any] = []
+
+    for field in FILE_FUZZY_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(
+                or_(*[col(getattr(FileInDB, field)).like(f"%{value}%") for value in values])
+            )
+
+    for field in FILE_EXACT_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(col(getattr(FileInDB, field)).in_(values))
+
+    return clauses
 
 
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | None]:

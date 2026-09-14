@@ -43,17 +43,22 @@ async def create_collection(detail: CreateCollectionDep):
     return detail
 
 
-@collection_router.get("", response_model=ListDataResponse)
+@collection_router.post("/list", response_model=ListDataResponse)
 async def list_collections(collections: ListCollectionsDep):
-    """当前用户自己的集合列表（按 updated_at 倒序；分页 page/size）"""
+    """当前用户自己的集合列表（按 updated_at 倒序）
+
+    - 筛选条件走 body（CollectionFilter，不筛选也要发 {}），page/size 走 query
+    - 每个筛选字段可传单值或数组；同字段多值 OR、不同字段之间 AND
+    """
     return collections
 
 
-@collection_router.get("/all", response_model=ListDataResponse)
+@collection_router.post("/list_all", response_model=ListDataResponse)
 async def list_all_collections(collections: ListAllCollectionsDep):
-    """全部集合列表（任何登录用户；按 updated_at 倒序；分页 page/size）
+    """全部集合列表（任何登录用户；按 updated_at 倒序）
 
-    声明先于 /{collection_id}，避免 "all" 被动态段吞掉（动态段为 int 会 422）
+    - 与 /list 的区别：不做 owner 过滤，返回全量集合（可按 owner_username 筛）
+    - 筛选条件走 body（CollectionFilter，不筛选也要发 {}），page/size 走 query
     """
     return collections
 
