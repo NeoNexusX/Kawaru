@@ -30,8 +30,16 @@ class DataCollectionInDB(SQLModel, table=True):
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
     is_public: bool = Field(default=True, description="集合公开状态（第一期恒 True 且不可修改）")
-    member_type: str = Field(default="", max_length=32, description="集合包含何种数据（当前为 MSI）")
-    collection_type: str = Field(default="", max_length=32, description="预留，如 series（系列数据，有序）")
+    member_type: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+        description="集合包含的数据类型（多值，如 MSI、H&E、ST）",
+    )
+    collection_type: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+        description="集合的构成方式（多值，如 Serial sections、Time series）",
+    )
 
     # 学术信息（全部可空/默认空）
     title: str = Field(default="", max_length=500, description="数据集标题")
@@ -96,8 +104,8 @@ class CollectionCreate(SQLModel):
 
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
-    member_type: str = Field(default="", max_length=32)
-    collection_type: str = Field(default="", max_length=32)
+    member_type: list[str] = Field(default_factory=list)
+    collection_type: list[str] = Field(default_factory=list)
     title: str = Field(default="", max_length=500)
     doi: list[str] = Field(default_factory=list)
     access: list[str] = Field(default_factory=list)
@@ -120,8 +128,8 @@ class CollectionPatch(SQLModel):
 
     name: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    member_type: str | None = Field(default=None, max_length=32)
-    collection_type: str | None = Field(default=None, max_length=32)
+    member_type: list[str] | None = Field(default=None)
+    collection_type: list[str] | None = Field(default=None)
     title: str | None = Field(default=None, max_length=500)
     doi: list[str] | None = Field(default=None)
     access: list[str] | None = Field(default=None)
@@ -156,8 +164,8 @@ class CollectionPublic(SQLModel):
     owner_username: str = Field(default="", description="owner 用户名（公开页发起加文件时前端展示用）")
     name: str
     description: str
-    member_type: str
-    collection_type: str
+    member_type: list[str]
+    collection_type: list[str]
     title: str
     doi: list[str]
     access: list[str]
