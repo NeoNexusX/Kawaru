@@ -310,6 +310,28 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
+def packup_cache_key(file_id: int) -> str:
+    """打包状态缓存键（Redis Hash）。按 file_id 隔离：文件名只在同一用户内唯一，以文件名为键会让同名文件跨用户串号"""
+    return f"oss_packup-{file_id}"
+
+
+def packup_zip_path(file_id: int) -> str:
+    """打包 zip 的 OSS 对象键：{OSS_PACKUP_ZIP_STORAGE_ROOT}/{file_id}.zip"""
+    return f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_id}.zip"  # type: ignore
+
+
+def parse_packup_zip_file_id(zip_path: str | None) -> int | None:
+    """packup_zip_path 的逆操作：从打包回调带回的 zip 对象键解析 file_id，格式不符返回 None"""
+    if not zip_path:
+        return None
+    stem = Path(zip_path).stem
+    if not (stem.isascii() and stem.isdigit()):
+        return None
+    file_id = int(stem)
+    # 必须与发起打包时下发给 FC 的对象键完全一致，其他目录下的同名 zip 不认
+    return file_id if zip_path.strip("/") == packup_zip_path(file_id) else None
+
+
 async def prepare_download_file_oss(
     session: AsyncSession,
     file_record: FileInDB,
@@ -323,8 +345,10 @@ async def prepare_download_file_oss(
     Raises:
         file_content_missing_exception: 文件内容缺失
     """
-    oss_packup_key = f"oss_packup-{file_record.filename}"
-    oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
+    assert file_record.file_id is not None
+    # 打包状态与触发锁均按 file_id 隔离（见 packup_cache_key）
+    oss_packup_key = packup_cache_key(file_record.file_id)
+    oss_packup_lock_key = f"oss_packup_lock-{file_record.file_id}"
 
     # path 为空说明上传从未完成（预检记录或上传中断），既无源 zip 可签、
     # origin 也不存在（无法打包），直接判定内容缺失，避免对空路径走 OSS 签名。
@@ -809,7 +833,7 @@ async def _execute_packup_flow(
     fc_request_id = await packup_oss_file(
         filename=file_record.filename,
         packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
+        zip_file_path=packup_zip_path(file_record.file_id),  # type: ignore
     )
 
     if fc_request_id is None:

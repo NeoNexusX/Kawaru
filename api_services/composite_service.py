@@ -24,6 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from storage.oss.oss_storage import OssStorage
 from api_services.file_service import (
     get_file_record_by_id,
+    packup_cache_key,
     unlink_user_from_file,
     update_file_record,
 )
@@ -260,7 +261,7 @@ async def collect_file_delete_snapshot(
     return FileDeleteSnapshot(
         file_id=file_id,
         paths=list(dict.fromkeys(paths)),
-        redis_keys=[f"oss_packup-{file_record.filename}"],
+        redis_keys=[packup_cache_key(file_id)],
     )
 
 
