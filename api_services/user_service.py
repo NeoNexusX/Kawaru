@@ -5,6 +5,7 @@
 import secrets
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, func, SQLModel, distinct
 from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -17,6 +18,7 @@ from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS, EM
 from database.redis_client import redis_client
 from boot.config import get_config
 from exceptions.user_exceptions import (
+    user_already_exists_exception,
     user_name_bad_exception,
     user_position_not_allowed_exception,
     user_region_not_exist_exception,
@@ -117,6 +119,26 @@ async def count_items(
 #########################
 # 业务
 #########################
+async def add_new_user(async_session: AsyncSession, user: UserInDB) -> None:
+    """
+    插入新用户并提交。
+
+    用户名/邮箱唯一性在调用前已由应用层校验，但并发注册同名用户或同一邮箱时可能同时通过校验，
+    最终由数据库唯一约束兜底：捕获 IntegrityError 后回滚，按实际冲突字段转换为 409，而不是 500。
+    """
+    async_session.add(user)
+    try:
+        await async_session.commit()
+    except IntegrityError as exc:
+        await async_session.rollback()
+        if await get_user(user.username, async_session) is not None:
+            raise user_already_exists_exception from exc
+        if await get_user_by_email(user.email, async_session) is not None:
+            raise email_already_exists_exception from exc
+        raise
+    await async_session.refresh(user)
+
+
 async def authenticate_user(username: str, password: str, async_session: AsyncSession) -> UserInDB | None:
     """
     校验用户名/密码并返回用户对象。

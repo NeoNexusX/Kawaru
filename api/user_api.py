@@ -15,6 +15,7 @@ from api_helpers.auth_helper import create_access_token, hashed_password
 from api_helpers.user_helper import validate_url
 from api_services.file_service import get_user_file_ids
 from api_services.user_service import (
+    add_new_user,
     authenticate_user,
     validate_orcid,
     validate_update_user_data,
@@ -261,9 +262,7 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     user_data = user.model_dump(exclude={'password'})
     user_data["identity"] = "user"  # 由API设置为普通用户
     user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
-    async_session.add(user)
-    await async_session.commit()
-    await async_session.refresh(user)
+    await add_new_user(async_session, user)  # 并发注册撞上唯一约束时返回 409
 
     return user # type:ignore
 
@@ -290,9 +289,7 @@ async def create_admin_user_api(user: UserCreate,
     user_data = user.model_dump(exclude={'password'})
     user_data["identity"] = "admin"  # 由API设置身份为管理员
     user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
-    async_session.add(user)
-    await async_session.commit()
-    await async_session.refresh(user)
+    await add_new_user(async_session, user)  # 并发注册撞上唯一约束时返回 409
     await async_session.refresh(current_admin)
     logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
 
