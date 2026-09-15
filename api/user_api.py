@@ -18,7 +18,7 @@ from api_services.user_service import (
     authenticate_user,
     validate_orcid,
     validate_update_user_data,
-    verify_reset_code,
+    verify_email_code,
     get_user,
     get_user_by_id,
     get_user_by_email,
@@ -38,7 +38,6 @@ from exceptions.user_exceptions import (
     user_already_exists_exception,
     email_already_exists_exception,
     user_not_active_exception,
-    user_verification_bad_exception,
     user_position_not_allowed_exception,
     user_region_not_exist_exception,
     user_orcid_not_exist_exception,
@@ -58,7 +57,7 @@ from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
-from models.email_models import TOTP
+from models.email_models import EmailPurpose
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
@@ -251,23 +250,22 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
 
-    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
+    user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
+    if user_past is not None:
+        logger.error("cannot create user ,user already exists, username:%s", user.username)
+        raise user_already_exists_exception
 
-        if user_past is None:
-            user_data = user.model_dump(exclude={'password'})
-            user_data["identity"] = "user"  # 由API设置为普通用户
-            user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
-            async_session.add(user)
-            await async_session.commit()
-            await async_session.refresh(user)
-        else:
-            logger.error("cannot create user ,user already exists, username:%s", user.username)
-            raise user_already_exists_exception
+    # 验证码必须是发往该注册邮箱的码（单次有效）；放在其余校验之后，避免校验失败白白消耗验证码
+    await verify_email_code(EmailPurpose.REGISTER, user.email, user.verify_code)
 
-        return user # type:ignore
+    user_data = user.model_dump(exclude={'password'})
+    user_data["identity"] = "user"  # 由API设置为普通用户
+    user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
+    async_session.add(user)
+    await async_session.commit()
+    await async_session.refresh(user)
 
-    raise user_verification_bad_exception
+    return user # type:ignore
 
 
 async def create_admin_user_api(user: UserCreate,
@@ -281,26 +279,24 @@ async def create_admin_user_api(user: UserCreate,
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
 
-    #  TOTP验证
-    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username, async_session)
+    user_past = await get_user(user.username, async_session)
+    if user_past is not None:
+        raise user_already_exists_exception
 
-        if user_past is None:
-            # 排除password，显式设置identity为"admin"
-            user_data = user.model_dump(exclude={'password'})
-            user_data["identity"] = "admin"  # 由API设置身份为管理员
-            user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
-            async_session.add(user)
-            await async_session.commit()
-            await async_session.refresh(user)
-            await async_session.refresh(current_admin)
-            logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
+    # 验证码必须是发往新管理员邮箱的注册码（单次有效）；放在其余校验之后，避免校验失败白白消耗验证码
+    await verify_email_code(EmailPurpose.REGISTER, user.email, user.verify_code)
 
-            return user # type:ignore
-        else:
-            raise user_already_exists_exception
-    else:
-        raise user_verification_bad_exception
+    # 排除password，显式设置identity为"admin"
+    user_data = user.model_dump(exclude={'password'})
+    user_data["identity"] = "admin"  # 由API设置身份为管理员
+    user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
+    async_session.add(user)
+    await async_session.commit()
+    await async_session.refresh(user)
+    await async_session.refresh(current_admin)
+    logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
+
+    return user # type:ignore
 
 
 async def update_user(
@@ -312,19 +308,15 @@ async def update_user(
     更新当前用户信息，支持可选字段及密码变更
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
-
-    # 验证邮箱验证码（只有更新邮箱时需要）
-    if "email" in user_data and user_data["email"] is not None:
-        if not (
-            "verify_code" in user_data
-            and user_data["verify_code"]
-            and TOTP.verify(user_data["verify_code"], valid_window=config.email.totp_window)):
-            raise user_verification_bad_exception
-        # 移除验证码，不更新到数据库
-        user_data.pop("verify_code", None)
+    new_email = user_data.get("email")
+    verify_code = user_data.pop("verify_code", None)  # 验证码不更新到数据库
 
     # 校验其他字段
     user_data = await validate_update_user_data(user_data, user_past, async_session)
+
+    # 更新邮箱时校验发往新邮箱的验证码（单次有效）；放在字段校验之后，避免校验失败白白消耗验证码
+    if new_email is not None:
+        await verify_email_code(EmailPurpose.UPDATE, new_email, verify_code)
 
     # 再更新除密码外剩下的用户信息
     user_past.sqlmodel_update(user_data)
@@ -340,7 +332,7 @@ async def reset_password(
 ) -> UserPublic:
     """
     忘记密码：未登录用户凭邮箱 + 验证码重置密码。
-    验证码与邮箱绑定且单次有效（见 user_service.verify_reset_code）。
+    验证码与用途、邮箱绑定且单次有效（见 user_service.verify_email_code）。
     """
     user = await get_user_by_email(data.email, async_session)
     # 邮箱不存在或账号未激活时本不该有有效验证码，统一按验证码错误处理，
@@ -348,7 +340,7 @@ async def reset_password(
     if user is None or not user.active:
         raise reset_code_invalid_exception
 
-    await verify_reset_code(data.email, data.verify_code)
+    await verify_email_code(EmailPurpose.RESET_PASSWORD, data.email, data.verify_code)
 
     user.hashed_password = hashed_password(data.new_password)
     async_session.add(user)

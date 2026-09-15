@@ -1,4 +1,4 @@
-"""Helpers for retrieving email verification codes from server logs."""
+"""Helpers for obtaining email verification codes in tests (server logs or direct issuance)."""
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +44,21 @@ def _read_since(path: Path, offset: int) -> str:
 def _latest_match(text: str, pattern: re.Pattern[str]) -> str | None:
     matches = pattern.findall(text)
     return matches[-1] if matches else None
+
+
+async def issue_email_code(email: str, purpose: str = "register") -> str:
+    """
+    直接调用服务端签发逻辑为指定邮箱生成验证码并返回（不发邮件、不占用该邮箱的发送冷却）。
+
+    验证码与用途 + 邮箱绑定且单次有效，供测试前置步骤为账号准备注册码；
+    测试进程需与服务端连接同一个 Redis（CI 在 app 容器内运行 pytest，满足该条件）。
+    """
+    # 延迟导入：服务端模块依赖 conftest 中 bootstrap() 完成的配置与 Celery 初始化
+    # pylint: disable=import-outside-toplevel
+    from api_services.user_service import generate_email_code
+    from models.email_models import EmailPurpose
+
+    return await generate_email_code(EmailPurpose(purpose), email)
 
 
 async def request_email_verify_code(

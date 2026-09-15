@@ -7,7 +7,7 @@
   3) 正常重置：用有效验证码重置 → 200，新密码可登录、旧密码失效
 
 验证码来源：worker 以 LOG_LEVEL=debug 把 SMTP 正文（含验证码）写入 background.log，
-测试从日志按正则截取最新有效码（与注册测试同机制）。
+测试从日志按正则截取最新有效码；前置注册账号所需的注册码则直接签发（不发邮件）。
 
 前置（CI 已满足）：服务器 + worker(debug 日志) + SMTP + Redis + DB 在 BASE_URL 运行。
 """
@@ -25,6 +25,7 @@ from .conftest import logger, BASE_URL
 from .helpers.totp import (
     RESET_CODE_PATTERN,
     fetch_verify_code_from_logs,
+    issue_email_code,
     request_email_verify_code,
 )
 
@@ -52,35 +53,32 @@ async def _signup_dedicated_account(
     """
     创建专用测试账号。
 
-    注册验证码是全局 TOTP（与邮箱无关），因此用一个独立 probe 邮箱取码，
-    从而不在目标邮箱上占用发送冷却（与 test_perf_concurrent_login 同套路），
+    注册验证码与邮箱绑定：先断言为其他邮箱签发的码不能注册目标邮箱，
+    再直接为目标邮箱签发注册码（不发邮件、不占用发送冷却），
     保证后续对目标邮箱的首次重置发码能立即成功。
     """
-    probe_email = f"pwdreset_probe_{secrets.token_hex(4)}@example.com"
-    code, meta = await fetch_verify_code_from_logs(
-        base_url=BASE_URL,
-        email=probe_email,
-        timeout=REQUEST_TIMEOUT,
-        purpose="register",
-    )
-    logger.info("register code fetched via %s -> %s", meta["source"], code)
+    signup_body = {
+        "username": username,
+        "email": email,
+        "password": password,
+        "active": True,
+        "institution": "Reset Test",
+        "position": "Researcher",
+        "research_field": "Massflow",
+        "region": "CN",
+        "orcid": None,
+        "homepage": None,
+    }
 
-    rs = await client.post(
-        "/user_signup",
-        json={
-            "username": username,
-            "email": email,
-            "password": password,
-            "verify_code": code,
-            "active": True,
-            "institution": "Reset Test",
-            "position": "Researcher",
-            "research_field": "Massflow",
-            "region": "CN",
-            "orcid": None,
-            "homepage": None,
-        },
+    probe_code = await issue_email_code(f"pwdreset_probe_{secrets.token_hex(4)}@example.com")
+    rs = await client.post("/user_signup", json={**signup_body, "verify_code": probe_code})
+    assert rs.status_code == 400, (
+        f"code issued for another email must not register target email, got {rs.status_code}: {rs.text[:300]}"
     )
+
+    code = await issue_email_code(email)
+    logger.info("register code issued directly for %s", email)
+    rs = await client.post("/user_signup", json={**signup_body, "verify_code": code})
     assert rs.status_code == 200, f"signup failed: {rs.status_code} {rs.text[:300]}"
 
 
