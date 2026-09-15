@@ -54,6 +54,7 @@ class DataCollectionInDB(SQLModel, table=True):
         description="DOI 访问链接列表",
     )
     journal_name: str = Field(default="", max_length=255, description="期刊名")
+    publish_time: datetime | None = Field(default=None, description="文章发表时间（数据集对应文章；可空，纯展示不参与筛选）")
     abstract: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="摘要")
     cite_information: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="引用信息")
 
@@ -110,6 +111,7 @@ class CollectionCreate(SQLModel):
     doi: list[str] = Field(default_factory=list)
     access: list[str] = Field(default_factory=list)
     journal_name: str = Field(default="", max_length=255)
+    publish_time: datetime | None = Field(default=None, description="文章发表时间")
     abstract: str = Field(default="")
     cite_information: str = Field(default="")
     organism: list[str] = Field(default_factory=list)
@@ -134,6 +136,7 @@ class CollectionPatch(SQLModel):
     doi: list[str] | None = Field(default=None)
     access: list[str] | None = Field(default=None)
     journal_name: str | None = Field(default=None, max_length=255)
+    publish_time: datetime | None = Field(default=None, description="文章发表时间")
     abstract: str | None = Field(default=None)
     cite_information: str | None = Field(default=None)
     organism: list[str] | None = Field(default=None)
@@ -170,6 +173,7 @@ class CollectionPublic(SQLModel):
     doi: list[str]
     access: list[str]
     journal_name: str
+    publish_time: datetime | None = Field(default=None, description="文章发表时间（数据集对应文章）")
     abstract: str
     cite_information: str
     organism: list[str]
