@@ -18,12 +18,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-from sqlmodel import select
+from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from storage.oss.oss_storage import OssStorage
 from api_services.file_service import (
-    get_file_record_by_id,
     packup_cache_key,
     unlink_user_from_file,
     update_file_record,
@@ -33,7 +31,6 @@ from api_services.experiment_service import (
     update_origin,
 )
 from api_services.processing_service import (
-    cleanup_output_dir,
     refund_processed_quota,
     refund_processed_quota_for_file,
 )
@@ -43,63 +40,13 @@ from exceptions.file_exceptions import file_not_found_exception
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus, RAW_CONVERT_MARKER
 from models.file_models import FileInDB, FileStatus
+from models.link_models import UserFileLink
 from models.user_models import UserInDB
 
 from tools import utc_time
 from tools.logger import get_logger
 
 logger = get_logger("api_services.composite_service")
-
-
-async def delete_origin_files(
-    session: AsyncSession,
-    file_id: int,
-    storage_type: str,
-) -> None:
-    """
-    删除与文件关联的 origin 文件(imzML、ibd 等)及数据库记录
-
-    用于用户主动删除文件时,完整删除 origin 相关的所有内容
-
-    处理逻辑:
-    1. 查询与 source_file_id 关联的 origin 记录
-    2. 清理所有 process_run 的输出目录（DB 记录由 FK CASCADE 自动删除）
-    3. 删除 origin 相关的物理文件(imzml_path、ibd_path)及目录
-    4. origin 数据库记录由 file 级联删除自动处理
-
-    Raises:
-        OSError: 物理文件删除失败时
-    """
-    if storage_type != "oss":
-        raise ValueError(f"invalid storage type: {storage_type}")
-
-    # 查询 imzML origin 记录
-    origin = await get_origin_imzml_by_file_id(session, file_id)
-
-    if not origin:
-        logger.debug("no origin found for file_id=%s", file_id)
-        return
-
-    # 清理所有 process_run 的结果文件（DB 记录由 FK CASCADE 自动删除）
-    process_runs = (await session.exec(
-        select(ExperimentProcessRunInDB).where(ExperimentProcessRunInDB.experiment_id == origin.id))).all()
-
-    for run in process_runs:
-        if run.out_path:
-            await cleanup_output_dir(run.out_path, storage_type)
-
-    # 收集需要删除的 origin 文件及目录，一次 celery group 统一删除
-    paths_to_delete = []
-    if origin.imzml_path:
-        paths_to_delete.append(origin.imzml_path)
-    if origin.ibd_path:
-        paths_to_delete.append(origin.ibd_path)
-    if origin.imzml_path:
-        paths_to_delete.append(f"{str(Path(origin.imzml_path).parent)}/")
-
-    if paths_to_delete:
-        if await OssStorage.delete_file(paths_to_delete):
-            logger.info("deleted origin files for file_id=%s paths=%s", file_id, paths_to_delete)
 
 
 async def failed_mark_origin_record_clean(
@@ -130,73 +77,6 @@ async def failed_mark_origin_record_clean(
     if origin_record:
         await update_origin(async_session, origin_record, status=o_status,
                             error_message=str(e))
-
-
-async def delete_file_completely(
-    session: AsyncSession,
-    file_id: int,
-    storage_type: str,
-    current_user_id: int | None = None,
-) -> None:
-    """
-    删除一个文件的全部资源（OSS 对象 + DB 记录）。
-
-    编排逻辑：
-    1. 清理 process_run 输出目录（无 origin 记录时需手动处理，有 origin 时由 delete_origin_files 处理）
-    2. 退还所有 process_run 占用的处理配额（run 行随第 6 步级联删除，必须先退）
-    3. 删除 origin 相关文件（imzML/ibd + 目录）
-    4. 删除图像文件
-    5. 删除主 OSS 文件
-    6. 删除 DB 记录（级联删除 origin、UserFileLink 等）
-
-    注意：不处理用户关联解除和所有权校验，由调用方负责。
-
-    Raises:
-        ValueError: 文件不存在或不支持的存储类型
-        OSError: 物理文件删除失败时
-    """
-    if storage_type != "oss":
-        raise ValueError(f"invalid storage type: {storage_type}")
-
-    file_record = await get_file_record_by_id(file_id, session)
-
-    # 1. 清理 process_run 输出目录（无 origin 记录时需手动处理，有 origin 时由 delete_origin_files 处理）
-    origin = await get_origin_imzml_by_file_id(session, file_id)
-    if not origin:
-        run_out_paths = (await session.exec(
-            select(ExperimentProcessRunInDB.out_path).where(
-                ExperimentProcessRunInDB.source_file_id == file_id
-            )
-        )).all()
-        for out_path in run_out_paths:
-            if out_path:
-                await cleanup_output_dir(out_path, storage_type)
-
-    # 2. 退还所有 process_run 占用的处理配额。run 行随后随文件记录级联删除，
-    #    必须在级联前按行退（口径同 delete_process_run），否则配额永久虚占。
-    await refund_processed_quota_for_file(session, file_id)
-
-    # 3. 删除 origin 相关文件（imzML/ibd + 目录）
-    if file_record.experiment_type == "imzML":
-        await delete_origin_files(session, file_id, storage_type)
-
-    # 4. 删除图像文件
-    if file_record.image_path:
-        await OssStorage.delete_file(file_record.image_path)
-        logger.info("deleted image file file_id=%s image_path=%s", file_id, file_record.image_path)
-
-    # 5. 删除主 OSS 文件
-    # TODO：删除与正在执行的 packup 仍有竞态，后续统一调整 packup 回调落库流程时处理。
-    path = (file_record.path or "").strip()
-    if path and path != SOURCE_FILE_PATH_CLEARED:
-        ok = await OssStorage.delete_file(path)
-        if ok is False:
-            raise OSError(f"Failed to delete file: {path}")
-    logger.debug("deleted file physical file path=%s file_id=%s", file_record.path, file_id)
-
-    # 6. 删除 DB 记录（级联删除 origin、UserFileLink 等）
-    await session.delete(file_record)
-    logger.info("deleted file completely file_id=%s user=%s", file_id, current_user_id)
 
 
 #########################
@@ -267,12 +147,15 @@ async def collect_file_delete_snapshot(
 
 async def mark_file_for_deletion(
     session: AsyncSession,
-    current_user: UserInDB,
+    current_user: UserInDB | None,
     file_record: FileInDB,
 ) -> FileDeleteSnapshot | None:
     """
     登记文件删除（① 登记事务，调用方 commit）：
     行锁抢占 → 置 DELETING → unlink + 扣用户配额（用户可见语义）→ 收集路径快照。
+
+    current_user 为 None 表示关联已由调用方解除（删除用户时 userfilelink 随用户行级联删除），
+    此时不做 unlink，只在行锁内确认文件是否还有其他持有者。
 
     行锁把并发删除串行化：后到者在 FOR UPDATE 上等待，拿到锁后看到 DELETING
     直接幂等返回，顺带修掉「最后两个 owner 并发删除」的 TOCTOU。
@@ -303,7 +186,13 @@ async def mark_file_for_deletion(
         logger.info("file already marked for deletion file_id=%s status=%s", locked.file_id, locked.status)
         return await collect_file_delete_snapshot(session, locked)
 
-    has_other_owners = await unlink_user_from_file(session, current_user, locked)
+    if current_user is None:
+        owner_count = (await session.exec(
+            select(func.count()).where(UserFileLink.file_id == locked.file_id)  # pylint: disable=not-callable
+        )).one()
+        has_other_owners = owner_count > 0
+    else:
+        has_other_owners = await unlink_user_from_file(session, current_user, locked)
     if has_other_owners:
         # 还有其他用户持有：只解除关联，不置状态位
         return None

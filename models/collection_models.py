@@ -24,7 +24,8 @@ class DataCollectionInDB(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     # 公开页 URL 标识：base62 随机串 16 位（62^16 ≈ 2^95），不可枚举（禁止用自增 id 对外）
     public_id: str = Field(default_factory=generate_public_id, max_length=16, index=True, unique=True)
-    owner_id: int = Field(foreign_key="userindb.id", index=True)
+    # 删除用户时级联删除其集合（成员行随集合级联删除），否则删除建过集合的用户会被外键约束拦截
+    owner_id: int = Field(foreign_key="userindb.id", index=True, ondelete="CASCADE")
 
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
@@ -81,7 +82,9 @@ class CollectionMember(SQLModel, table=True):
         default=None, foreign_key="fileindb.file_id", primary_key=True, ondelete="CASCADE"
     )
     position: int = Field(default=0, description="集合内顺序：创建按序 / 追加末尾 / 调序全量重写")
-    added_by: int | None = Field(default=None, foreign_key="userindb.id", description="添加人（追溯用）")
+    added_by: int | None = Field(
+        default=None, foreign_key="userindb.id", ondelete="SET NULL", description="添加人（追溯用；添加人被删除时置空）"
+    )
     added_at: datetime = Field(default_factory=utc_time)
 
 
