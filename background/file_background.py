@@ -103,9 +103,12 @@ async def cleanup_old_download_zips(
 ) -> int:
     """
     定时清理符合条件的下载zip文件：
-      - 走到数据库 file 表 path 不为空
+      - 走到数据库 file 表 path 不为空，且未被标记为已清理（哨兵 SOURCE_FILE_PATH_CLEARED）
       - last_downloaded_at 早于 当前时间 - retention_days
-    物理文件删除后只置空 path，保留数据库记录
+    物理文件删除后回写哨兵 path（非空但不再指向物理文件），保留数据库记录。
+
+    注意：查询条件必须排除哨兵。已清理记录的 last_downloaded_at 不会随之更新，
+    若不排除，它们会每轮被重复捞起又整批跳过，导致新文件永远得不到清理（任务"卡住"）。
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup old download zips for all users with TTL {retention_minutes} minutes...")
@@ -114,7 +117,12 @@ async def cleanup_old_download_zips(
         cutoff_time = now - timedelta(minutes=retention_minutes)
         cleaned = 0
         records = (await session.exec(
-            select(FileInDB).where(FileInDB.path != "", FileInDB.last_downloaded_at < cutoff_time)
+            select(FileInDB).where(
+                FileInDB.path != "",
+                FileInDB.path != SOURCE_FILE_PATH_CLEARED,
+                FileInDB.last_downloaded_at < cutoff_time,
+            )
+            .order_by(FileInDB.file_id) # type: ignore[call-overload]
             .limit(batch_size).with_for_update(skip_locked=True))).all()
         for rec in records:
             file_path = rec.path.strip() if rec.path else ""
