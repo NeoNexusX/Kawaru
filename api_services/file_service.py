@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func, col
+from sqlmodel import select, exists, and_, not_, func, col, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -388,6 +388,10 @@ async def prepare_download_file_oss(
         raise internal_server_error_exception from e
 
 
+# 允许签发上传 STS / 允许上传失败回滚清理的文件状态：初始预检记录（""）与上传中断后重试的 UPLOADING
+UPLOADABLE_FILE_STATUSES = ("", FileStatus.UPLOADING)
+
+
 async def validate_simple_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
@@ -411,7 +415,7 @@ async def validate_simple_upload(
         raise file_not_found_exception
 
     # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
-    if pre_record.status not in ("", FileStatus.UPLOADING):
+    if pre_record.status not in UPLOADABLE_FILE_STATUSES:
         logger.warning(
             f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
         )
@@ -524,9 +528,15 @@ async def update_file_record(
     async_session.add(file_record)
 
 
-async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
+async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> bool:
     """
     删除文件时调用,解除用户与文件的关联关系
+
+    直接执行 DELETE 并按受影响行数判断是否真正解除了关联：DELETE 是当前读，
+    并发请求中只有一个能删掉该行；"先查再删"在快照读下可能看到已被删除的关联，导致重复扣减配额。
+
+    Returns:
+        True 表示确实删除了关联行,False 表示该用户本就不持有此文件
 
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
@@ -534,17 +544,15 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
 
-    user_file_linkers = (await async_session.exec(
-        select(UserFileLink).where(
+    result = await async_session.exec(
+        delete(UserFileLink).where(
             and_(UserFileLink.user_id == user.id,
                  UserFileLink.file_id == file.file_id)
         )
-    )).all()
-
-    for linker in user_file_linkers:
-        await async_session.delete(linker)
+    )
     async_session.expire(user, ["files"])
     async_session.expire(file, ["owners"])
+    return result.rowcount > 0
 
 
 async def unlink_user_from_file(
@@ -565,12 +573,15 @@ async def unlink_user_from_file(
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None and user.id is not None
-    await remove_file_link(session, user, file_record)
+    link_removed = await remove_file_link(session, user, file_record)
     session.add(file_record)
 
     # 2. 更新用户统计信息（原子操作，防止并发丢失更新）
-    await atomic_decrement(session, UserInDB, user.id, "file_count")
-    await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
+    #    仅在确实删除了关联行时扣减：该用户本就不持有此文件时（越权请求、管理员操作他人文件等）
+    #    扣减会让计数虚减，可被用来绕过配额
+    if link_removed:
+        await atomic_decrement(session, UserInDB, user.id, "file_count")
+        await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
 
     # 3. 刷新事务
     await session.flush()
@@ -629,6 +640,13 @@ async def rollback_simple_upload(
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
             pre_record = await get_file_record_by_id(_record_id, async_session)
+            # 只清理仍可上传的记录：并发到达的上传回调可能已把它置为 COMPLETED 等状态，此时不能删除
+            if pre_record.status not in UPLOADABLE_FILE_STATUSES:
+                logger.warning(
+                    "skip upload rollback, file is no longer uploadable file_id=%s status=%s",
+                    _record_id, pre_record.status,
+                )
+                return
             current_user = await get_user_by_id(_user_id, async_session) # type: ignore
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效

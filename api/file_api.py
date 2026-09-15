@@ -163,23 +163,23 @@ async def upload_simple_file(
     - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
       未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
     """
+    # 参数与预检记录校验放在 try 之外：校验失败直接返回对应错误，不触发回滚。
+    # 回滚会解除关联并删除预检记录，对他人的 pre_file_id 或已完成的文件执行时，
+    # 会造成配额虚减或误删已完成文件
+    if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
+        raise invalid_request_parameters_exception
 
-    pre_record = None
+    pre_record = await get_file_record_by_id(pre_file_id, async_session)
+    if filename is None:
+        raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
+
+    logger.info(
+        "oss upload start user=%s filename=%s storage=%s",
+        current_user.id, filename, storage_type,
+    )
+    await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
 
     try:
-        if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
-            raise invalid_request_parameters_exception
-
-        pre_record = await get_file_record_by_id(pre_file_id, async_session)
-        if filename is None:
-            raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
-
-        logger.info(
-            "oss upload start user=%s filename=%s storage=%s",
-            current_user.id, filename, storage_type,
-        )
-        await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
-
         # OSS 对象键使用唯一标识 data/{file_id}/{file_verify_code}.{file_type}，
         # 不再使用文件名；FC 解压函数从对象键解析 file_id 后回调后端
         assert pre_record.file_id is not None and pre_record.file_verify_code is not None
