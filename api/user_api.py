@@ -319,8 +319,11 @@ async def update_user(
     user_past.sqlmodel_update(user_data)
     async_session.add(user_past)
     await async_session.commit()
+    # commit 后对象属性被过期，需 refresh 重新加载，否则序列化为响应模型时
+    # 会在异步会话外触发懒加载导致 500（同 reset_password）
+    await async_session.refresh(user_past)
 
-    return user # type:ignore
+    return user_past # type:ignore
 
 
 async def reset_password(
@@ -445,7 +448,7 @@ async def get_user_list(
     # 根据filters条件构建查询
     query = select(UserInDB).filter(
         col(UserInDB.username).like(f"%{filters.username}%") if filters.username else True, # type:ignore # pylint: disable=no-member
-        UserInDB.active == filters.active if filters.active else True, # type:ignore
+        UserInDB.active == filters.active if filters.active is not None else True, # type:ignore
         UserInDB.institution == filters.institution if filters.institution else True, # type:ignore
         UserInDB.region == filters.region if filters.region else True # type:ignore
     )
