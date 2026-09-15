@@ -465,7 +465,8 @@ async def get_download_file_metadata(
     - 普通用户:受用户下载配额限制
     
     注意:
-    - 此接口不做文件归属权限验证:公开页面允许任意登录用户下载文件,因此只校验登录态(token_authen)而不校验文件归属
+    - 权限闸:公开文件(is_public=True)允许任意登录用户下载;私有文件仅持有者或管理员可下载
+    - 私有文件对非持有者一律按 404 处理(不暴露存在性),与 download_raw_noauth 口径一致
     - 此接口只返回元数据,不返回文件流
     - 实际文件下载由前端或其他接口处理
     - 实验文件的 ZIP 包是临时生成的,需要定期清理
@@ -473,6 +474,14 @@ async def get_download_file_metadata(
 
     file_record = await get_file_record_by_id(file_id, session)
     logger.debug(f"download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸:公开文件任意登录用户可下载;私有文件仅持有者/管理员可下载
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
 
     # 下载次数限制检查
     if current_user.identity != "admin":
@@ -533,12 +542,22 @@ async def get_raw_download_metadata(
     - 普通用户：受用户下载配额限制
 
     注意：
+    - 权限闸：公开文件（is_public=True）允许任意登录用户下载；私有文件仅持有者或管理员可下载
+    - 私有文件对非持有者一律按 404 处理（不暴露存在性），与 download_raw_noauth 口径一致
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
     - 不写 file_record.path，不会误删永久 origin 文件
     """
     file_record = await get_file_record_by_id(file_id, session)
 
     logger.debug(f"raw download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸：公开文件任意登录用户可下载；私有文件仅持有者/管理员可下载
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "raw download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
 
     # 下载次数限制检查
     if current_user.identity != "admin":

@@ -115,6 +115,10 @@ class FilePublic(FileBase):
     """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）"""
 
     file_id: int
+    # 内容指纹（MD5）仅内部使用：OSS 对象键、秒传去重、FC 回调校验。
+    # 对外一律不返回——匿名/任意登录用户拿到它即可通过预检秒传成为文件持有者
+    # （进而可改元数据、置公开、删除），因此序列化时显式排除。
+    file_verify_code: str | None = Field(default=None, exclude=True, max_length=32)
     # 公开分享标识（与 file_id 并存：下载链路仍按 file_id，分享页 URL 用 public_id）
     public_id: str
     status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed, deleting, delete_failed")
@@ -186,7 +190,8 @@ class FileDownloadMeta(FileBase):
             file_type=record.file_type,
             size=record.size,
             storage_type=record.storage_type,
-            file_verify_code=record.file_verify_code,
+            # file_verify_code 有意不回填（保持 None）：内容指纹是秒传接管的钥匙，
+            # 即使此接口已限制为持有者/公开文件，也不对外下发，避免被二次秒传接管
             path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,

@@ -268,7 +268,7 @@ def build_file_order(sort_by: str, order: str) -> tuple[Any, Any]:
         (主排序子句, 兜底排序子句)——同值行之间按 file_id 倒序，保证翻页不重不漏
     """
     column = FileInDB.size if sort_by == "size" else FileInDB.uploaded_at
-    primary = col(column).asc() if order == "asc" else col(column).desc()
+    primary = col(column).asc() if order == "asc" else col(column).desc() # pylint: disable=no-member
     return (primary, col(FileInDB.file_id).desc()) # pylint: disable=no-member
 
 
