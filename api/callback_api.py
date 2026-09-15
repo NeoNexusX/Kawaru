@@ -243,7 +243,8 @@ async def algorithm_callback(
 
     根据处理结果更新 process_run 状态和用户配额。
     幂等：失败仅 PROCESSING 在途时落 FAILED（终态不被覆盖）；
-    成功无条件写入，超时兜底误标的 FAILED 可被迟到成功回调翻转
+    成功无条件写入，超时兜底误标的 FAILED 可被迟到成功回调翻转；
+    run 已是 COMPLETED 的重复成功回调直接返回，不再重写状态 / 重复加配额
     对象存在性：成功落库前探测 out_path，缺失直接标 FAILED
 
     :param callback_info: 算法回调信息
@@ -292,6 +293,14 @@ async def algorithm_callback(
             logger.info("algorithm callback failed run_id=%s error=%s", run_id, error_message)
             return run_record
 
+        # 幂等：run 已是 COMPLETED 说明首次成功回调已提交（状态与配额同事务落库），
+        # 重复成功回调直接返回，不再重写状态 / 重复加配额（删除 run 只退一次，重复加
+        # 会造成配额永久虚高）；超时兜底误标 FAILED 的迟到成功回调（非 COMPLETED）
+        # 仍走下方正常成功分支，翻转状态并加一次。
+        if run_record.status == ProcessingStatus.COMPLETED:
+            logger.info("algorithm callback duplicate success run_id=%s, skip", run_id)
+            return run_record
+
         # 校验回调数据完整性
         if not out_path or not output_size or output_size <= 0:
             logger.error("algorithm callback data incomplete run_id=%s", run_id)
@@ -323,6 +332,7 @@ async def algorithm_callback(
         # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
         # 改用 UPDATE SET processed_file_size = processed_file_size + N
         # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+        # 幂等：重复成功回调已在上方早返回，走到这里的一定是首次完成，直接累加。
         if run_record.user_id is not None:
             await atomic_increment(
                 async_session, UserInDB, run_record.user_id,

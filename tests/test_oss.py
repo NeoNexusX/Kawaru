@@ -127,6 +127,11 @@ class TestOss:
         assert rs.status_code == 200, f"metadata failed: {rs.text}"
         body = rs.json()
         assert body["file_id"] == file_id
+        # 内容指纹（file_verify_code/MD5）不得对外泄露：匿名拿到即可通过预检秒传
+        # 成为私有文件持有者（可改元数据、置公开、删除），响应必须不含该字段
+        assert "file_verify_code" not in body, (
+            "metadata must not expose file_verify_code: 防止秒传接管私有文件"
+        )
         logger.info("test_file_metadata passed: file_id=%s filename=%s", file_id, body.get("filename"))
 
     @pytest.mark.oss

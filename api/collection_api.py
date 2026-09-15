@@ -23,7 +23,7 @@ from api_services.collection_service import (
     update_collection,
 )
 from database.db import AsyncSessionDep
-from models.filter_models import ListDataResponse, PaginationMeta
+from models.filter_models import CollectionFilter, ListDataResponse, PaginationMeta
 from models.collection_models import (
     CollectionCreate,
     CollectionDetail,
@@ -68,6 +68,7 @@ async def create_collection_api(
 async def list_collections_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
+    filters: CollectionFilter,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
@@ -75,14 +76,17 @@ async def list_collections_api(
     【集合列表接口】
 
     功能:分页返回当前用户自己的集合（按 updated_at 倒序）
-    用途:集合管理列表与"加入集合"选择器；公开发现页本期不做（靠链接分发）
+
+    用途:集合管理列表与"加入集合"选择器
 
     注意:
+    - 筛选条件走 body（CollectionFilter，不筛选也要发 {}），page/size 走 query
+    - 每个筛选字段可传单值或数组（旧前端单值兼容），同字段多值 OR、不同字段之间 AND
     - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
     - 响应结构与 list_user_files / list_files 一致（meta + data）
     """
     collections, total_records = await list_user_collections(
-        async_session, current_user, page, size
+        async_session, current_user, filters, page, size
     )
     total_pages = (total_records + size - 1) // size
     pagination_meta = PaginationMeta(
@@ -100,6 +104,7 @@ async def list_collections_api(
 async def list_all_collections_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
+    filters: CollectionFilter,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
 ) -> ListDataResponse:
@@ -111,11 +116,13 @@ async def list_all_collections_api(
     权限:任何登录用户
 
     注意:
-    - 与 list_collections_api 的区别：不做 owner 过滤，返回全量集合
+    - 与 list_collections_api 的区别：不做 owner 过滤，返回全量集合（可按 owner_username 筛）
+    - 筛选条件走 body（CollectionFilter，不筛选也要发 {}），page/size 走 query
+    - 每个筛选字段可传单值或数组，同字段多值 OR、不同字段之间 AND
     - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
     - 响应结构与 list_collections_api 一致（meta + data，含自增 id）
     """
-    collections, total_records = await list_all_collections(async_session, page, size)
+    collections, total_records = await list_all_collections(async_session, filters, page, size)
     total_pages = (total_records + size - 1) // size
     pagination_meta = PaginationMeta(
         current_page=page,

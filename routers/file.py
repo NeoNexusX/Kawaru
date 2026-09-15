@@ -6,12 +6,21 @@ from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
-    ListPublicFilesDep,
+    ListPublicFilesDep, GetPublicFileDep,
     OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep
 )
 from database.visit_stats import incr_visit
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
+
+########################
+# 公开端（免登录）——先于 /{file_id} 声明，避免路径被动态段吞掉
+########################
+
+@file_router.get("/public/{public_id}", response_model=FilePublic)
+async def get_public_file(file_record: GetPublicFileDep):
+    """公开文件详情（免登录，凭 public_id；非公开文件返回 404）"""
+    return file_record
 
 ########################
 # 文件管理 API
