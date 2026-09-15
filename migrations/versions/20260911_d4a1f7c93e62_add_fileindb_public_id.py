@@ -1,7 +1,7 @@
 """add fileindb public_id
 
 Revision ID: d4a1f7c93e62
-Revises: a1f4c7d92e36
+Revises: 3ee8d4008a21
 Create Date: 2026-09-11 18:40:00.000000
 
 文件公开分享标识（与 collection 的 public_id 同构）：
@@ -28,7 +28,7 @@ import sqlmodel
 
 # revision identifiers, used by Alembic.
 revision: str = 'd4a1f7c93e62'
-down_revision: str | Sequence[str] | None = 'a1f4c7d92e36'
+down_revision: str | Sequence[str] | None = '3ee8d4008a21'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

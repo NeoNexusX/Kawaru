@@ -24,8 +24,7 @@ email:
   smtp_username: 1513401658@qq.com
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
-  totp_window: 30
-  reset_password_max_attempts: 5   # 单轮密码重置验证码最大校验失败次数，超过则锁定本轮重置
+  reset_password_max_attempts: 5   # 单个邮箱验证码（注册/改邮箱/重置密码）最大校验失败次数，超过则作废该验证码
   email_send_cooldown_seconds: 60   # 同一邮箱两次发送验证码邮件的最小间隔（秒），不区分用途，防邮件轰炸
 
 database:

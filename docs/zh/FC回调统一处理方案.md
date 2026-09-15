@@ -144,7 +144,8 @@ hset {status: PACKING} + TTL
    缺失则重新打包），属加固项而非漏洞
 3. 顺带发现的两个小问题：成功/失败两个分支代码完全相同（都是裸 hset）；
    Redis key 用 **filename** 而 zip 路径用 **file_id**，filename 无唯一
-   约束，同名文件会共享打包状态
+   约束，同名文件会共享打包状态（已修复：状态键与触发锁改为按 file_id，
+   回调从 zip_path 反解 file_id，FC 无需改动）
 
 关键观察：zip 路径是确定性的（`{file_id}.zip`，每轮相同），所以「旧轮
 回调写旧 zip 造成死链」不成立；真正残留的坏场景只有「旧轮迟到 FAILED

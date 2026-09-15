@@ -12,13 +12,13 @@
   - login → list_files 整流程的端到端延迟（ms），不含 logout（仅清理）
 
 复用:
-  - .env 中的 BASE_URL / PERF_TEST_VERIFY_CODE / PERF_TEST_PASSWORD
+  - .env 中的 BASE_URL / PERF_TEST_PASSWORD
   - conftest.py 中的 logger
   - helpers.perf.compute_stats / dump_json / results_path
 
 说明:
-  - /user_signup 需要邮箱验证码。测试优先使用 PERF_TEST_VERIFY_CODE；
-    未提供时，会先请求 /emailsmtprequest，再从服务日志里解析验证码。
+  - /user_signup 需要邮箱验证码，且验证码与邮箱绑定、单次有效。测试直接调用服务端签发逻辑
+    为每个账号的邮箱各签发一个注册码（不真实发信），需与服务端连接同一个 Redis。
   - 用户名和邮箱会带时间戳，避免重复运行时冲突。
 
 运行方式:
@@ -37,7 +37,7 @@ from httpx import AsyncClient
 
 from .conftest import logger, BASE_URL
 from .helpers.perf import compute_stats, dump_json, results_path
-from .helpers.totp import fetch_verify_code_from_logs
+from .helpers.totp import issue_email_code
 
 # ------------------------------------------------------------------ #
 # 并发测试参数，按需修改
@@ -47,7 +47,7 @@ REQUEST_TIMEOUT = 60  # 秒，单个请求超时
 LIST_PAGE = 1
 LIST_SIZE = 10
 TEST_PASSWORD = os.getenv("PERF_TEST_PASSWORD", "PerfTest123456!")
-TEST_VERIFY_CODE = os.getenv("PERF_TEST_VERIFY_CODE")
+VERIFY_CODE_SOURCE = "direct:api_services.user_service.generate_email_code"
 
 
 @dataclass(frozen=True)
@@ -73,26 +73,14 @@ def _build_accounts(run_id: str) -> list[PerfAccount]:
     ]
 
 
-async def _resolve_verify_code(run_id: str) -> tuple[str, str]:
-    """Get a registration verification code from env or server logs."""
-    if TEST_VERIFY_CODE:
-        return TEST_VERIFY_CODE, "env:PERF_TEST_VERIFY_CODE"
+async def _issue_verify_codes(accounts: list[PerfAccount]) -> dict[int, str]:
+    """
+    为每个账号的邮箱各签发一个注册验证码（验证码与邮箱绑定，不能多个账号共用）。
 
-    probe_email = f"perf_verify_{run_id}@example.com"
-    try:
-        code, meta = await fetch_verify_code_from_logs(
-            base_url=BASE_URL,
-            email=probe_email,
-            timeout=REQUEST_TIMEOUT,
-        )
-        return code, meta["source"]
-    except Exception as exc:  # pylint: disable=broad-except
-        pytest.fail(
-            "Could not resolve a registration verification code. "
-            "Set PERF_TEST_VERIFY_CODE manually, or ensure /emailsmtprequest writes "
-            "the SMTP debug message containing 'Your code is <digits>' to logs. "
-            f"Original error: {exc!r}"
-        )
+    直接调用服务端签发逻辑、不真实发信：压测关注登录与列表延迟，不应为 100 个账号发 100 封邮件。
+    逐个签发即可（每个只是两次 Redis 操作），避免并发请求超出 Redis 连接池上限。
+    """
+    return {account.index: await issue_email_code(account.email) for account in accounts}
 
 
 async def _signup_user(account: PerfAccount, verify_code: str) -> dict[str, Any]:
@@ -222,13 +210,13 @@ class TestPerfConcurrentLogin:
     async def test_concurrent_login_listfile(self):
         """100 个账号并发注册成功后，并行执行 login → list_files，记录端到端延迟"""
         run_id = os.getenv("PERF_TEST_RUN_ID", time.strftime("%Y%m%d%H%M%S"))
-        verify_code, verify_code_source = await _resolve_verify_code(run_id)
         accounts = _build_accounts(run_id)
+        verify_codes = await _issue_verify_codes(accounts)
 
         logger.info("[perf concurrent] starting %s concurrent signup tasks", CONCURRENCY)
         signup_wall_t0 = time.perf_counter()
 
-        signup_tasks = [_signup_user(account, verify_code) for account in accounts]
+        signup_tasks = [_signup_user(account, verify_codes[account.index]) for account in accounts]
         signup_results = await asyncio.gather(*signup_tasks, return_exceptions=False)
 
         signup_wall_elapsed = time.perf_counter() - signup_wall_t0
@@ -258,7 +246,7 @@ class TestPerfConcurrentLogin:
             dump_json(
                 {
                     "run_id": run_id,
-                    "verify_code_source": verify_code_source,
+                    "verify_code_source": VERIFY_CODE_SOURCE,
                     "concurrency": CONCURRENCY,
                     "endpoint_signup": "/user_signup",
                     "signup_wall_elapsed_s": signup_wall_elapsed,
@@ -304,7 +292,7 @@ class TestPerfConcurrentLogin:
         json_path = results_path("concurrent_signup_login")
         payload = {
             "run_id": run_id,
-            "verify_code_source": verify_code_source,
+            "verify_code_source": VERIFY_CODE_SOURCE,
             "concurrency": CONCURRENCY,
             "endpoint_signup": "/user_signup",
             "endpoint_login": "/login",
