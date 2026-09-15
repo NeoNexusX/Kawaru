@@ -18,7 +18,8 @@ class UserBase(SQLModel):
     """
     基本用户信息模型
     """
-    username: str = Field(max_length=user_config.max_username_length)
+    # 用户名唯一：登录与 JWT sub 都按用户名定位用户，重名会让 token 解析到其他账号
+    username: str = Field(max_length=user_config.max_username_length, unique=True)
     institution: str = Field(default="", max_length=user_config.max_institution_length)
     position: str = Field(default="", max_length=user_config.max_position_length)
     research_field: str | None = Field(max_length=user_config.max_research_field_length)

@@ -5,25 +5,30 @@
 import secrets
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, func, SQLModel, distinct
 from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_helpers.user_helper import validate_url
 from api_helpers.auth_helper import verify_password, hashed_password
+from models.email_models import EmailPurpose
 from models.user_models import UserInDB
-from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS, RESET_CODE_TTL_SECONDS
+from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS, EMAIL_CODE_TTL_SECONDS
 from database.redis_client import redis_client
 from boot.config import get_config
 from exceptions.user_exceptions import (
+    user_already_exists_exception,
     user_name_bad_exception,
     user_position_not_allowed_exception,
     user_region_not_exist_exception,
     user_orcid_not_exist_exception,
     user_homepage_invalid_exception,
+    user_verification_bad_exception,
     email_already_exists_exception,
     reset_code_invalid_exception,
     reset_password_too_many_attempts_exception,
+    verify_code_too_many_attempts_exception,
     email_send_too_frequent_exception,
 )
 from background.api_background import validate_orcid_task
@@ -114,6 +119,26 @@ async def count_items(
 #########################
 # 业务
 #########################
+async def add_new_user(async_session: AsyncSession, user: UserInDB) -> None:
+    """
+    插入新用户并提交。
+
+    用户名/邮箱唯一性在调用前已由应用层校验，但并发注册同名用户或同一邮箱时可能同时通过校验，
+    最终由数据库唯一约束兜底：捕获 IntegrityError 后回滚，按实际冲突字段转换为 409，而不是 500。
+    """
+    async_session.add(user)
+    try:
+        await async_session.commit()
+    except IntegrityError as exc:
+        await async_session.rollback()
+        if await get_user(user.username, async_session) is not None:
+            raise user_already_exists_exception from exc
+        if await get_user_by_email(user.email, async_session) is not None:
+            raise email_already_exists_exception from exc
+        raise
+    await async_session.refresh(user)
+
+
 async def authenticate_user(username: str, password: str, async_session: AsyncSession) -> UserInDB | None:
     """
     校验用户名/密码并返回用户对象。
@@ -151,21 +176,31 @@ async def validate_orcid(orcid: str) -> bool:
 
 
 #########################
-# 密码重置验证码（与邮箱绑定，存 Redis，单次有效）
+# 邮箱验证码（与用途 + 邮箱绑定，存 Redis，单次有效）
+# 注册、修改邮箱、忘记密码共用：一个码只能用于申请时的用途与邮箱
 #########################
-def _reset_code_key(email: str) -> str:
-    """密码重置验证码在 Redis 中的 key，按邮箱隔离"""
-    return f"reset_code:{email}"
+def _email_code_key(purpose: EmailPurpose, email: str) -> str:
+    """邮箱验证码在 Redis 中的 key，按用途 + 邮箱隔离：注册码不能拿去重置密码，反之亦然"""
+    return f"email_code:{purpose.value}:{email}"
 
 
-def _reset_attempt_key(email: str) -> str:
-    """密码重置验证码校验失败计数在 Redis 中的 key，按邮箱隔离"""
-    return f"reset_attempt:{email}"
+def _email_code_attempt_key(purpose: EmailPurpose, email: str) -> str:
+    """邮箱验证码校验失败计数在 Redis 中的 key，与验证码同粒度隔离"""
+    return f"email_code_attempt:{purpose.value}:{email}"
 
 
 def _email_send_cooldown_key(email: str) -> str:
     """验证码邮件发送冷却标记在 Redis 中的 key，按邮箱隔离、不区分用途"""
     return f"email_send_cd:{email}"
+
+
+# 各用途校验失败时抛出的异常：(验证码无效或已过期, 失败次数超限)
+# 注册/改邮箱沿用原有的 user_verification_bad_exception，前端错误处理无需改动
+_EMAIL_CODE_EXCEPTIONS = {
+    EmailPurpose.REGISTER: (user_verification_bad_exception, verify_code_too_many_attempts_exception),
+    EmailPurpose.UPDATE: (user_verification_bad_exception, verify_code_too_many_attempts_exception),
+    EmailPurpose.RESET_PASSWORD: (reset_code_invalid_exception, reset_password_too_many_attempts_exception),
+}
 
 
 async def enforce_send_cooldown(email: str) -> None:
@@ -181,45 +216,46 @@ async def enforce_send_cooldown(email: str) -> None:
         raise email_send_too_frequent_exception
 
 
-async def generate_and_store_reset_code(email: str) -> str:
+async def generate_email_code(purpose: EmailPurpose, email: str) -> str:
     """
-    为指定邮箱生成 6 位随机重置验证码并写入 Redis（覆盖旧码、重置失败计数）。
-    与全局 TOTP 不同，该码与邮箱绑定、单次有效，避免横向越权与重放。
+    为指定用途 + 邮箱生成 6 位随机验证码并写入 Redis（覆盖旧码、重置失败计数）。
+    码与用途、邮箱绑定且单次有效，避免横向越权与重放。
     发送频率限制由 enforce_send_cooldown 在发送入口统一处理。
     """
     code = f"{secrets.randbelow(10 ** 6):06d}"
-    await redis_client.set(_reset_code_key(email), code, ex=RESET_CODE_TTL_SECONDS) # type: ignore
-    # 新一轮重置开始，清空上一轮的失败计数
-    await redis_client.delete(_reset_attempt_key(email)) # type: ignore
+    await redis_client.set(_email_code_key(purpose, email), code, ex=EMAIL_CODE_TTL_SECONDS) # type: ignore
+    # 新一轮验证开始，清空上一轮的失败计数
+    await redis_client.delete(_email_code_attempt_key(purpose, email)) # type: ignore
     return code
 
 
-async def verify_reset_code(email: str, code: str) -> None:
+async def verify_email_code(purpose: EmailPurpose, email: str, code: str | None) -> None:
     """
-    校验邮箱重置验证码。
-    - 码不存在/已过期：抛 reset_code_invalid_exception
-    - 失败次数超过配置上限：抛 reset_password_too_many_attempts_exception，并作废本轮码
-    - 码错误：计数 +1 后抛 reset_code_invalid_exception
+    校验邮箱验证码：必须是为该用途、该邮箱签发的码。
+    - 码不存在/已过期/未提交：抛该用途的"验证码无效"异常
+    - 失败次数超过配置上限：作废本轮码并抛 429
+    - 码错误：计数 +1 后抛"验证码无效"异常
     - 校验通过：删除码与计数，防止重放
     """
-    code_key = _reset_code_key(email)
-    attempt_key = _reset_attempt_key(email)
+    invalid_exception, too_many_attempts_exception = _EMAIL_CODE_EXCEPTIONS[purpose]
+    code_key = _email_code_key(purpose, email)
+    attempt_key = _email_code_attempt_key(purpose, email)
 
     stored = await redis_client.get(code_key) # type: ignore
-    if stored is None:
-        raise reset_code_invalid_exception
+    if stored is None or not code:
+        raise invalid_exception
 
     # 先累加尝试次数（首次设置与验证码同寿命的 TTL），再判断是否超限
     attempts = await redis_client.incr(attempt_key) # type: ignore
     if attempts == 1:
-        await redis_client.expire(attempt_key, RESET_CODE_TTL_SECONDS) # type: ignore
+        await redis_client.expire(attempt_key, EMAIL_CODE_TTL_SECONDS) # type: ignore
     if attempts > get_config().email.reset_password_max_attempts:
         await redis_client.delete(code_key) # type: ignore  作废本轮码，强制重新申请
-        raise reset_password_too_many_attempts_exception
+        raise too_many_attempts_exception
 
-    # 定长比较，防时序侧信道
-    if not secrets.compare_digest(stored, code):
-        raise reset_code_invalid_exception
+    # 定长比较，防时序侧信道（按字节比较：compare_digest 不接受含非 ASCII 字符的 str）
+    if not secrets.compare_digest(stored.encode(), code.encode()):
+        raise invalid_exception
 
     # 校验通过：清理码与计数
     await redis_client.delete(code_key) # type: ignore

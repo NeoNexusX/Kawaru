@@ -4,9 +4,9 @@
 #########################
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
-from sqlmodel import select, func, col
+from sqlmodel import select, func, col, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -28,7 +28,6 @@ from api_helpers.processing_helper import (
     check_processing_quota,
     validate_algorithms_config,
 )
-from storage.oss.oss_storage import OssStorage
 from exceptions.experiment_exceptions import (
     invalid_process_request_exception,
     process_run_not_found_exception,
@@ -114,7 +113,7 @@ async def create_raw_convert_run(
 # 删
 # 删除流程已切换到删除状态位架构（docs/zh/删除状态位改造方案.md 场景 2）：
 # 登记（mark_run_for_deletion）在 composite 层，执行/收尾在 delete_objects_task。
-# 旧 delete_process_run 已退役；cleanup_output_dir 保留供文件级删除链路使用。
+# 旧 delete_process_run 已退役；文件级删除同样走删除状态位（run 输出目录进入文件删除快照）。
 #########################
 
 
@@ -142,7 +141,7 @@ async def refund_processed_quota_for_file(
     """
     退还指定文件所有 process_run 占用的处理配额（文件级删除路径专用）。
 
-    delete_file_completely / cleanup_failed_experiments 删除文件记录时，
+    finalize_file_deletion / cleanup_failed_experiments 删除文件记录时，
     run 行由 FK 级联删除、out_path 物理清理；若不在删除前按行退还，
     user_id / output_size 随行消失，processed_file_size 将永久虚占。
     必须在 session.delete(file_record) 之前调用。
@@ -167,16 +166,6 @@ async def refund_processed_quota_for_file(
         logger.info("refunded processed quota for file_id=%s runs=%s", file_id, refunded)
 
     return refunded
-
-
-async def cleanup_output_dir(out_path: str, storage_type: str = "oss") -> None:
-    """清理 OSS 输出目录；storage_type 参数为后续扩展本地存储而保留。"""
-    if storage_type != "oss":
-        raise ValueError(f"invalid storage type: {storage_type}")
-    try:
-        await OssStorage.delete_file(out_path)
-    except Exception as e: # pylint: disable=broad-except
-        logger.warning("failed to cleanup output path=%s error=%s", out_path, e)
 
 
 #########################
@@ -254,6 +243,22 @@ async def get_process_run_by_id(
     return record
 
 
+def build_run_filters(filters: RunFilter) -> list[Any]:
+    """RunFilter → SQL 谓词列表（同一字段多值 OR，即任一关键词命中）
+
+    两个字段均为模糊匹配，空值不产生谓词（归一化已在 Filter 模型内完成）。
+    """
+    clauses: list[Any] = []
+    fuzzy_fields = (
+        (FileInDB.filename, filters.filename),
+        (ExperimentProcessRunInDB.params_json, filters.params),
+    )
+    for column, values in fuzzy_fields:
+        if values:
+            clauses.append(or_(*[col(column).like(f"%{value}%") for value in values]))
+    return clauses
+
+
 async def get_user_runs(
     async_session: AsyncSession,
     user_id: int,
@@ -273,11 +278,11 @@ async def get_user_runs(
         .where(ExperimentProcessRunInDB.status.notin_(( # pylint: disable=no-member # type: ignore
             ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED,
         )))
-        # 模糊过滤（file_api 惯例：传了才匹配，没传恒真不过滤）；
-        # 直转 run 的 params_json 为 __RAW_CONVERT__ 标记，天然参与 LIKE 匹配
-        .where(col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True)  # pylint: disable=no-member
-        .where(col(ExperimentProcessRunInDB.params_json).like(f"%{filters.params}%") if filters.params else True)
     )
+    # 模糊过滤（file_api 惯例：传了才匹配，没传恒真不过滤；同字段多值 OR）；
+    # 直转 run 的 params_json 为 __RAW_CONVERT__ 标记，天然参与 LIKE 匹配
+    for clause in build_run_filters(filters):
+        base_query = base_query.where(clause)
 
     total = (await async_session.exec(
         select(func.count()).select_from(base_query.subquery()))).one()  # pylint: disable=not-callable

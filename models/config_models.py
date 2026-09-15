@@ -66,11 +66,13 @@ class EmailSettings(BaseModel):
     smtp_username: str
     smtp_from_email: str
     smtp_server: str
-    totp_window: int
+    # 已废弃：邮箱验证码改为按用途 + 邮箱存 Redis（见 api_services/user_service.py），该项不再生效；
+    # 仅为兼容仍包含此项的旧配置文件而保留（extra="forbid" 下直接删除字段会让旧配置校验失败）
+    totp_window: int | None = None
     reset_password_max_attempts: int = Field(
         default=5,
         ge=1,
-        description="单轮密码重置中，验证码允许的最大校验失败次数，超过则锁定本轮重置以防暴力破解",
+        description="单个邮箱验证码（注册/改邮箱/重置密码）允许的最大校验失败次数，超过则作废该验证码以防暴力破解",
     )
     email_send_cooldown_seconds: int = Field(
         default=60,

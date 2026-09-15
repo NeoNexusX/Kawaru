@@ -1,12 +1,12 @@
 from datetime import timedelta
 
-from sqlmodel import select, func, or_
+from sqlmodel import select, or_
 
 
 from api_services.composite_service import (
-    delete_file_completely,
     finalize_file_deletion,
     finalize_run_deletion,
+    mark_file_for_deletion,
 )
 from api_services.processing_service import refund_processed_quota_for_file
 from api_services.user_service import get_user_by_id
@@ -139,15 +139,15 @@ async def cleanup_old_download_zips(
 async def clean_user_all_task(
     file_ids: list[int],
     deleted_user_id: int | None = None,
-    batch_size: int = 100,
 ) -> dict:
     """
-    清理指定用户删除后保留的文件数据。
+    清理指定用户删除后遗留的文件数据。
 
-    传入 file_ids 后，按 delete_user_file 的逻辑处理每个 file_id:
-    - 先解除已删除用户与文件的关联（如果存在）
-    - 如果文件被多个用户共享，仅解除关联
-    - 如果文件仅属于该用户时，完全删除 OSS 文件和数据库记录
+    用户行删除时 userfilelink 已随之级联删除，这里逐个处理传入的全部 file_id（每个文件独立事务）:
+    - 文件仍有其他持有者：不做处理（关联已随用户删除解除）
+    - 文件已无持有者：与用户删除文件走同一条删除状态位流程——行锁内登记 DELETING 并收集路径快照
+      （源文件、packup zip、预览图目录、origin、全部 run 输出），提交后投递 delete_objects_task，
+      OSS 对象全部删除成功后才删 DB 行
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
@@ -156,23 +156,28 @@ async def clean_user_all_task(
         total_deleted = 0
         total_errors = 0
 
-        for file_id in file_ids[:batch_size]:
+        for file_id in file_ids:
             try:
-                # 检查剩余所有者数量
-                owner_count = (await session.exec(
-                    select(func.count()).where(UserFileLink.file_id == file_id))).one() # pylint: disable=not-callable
-
-                if owner_count > 0:
-                    # 还有其他用户持有，只解除关联
-                    total_unlinked += 1
-                else:
-                    # 没有其他用户持有，执行完全删除
-                    file_record = await get_file_record_by_id(file_id, session)
-                    await delete_file_completely(session, file_id, file_record.storage_type, deleted_user_id)
-                    total_deleted += 1
-
+                # include_deleting=True：已处于删除流程的文件幂等重投删除任务
+                file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
+                snapshot = await mark_file_for_deletion(session, None, file_record)
+                # 先 commit 再投递（顺序理由见 file_api.delete_user_file）
                 await session.commit()
+
+                if snapshot is None:
+                    # 还有其他用户持有，关联已随用户删除解除
+                    total_unlinked += 1
+                    continue
+
+                delete_objects_task.delay(  # type: ignore
+                    kind="file",
+                    resource_id=file_id,
+                    paths=list(snapshot.paths),
+                    redis_keys=list(snapshot.redis_keys),
+                )
+                total_deleted += 1
             except Exception as exc:  # pylint: disable=broad-exception-caught
+                await session.rollback()
                 total_errors += 1
                 logger.error(
                     "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)

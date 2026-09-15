@@ -12,7 +12,12 @@ from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment
 from storage.oss.oss_storage import OssStorage
 
-from api_services.file_service import get_file_record_by_id, update_file_record
+from api_services.file_service import (
+    get_file_record_by_id,
+    packup_cache_key,
+    parse_packup_zip_file_id,
+    update_file_record,
+)
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
 from background.file_background_helper import cleanup_oss_objects_best_effort
@@ -28,6 +33,7 @@ from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
+    invalid_request_parameters_exception,
 )
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
@@ -237,7 +243,8 @@ async def algorithm_callback(
 
     根据处理结果更新 process_run 状态和用户配额。
     幂等：失败仅 PROCESSING 在途时落 FAILED（终态不被覆盖）；
-    成功无条件写入，超时兜底误标的 FAILED 可被迟到成功回调翻转
+    成功无条件写入，超时兜底误标的 FAILED 可被迟到成功回调翻转；
+    run 已是 COMPLETED 的重复成功回调直接返回，不再重写状态 / 重复加配额
     对象存在性：成功落库前探测 out_path，缺失直接标 FAILED
 
     :param callback_info: 算法回调信息
@@ -286,6 +293,14 @@ async def algorithm_callback(
             logger.info("algorithm callback failed run_id=%s error=%s", run_id, error_message)
             return run_record
 
+        # 幂等：run 已是 COMPLETED 说明首次成功回调已提交（状态与配额同事务落库），
+        # 重复成功回调直接返回，不再重写状态 / 重复加配额（删除 run 只退一次，重复加
+        # 会造成配额永久虚高）；超时兜底误标 FAILED 的迟到成功回调（非 COMPLETED）
+        # 仍走下方正常成功分支，翻转状态并加一次。
+        if run_record.status == ProcessingStatus.COMPLETED:
+            logger.info("algorithm callback duplicate success run_id=%s, skip", run_id)
+            return run_record
+
         # 校验回调数据完整性
         if not out_path or not output_size or output_size <= 0:
             logger.error("algorithm callback data incomplete run_id=%s", run_id)
@@ -317,6 +332,7 @@ async def algorithm_callback(
         # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
         # 改用 UPDATE SET processed_file_size = processed_file_size + N
         # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+        # 幂等：重复成功回调已在上方早返回，走到这里的一定是首次完成，直接累加。
         if run_record.user_id is not None:
             await atomic_increment(
                 async_session, UserInDB, run_record.user_id,
@@ -428,26 +444,37 @@ async def tic_callback(
 
 
 async def oss_packup_callback(
-    filename: str,
     status: PackupStatus,
     zip_path: str | None = None,
+    filename: str | None = None,
 ) -> None:
     """
     处理OSS文件打包回调
+
+    打包状态按 file_id 存储（同名文件跨用户不串号）。file_id 由 zip_path 反解：
+    发起打包时按 {OSS_PACKUP_ZIP_STORAGE_ROOT}/{file_id}.zip 生成对象键下发给 FC，
+    回调原样带回，FC 侧无需改动。filename 仅用于日志。
     """
+    file_id = parse_packup_zip_file_id(zip_path)
+    if file_id is None:
+        logger.error("oss packup callback rejected, invalid zip_path=%s, filename=%s, status=%s",
+                     zip_path, filename, status)
+        raise invalid_request_parameters_exception
+
+    oss_packup_key = packup_cache_key(file_id)
     r = redis_client
     try:
         # 打包成功，存储URL，更新状态为COMPLETED
         if status == PackupStatus.COMPLETED:
-            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
+            await r.hset(oss_packup_key, mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
         # 打包失败，更新状态为FAILED
         if status == PackupStatus.FAILED:
-            await r.hset(f"oss_packup-{filename}", mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(f"oss_packup-{filename}", PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
+            await r.hset(oss_packup_key, mapping={"status": status.value, "file_path": zip_path}) # type:ignore
+            await r.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
 
     except Exception as e:
-        logger.error("oss packup callback error, filename=%s, error=%s", filename, e)
+        logger.error("oss packup callback error, file_id=%s, filename=%s, error=%s", file_id, filename, e)
         raise internal_server_error_exception from e
 
 

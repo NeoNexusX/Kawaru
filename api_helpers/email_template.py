@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from boot.config import get_config
 from models.email_models import EmailPurpose
 
-# 验证码有效期（分钟），用于正文提示文案；与 TOTP interval / RESET_CODE_TTL_SECONDS 保持一致
+# 验证码有效期（分钟），用于正文提示文案；与 constants.user_constants.EMAIL_CODE_TTL_SECONDS 保持一致
 _CODE_VALID_MINUTES = 5
 
 

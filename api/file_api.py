@@ -11,6 +11,7 @@ from api_helpers.file_helper import check_user_quota
 from api_services.composite_service import mark_file_for_deletion
 from api_services.file_service import (
     assert_file_owner,
+    build_file_filters,
     build_file_order,
     get_user_file_ids,
     link_file_to_user,
@@ -24,6 +25,7 @@ from api_services.file_service import (
     validate_simple_upload,
     validate_upload_request,
     get_file_record_by_id,
+    get_public_file_by_public_id,
     update_file_record,
 )
 from background.file_background import delete_objects_task
@@ -163,23 +165,23 @@ async def upload_simple_file(
     - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
       未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
     """
+    # 参数与预检记录校验放在 try 之外：校验失败直接返回对应错误，不触发回滚。
+    # 回滚会解除关联并删除预检记录，对他人的 pre_file_id 或已完成的文件执行时，
+    # 会造成配额虚减或误删已完成文件
+    if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
+        raise invalid_request_parameters_exception
 
-    pre_record = None
+    pre_record = await get_file_record_by_id(pre_file_id, async_session)
+    if filename is None:
+        raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
+
+    logger.info(
+        "oss upload start user=%s filename=%s storage=%s",
+        current_user.id, filename, storage_type,
+    )
+    await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
 
     try:
-        if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
-            raise invalid_request_parameters_exception
-
-        pre_record = await get_file_record_by_id(pre_file_id, async_session)
-        if filename is None:
-            raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
-
-        logger.info(
-            "oss upload start user=%s filename=%s storage=%s",
-            current_user.id, filename, storage_type,
-        )
-        await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
-
         # OSS 对象键使用唯一标识 data/{file_id}/{file_verify_code}.{file_type}，
         # 不再使用文件名；FC 解压函数从对象键解析 file_id 后回调后端
         assert pre_record.file_id is not None and pre_record.file_verify_code is not None
@@ -232,6 +234,7 @@ async def list_user_files(
 
     注意:
     - 只返回用户拥有的文件，包括预检记录
+    - 筛选字段支持单值或数组两种写法（旧前端单值兼容），同字段多值 OR、不同字段之间 AND
     - 支持模糊查询文件名
     - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
       非法取值由 FastAPI 返回 422
@@ -254,21 +257,10 @@ async def list_user_files(
         # 2. 构建查询语句
         file_query = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
 
-        # 3. 应用过滤器
-        file_query = file_query.filter(
-            and_(
-                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
-                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
-                FileInDB.organism == filters.organism if filters.organism else True,
-                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
-                FileInDB.condition == filters.condition if filters.condition else True,
-                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
-                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
-                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
-                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
-                FileInDB.solvent == filters.solvent if filters.solvent else True,
-            )
-        )
+        # 3. 应用过滤器（同一字段多值 OR、不同字段之间 AND，谓词构建见 build_file_filters）
+        filter_clauses = build_file_filters(filters)
+        if filter_clauses:
+            file_query = file_query.filter(and_(*filter_clauses))
 
         # 4. 计算总数
         total_records = await count_items(session, file_query, FileInDB)
@@ -473,7 +465,8 @@ async def get_download_file_metadata(
     - 普通用户:受用户下载配额限制
     
     注意:
-    - 此接口不做文件归属权限验证:公开页面允许任意登录用户下载文件,因此只校验登录态(token_authen)而不校验文件归属
+    - 权限闸:公开文件(is_public=True)允许任意登录用户下载;私有文件仅持有者或管理员可下载
+    - 私有文件对非持有者一律按 404 处理(不暴露存在性),与 download_raw_noauth 口径一致
     - 此接口只返回元数据,不返回文件流
     - 实际文件下载由前端或其他接口处理
     - 实验文件的 ZIP 包是临时生成的,需要定期清理
@@ -481,6 +474,14 @@ async def get_download_file_metadata(
 
     file_record = await get_file_record_by_id(file_id, session)
     logger.debug(f"download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸:公开文件任意登录用户可下载;私有文件仅持有者/管理员可下载
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
 
     # 下载次数限制检查
     if current_user.identity != "admin":
@@ -541,12 +542,22 @@ async def get_raw_download_metadata(
     - 普通用户：受用户下载配额限制
 
     注意：
+    - 权限闸：公开文件（is_public=True）允许任意登录用户下载；私有文件仅持有者或管理员可下载
+    - 私有文件对非持有者一律按 404 处理（不暴露存在性），与 download_raw_noauth 口径一致
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
     - 不写 file_record.path，不会误删永久 origin 文件
     """
     file_record = await get_file_record_by_id(file_id, session)
 
     logger.debug(f"raw download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸：公开文件任意登录用户可下载；私有文件仅持有者/管理员可下载
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "raw download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
 
     # 下载次数限制检查
     if current_user.identity != "admin":
@@ -698,36 +709,31 @@ async def get_file_list(
     - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
       非法取值由 FastAPI 返回 422
     - 结果按 sort_by 方向排序，file_id DESC 兜底，保证分页稳定
+    - 筛选字段支持单值或数组两种写法（旧前端单值兼容），同字段多值 OR、不同字段之间 AND
     - 查询参数(filters)默认值为空字典
 
     """
     try:
-        # 首先针对username模糊匹配数据库中的用户id列表
+        # username 过滤（多值为 OR 连接的模糊匹配）：先查匹配的用户 id，再按关联表限定
         user_ids = []
         if filters.username:
-            user_query = select(UserInDB.id).where(col(UserInDB.username).like(f"%{filters.username}%"))
+            user_query = select(UserInDB.id).where(
+                or_(*[col(UserInDB.username).like(f"%{username}%") for username in filters.username]) # pylint: disable=no-member
+            )
             user_ids = (await async_session.exec(user_query)).all() or []
 
         # 构建select语句
         file_query = select(FileInDB)
 
-        # 如果有username过滤,则内连接UserFileLink表,确保关联用户的文件会被列出来
-        if user_ids:
+        # 只要有username过滤就内连接UserFileLink表（无匹配用户时由下方条件自然筛空）
+        if filters.username:
             file_query = file_query.join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type:ignore
 
-        # 构建其余的筛选条件
+        # 构建其余的筛选条件（同一字段多值 OR、不同字段之间 AND）
+        filter_clauses = build_file_filters(filters)
         file_query = file_query.filter(
             and_(
-                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
-                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
-                FileInDB.organism == filters.organism if filters.organism else True,
-                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
-                FileInDB.condition == filters.condition if filters.condition else True,
-                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
-                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
-                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
-                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
-                FileInDB.solvent == filters.solvent if filters.solvent else True,
+                *filter_clauses,
                 FileInDB.is_public == True, # noqa: E712 # pylint: disable=singleton-comparison
 
                 # 用户关联条件：没有username过滤或user_id在匹配列表中
@@ -800,6 +806,40 @@ async def get_file_metadata(
         raise internal_server_error_exception from e
 
 
+async def get_public_file_api(
+    public_id: str,
+    async_session: AsyncSessionDep,
+) -> FilePublic:
+    """
+    【公开文件详情接口（免登录）】
+
+    功能:凭 URL 中的 public_id 返回文件元数据，供分享页展示
+    时机:访客打开分享链接时调用
+
+    安全:
+    - 非公开文件即使 public_id 正确也返回 404（不暴露存在性）
+    - 非 completed 的文件返回 404（删除流程中的文件不可访问）
+
+    注意:
+    - 响应沿用 FilePublic：含 file_id 与 public_id 两个标识，前者供前端继续
+      调用现有下载接口（/files/{file_id}/download_raw_noauth），下载链路本轮
+      不做 public_id 改造；后者用于分享链接自身
+    - 免登录下载仅覆盖 oss + imzML，其他实验类型的分享页目前拿不到下载地址
+    """
+    try:
+        file_record = await get_public_file_by_public_id(async_session, public_id)
+        logger.info(
+            f"get public file public_id={public_id} file_id={file_record.file_id}"
+        )
+        return FilePublic(**file_record.model_dump())
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"failed to get_public_file_api: {e}")
+        raise internal_server_error_exception from e
+
+
 async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
@@ -828,5 +868,6 @@ PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
+GetPublicFileDep = Annotated[FilePublic, Depends(get_public_file_api)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
 PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]

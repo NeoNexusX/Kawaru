@@ -17,13 +17,13 @@ ALLOWED_REGIONS = {
 # 无操作后登录自动过期时间
 LOGIN_EXPIRE_SECONDS = config.token.login_expire_minutes * 60
 
-# 密码重置验证码有效期（秒），与邮件验证码 TOTP 的 5 分钟窗口保持一致
-RESET_CODE_TTL_SECONDS = 300
+# 邮箱验证码有效期（秒），注册/改邮箱/重置密码共用；与邮件正文提示的 5 分钟保持一致（见 api_helpers/email_template.py）
+EMAIL_CODE_TTL_SECONDS = 300
 
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "ALLOWED_POSITION_TYPES",
     "ALLOWED_REGIONS",
+    "EMAIL_CODE_TTL_SECONDS",
     "LOGIN_EXPIRE_SECONDS",
-    "RESET_CODE_TTL_SECONDS",
 ]

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func, col
+from sqlmodel import select, exists, and_, or_, not_, func, col, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
@@ -46,6 +46,7 @@ from exceptions import (
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
 from models.file_models import FileCreate, FileInDB, FilePatch, FileStatus, PackupStatus, OssDownloadFile
+from models.filter_models import FileFilter
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
@@ -155,6 +156,39 @@ async def get_file_record_by_id(
     return file_record
 
 
+async def get_public_file_by_public_id(
+    async_session: AsyncSession, public_id: str
+) -> FileInDB:
+    """
+    根据 public_id 查询公开文件记录（免登录分享页用）
+
+    与 collection 的 get_public_collection_by_public_id 同构：
+    - 非公开文件即使 public_id 正确也按不存在处理（404 不暴露存在性）
+    - 非 completed（含删除流程状态位）同样 404，避免分享链接返回僵尸记录
+
+    Returns:
+        文件记录对象
+    Raises:
+        file_not_found_exception: 文件不存在、非公开或不可用
+    """
+    statement = select(FileInDB).where(FileInDB.public_id == public_id)
+
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record or not file_record.is_public:
+        logger.warning("public file not found public_id=%s", public_id)
+        raise file_not_found_exception
+
+    if file_record.status != FileStatus.COMPLETED:
+        logger.warning(
+            "public file not available public_id=%s file_id=%s status=%s",
+            public_id, file_record.file_id, file_record.status,
+        )
+        raise file_not_found_exception
+
+    return file_record
+
+
 #########################
 # File  - 增
 #########################
@@ -234,8 +268,60 @@ def build_file_order(sort_by: str, order: str) -> tuple[Any, Any]:
         (主排序子句, 兜底排序子句)——同值行之间按 file_id 倒序，保证翻页不重不漏
     """
     column = FileInDB.size if sort_by == "size" else FileInDB.uploaded_at
-    primary = col(column).asc() if order == "asc" else col(column).desc()
+    primary = col(column).asc() if order == "asc" else col(column).desc() # pylint: disable=no-member
     return (primary, col(FileInDB.file_id).desc()) # pylint: disable=no-member
+
+
+# 精确匹配（IN）的筛选字段：FileInDB 上的单值列，多值语义即为"命中任一值"
+FILE_EXACT_FILTER_FIELDS = (
+    "experiment_type",
+    "organism",
+    "organism_part",
+    "condition",
+    "sample_stabilization",
+    "sample_growth_conditions",
+    "tissue_modification",
+    "maldi_matrix",
+    "maldi_matrix_application",
+    "solvent",
+    "polarity",
+    "ionisation_source",
+    "analyzer",
+)
+
+# 模糊匹配（LIKE %v%）的筛选字段：多值语义为"任一关键词命中"
+FILE_FUZZY_FILTER_FIELDS = (
+    "filename",
+    "first_uploaded_by",
+)
+
+
+def build_file_filters(filters: FileFilter) -> list[Any]:
+    """FileFilter → SQL 谓词列表（同字段多值 OR，不同字段之间由调用方 AND）
+
+    供个人文件列表与公共文件列表共用，口径与 build_file_order 一致：
+    空值不产生谓词（归一化已在 Filter 模型内完成，空值一律为 None）。
+
+    模糊字段为 OR 连接的 LIKE，精确字段为 IN；大小写由列排序规则
+    （utf8mb4_unicode_ci）保证不敏感，无需额外处理。
+
+    注意：username 筛选需要 join 用户-文件关联表，不在此处生成，由调用方单独处理。
+    """
+    clauses: list[Any] = []
+
+    for field in FILE_FUZZY_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(
+                or_(*[col(getattr(FileInDB, field)).like(f"%{value}%") for value in values])
+            )
+
+    for field in FILE_EXACT_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(col(getattr(FileInDB, field)).in_(values))
+
+    return clauses
 
 
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | None]:
@@ -310,6 +396,28 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
+def packup_cache_key(file_id: int) -> str:
+    """打包状态缓存键（Redis Hash）。按 file_id 隔离：文件名只在同一用户内唯一，以文件名为键会让同名文件跨用户串号"""
+    return f"oss_packup-{file_id}"
+
+
+def packup_zip_path(file_id: int) -> str:
+    """打包 zip 的 OSS 对象键：{OSS_PACKUP_ZIP_STORAGE_ROOT}/{file_id}.zip"""
+    return f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_id}.zip"  # type: ignore
+
+
+def parse_packup_zip_file_id(zip_path: str | None) -> int | None:
+    """packup_zip_path 的逆操作：从打包回调带回的 zip 对象键解析 file_id，格式不符返回 None"""
+    if not zip_path:
+        return None
+    stem = Path(zip_path).stem
+    if not (stem.isascii() and stem.isdigit()):
+        return None
+    file_id = int(stem)
+    # 必须与发起打包时下发给 FC 的对象键完全一致，其他目录下的同名 zip 不认
+    return file_id if zip_path.strip("/") == packup_zip_path(file_id) else None
+
+
 async def prepare_download_file_oss(
     session: AsyncSession,
     file_record: FileInDB,
@@ -323,8 +431,10 @@ async def prepare_download_file_oss(
     Raises:
         file_content_missing_exception: 文件内容缺失
     """
-    oss_packup_key = f"oss_packup-{file_record.filename}"
-    oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
+    assert file_record.file_id is not None
+    # 打包状态与触发锁均按 file_id 隔离（见 packup_cache_key）
+    oss_packup_key = packup_cache_key(file_record.file_id)
+    oss_packup_lock_key = f"oss_packup_lock-{file_record.file_id}"
 
     # path 为空说明上传从未完成（预检记录或上传中断），既无源 zip 可签、
     # origin 也不存在（无法打包），直接判定内容缺失，避免对空路径走 OSS 签名。
@@ -364,6 +474,10 @@ async def prepare_download_file_oss(
         raise internal_server_error_exception from e
 
 
+# 允许签发上传 STS / 允许上传失败回滚清理的文件状态：初始预检记录（""）与上传中断后重试的 UPLOADING
+UPLOADABLE_FILE_STATUSES = ("", FileStatus.UPLOADING)
+
+
 async def validate_simple_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
@@ -387,7 +501,7 @@ async def validate_simple_upload(
         raise file_not_found_exception
 
     # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
-    if pre_record.status not in ("", FileStatus.UPLOADING):
+    if pre_record.status not in UPLOADABLE_FILE_STATUSES:
         logger.warning(
             f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
         )
@@ -500,9 +614,15 @@ async def update_file_record(
     async_session.add(file_record)
 
 
-async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
+async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> bool:
     """
     删除文件时调用,解除用户与文件的关联关系
+
+    直接执行 DELETE 并按受影响行数判断是否真正解除了关联：DELETE 是当前读，
+    并发请求中只有一个能删掉该行；"先查再删"在快照读下可能看到已被删除的关联，导致重复扣减配额。
+
+    Returns:
+        True 表示确实删除了关联行,False 表示该用户本就不持有此文件
 
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
@@ -510,17 +630,15 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
 
-    user_file_linkers = (await async_session.exec(
-        select(UserFileLink).where(
+    result = await async_session.exec(
+        delete(UserFileLink).where(
             and_(UserFileLink.user_id == user.id,
                  UserFileLink.file_id == file.file_id)
         )
-    )).all()
-
-    for linker in user_file_linkers:
-        await async_session.delete(linker)
+    )
     async_session.expire(user, ["files"])
     async_session.expire(file, ["owners"])
+    return result.rowcount > 0
 
 
 async def unlink_user_from_file(
@@ -541,12 +659,15 @@ async def unlink_user_from_file(
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None and user.id is not None
-    await remove_file_link(session, user, file_record)
+    link_removed = await remove_file_link(session, user, file_record)
     session.add(file_record)
 
     # 2. 更新用户统计信息（原子操作，防止并发丢失更新）
-    await atomic_decrement(session, UserInDB, user.id, "file_count")
-    await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
+    #    仅在确实删除了关联行时扣减：该用户本就不持有此文件时（越权请求、管理员操作他人文件等）
+    #    扣减会让计数虚减，可被用来绕过配额
+    if link_removed:
+        await atomic_decrement(session, UserInDB, user.id, "file_count")
+        await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
 
     # 3. 刷新事务
     await session.flush()
@@ -605,6 +726,13 @@ async def rollback_simple_upload(
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
             pre_record = await get_file_record_by_id(_record_id, async_session)
+            # 只清理仍可上传的记录：并发到达的上传回调可能已把它置为 COMPLETED 等状态，此时不能删除
+            if pre_record.status not in UPLOADABLE_FILE_STATUSES:
+                logger.warning(
+                    "skip upload rollback, file is no longer uploadable file_id=%s status=%s",
+                    _record_id, pre_record.status,
+                )
+                return
             current_user = await get_user_by_id(_user_id, async_session) # type: ignore
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效
@@ -809,7 +937,7 @@ async def _execute_packup_flow(
     fc_request_id = await packup_oss_file(
         filename=file_record.filename,
         packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
+        zip_file_path=packup_zip_path(file_record.file_id),  # type: ignore
     )
 
     if fc_request_id is None:

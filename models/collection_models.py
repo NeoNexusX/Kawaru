@@ -24,13 +24,22 @@ class DataCollectionInDB(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True, sa_column_kwargs={"autoincrement": True})
     # 公开页 URL 标识：base62 随机串 16 位（62^16 ≈ 2^95），不可枚举（禁止用自增 id 对外）
     public_id: str = Field(default_factory=generate_public_id, max_length=16, index=True, unique=True)
-    owner_id: int = Field(foreign_key="userindb.id", index=True)
+    # 删除用户时级联删除其集合（成员行随集合级联删除），否则删除建过集合的用户会被外键约束拦截
+    owner_id: int = Field(foreign_key="userindb.id", index=True, ondelete="CASCADE")
 
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
     is_public: bool = Field(default=True, description="集合公开状态（第一期恒 True 且不可修改）")
-    member_type: str = Field(default="", max_length=32, description="集合包含何种数据（当前为 MSI）")
-    collection_type: str = Field(default="", max_length=32, description="预留，如 series（系列数据，有序）")
+    member_type: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+        description="集合包含的数据类型（多值，如 MSI、H&E、ST）",
+    )
+    collection_type: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+        description="集合的构成方式（多值，如 Serial sections、Time series）",
+    )
 
     # 学术信息（全部可空/默认空）
     title: str = Field(default="", max_length=500, description="数据集标题")
@@ -45,6 +54,7 @@ class DataCollectionInDB(SQLModel, table=True):
         description="DOI 访问链接列表",
     )
     journal_name: str = Field(default="", max_length=255, description="期刊名")
+    publish_time: datetime | None = Field(default=None, description="文章发表时间（数据集对应文章；可空，纯展示不参与筛选）")
     abstract: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="摘要")
     cite_information: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="引用信息")
 
@@ -81,7 +91,9 @@ class CollectionMember(SQLModel, table=True):
         default=None, foreign_key="fileindb.file_id", primary_key=True, ondelete="CASCADE"
     )
     position: int = Field(default=0, description="集合内顺序：创建按序 / 追加末尾 / 调序全量重写")
-    added_by: int | None = Field(default=None, foreign_key="userindb.id", description="添加人（追溯用）")
+    added_by: int | None = Field(
+        default=None, foreign_key="userindb.id", ondelete="SET NULL", description="添加人（追溯用；添加人被删除时置空）"
+    )
     added_at: datetime = Field(default_factory=utc_time)
 
 
@@ -93,12 +105,13 @@ class CollectionCreate(SQLModel):
 
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
-    member_type: str = Field(default="", max_length=32)
-    collection_type: str = Field(default="", max_length=32)
+    member_type: list[str] = Field(default_factory=list)
+    collection_type: list[str] = Field(default_factory=list)
     title: str = Field(default="", max_length=500)
     doi: list[str] = Field(default_factory=list)
     access: list[str] = Field(default_factory=list)
     journal_name: str = Field(default="", max_length=255)
+    publish_time: datetime | None = Field(default=None, description="文章发表时间")
     abstract: str = Field(default="")
     cite_information: str = Field(default="")
     organism: list[str] = Field(default_factory=list)
@@ -117,12 +130,13 @@ class CollectionPatch(SQLModel):
 
     name: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    member_type: str | None = Field(default=None, max_length=32)
-    collection_type: str | None = Field(default=None, max_length=32)
+    member_type: list[str] | None = Field(default=None)
+    collection_type: list[str] | None = Field(default=None)
     title: str | None = Field(default=None, max_length=500)
     doi: list[str] | None = Field(default=None)
     access: list[str] | None = Field(default=None)
     journal_name: str | None = Field(default=None, max_length=255)
+    publish_time: datetime | None = Field(default=None, description="文章发表时间")
     abstract: str | None = Field(default=None)
     cite_information: str | None = Field(default=None)
     organism: list[str] | None = Field(default=None)
@@ -153,12 +167,13 @@ class CollectionPublic(SQLModel):
     owner_username: str = Field(default="", description="owner 用户名（公开页发起加文件时前端展示用）")
     name: str
     description: str
-    member_type: str
-    collection_type: str
+    member_type: list[str]
+    collection_type: list[str]
     title: str
     doi: list[str]
     access: list[str]
     journal_name: str
+    publish_time: datetime | None = Field(default=None, description="文章发表时间（数据集对应文章）")
     abstract: str
     cite_information: str
     organism: list[str]
