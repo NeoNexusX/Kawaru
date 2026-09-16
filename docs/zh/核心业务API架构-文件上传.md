@@ -1,6 +1,6 @@
 # 文件上传业务与 OSS 生命周期
 
-本文档面向新接手的开发者，介绍文件上传业务的整体流程。当前系统只支持将 imzML 数据打包成 ZIP 后上传。回调事务、失败回收等实现细节见[OSS 上传回调流程](上传回调流程.md)。
+本文档面向新接手的开发者，介绍文件上传业务的整体流程。当前系统只支持将 imzML 数据打包成 ZIP 后上传。回调事务、失败回收等实现细节见 [异步任务与回调架构](异步任务与回调架构.md)。
 
 ## 1. 业务目标
 
@@ -20,7 +20,8 @@ flowchart LR
     User[用户] --> Frontend[前端]
     Frontend --> API[FastAPI 后端]
     API --> DB[(数据库)]
-    API --> Worker[Celery Worker]
+    API -- 投递任务 --> Broker[(Redis Broker)]
+    Broker -- 消费任务 --> Worker[Celery Worker]
     Worker --> OSS[(OSS)]
     Frontend -- 使用 STS 直传 --> OSS
     OSS -- 上传事件 --> FC[解包 FC]
@@ -95,19 +96,22 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Preflight: 预检完成
-    Preflight --> Uploading: 获取 STS
-    Uploading --> Completed: FC 回调成功
+    [*] --> Preflight: 预检创建记录并预占配额
+    Preflight --> Uploading: 成功签发 STS
+    Uploading --> Uploading: 获取 STS / 直传 / 等待回调
+    Uploading --> Completed: 回调校验及持久化成功
     Uploading --> Failed: 解包或校验失败
-    Preflight --> Removed: 预检过期
-    Uploading --> Removed: 长时间没有回调
+    Completed --> Failed: 后续标签或预览任务投递失败
+    Preflight --> Removed: 空路径且超过预检 TTL
+    Uploading --> Removed: 空路径且超过预检 TTL
     Failed --> Removed: 失败记录过期清理
+    Removed --> [*]
 ```
 
 | 状态 | 含义 |
 |---|---|
-| 预检状态 | 已创建记录，但还没有开始上传 |
-| `uploading` | 已签发 STS，正在上传或等待 FC 回调 |
+| 预检态（内部值为空字符串） | 已创建记录并预占配额，尚未成功签发 STS |
+| `uploading` | 已成功签发 STS，正在上传或等待回调 |
 | `completed` | 解包和校验完成，可以用于后续业务 |
 | `failed` | 上传、解包或回调校验失败 |
 
@@ -125,4 +129,4 @@ OSS 直传成功不等于业务上传成功，客户端应以数据库状态 `co
 
 ## 延伸阅读
 
-回调事务边界、失败回收方式和幂等问题见[OSS 上传回调流程](上传回调流程.md)。
+回调事务边界、失败回收方式和幂等问题见 [异步任务与回调架构](异步任务与回调架构.md)。

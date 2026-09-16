@@ -32,17 +32,22 @@ sequenceDiagram
     participant FE as 前端
     participant API as 后端
     participant DB as 数据库
+    participant Redis as Redis 缓存
+    participant Worker as Celery Worker（经 Broker）
     participant OSS as OSS
 
     FE->>API: 请求 RAW 直链
-    API->>DB: 下载配额检查、校验 origin 就绪
-    alt 签名结果在缓存有效期内
-        API-->>FE: 返回缓存的两个 URL
-    else 未缓存
-        API->>OSS: 为 imzML 和 ibd 各签预签名 URL
-        API-->>FE: 返回两个 URL
+    API->>DB: 文件状态、权限与配额检查
+    API->>Redis: 查询 URL 缓存
+    alt 缓存未命中
+        API->>DB: 检查 Origin 就绪
+        API->>Worker: 投递对象检查与签名任务，等待结果
+        Worker->>OSS: 检查 imzML / ibd 对象
+        Worker-->>API: 返回检查结果与两个签名 URL
+        API->>Redis: 缓存 URL（短于签名有效期）
     end
-    API->>DB: 更新文件和用户下载统计
+    API->>DB: 更新文件和用户下载统计并提交
+    API-->>FE: 返回两个 URL
     FE->>OSS: 直连下载
 ```
 
@@ -60,23 +65,36 @@ sequenceDiagram
     autonumber
     participant FE as 前端
     participant API as 后端
+    participant DB as 数据库
+    participant Redis as Redis 缓存
+    participant Worker as Celery Worker（经 Broker）
     participant FC as 打包 FC
     participant OSS as OSS
 
     FE->>API: 请求 ZIP 下载
-    API->>API: 配额检查、查询打包状态
-    alt 已有可用的 ZIP
-        API->>OSS: 对 ZIP 签名
+    API->>DB: 权限与配额检查
+    API->>Redis: 查询打包状态
+    alt 已有可用 ZIP
+        API->>Worker: 签名任务（缓存命中可复用 URL）
+        Worker-->>API: 签名 URL
+        API->>DB: 更新下载统计并提交
         API-->>FE: 返回下载 URL
     else 需要打包
-        API->>FC: 从 origin 打包成 ZIP
-        API-->>FE: 返回 <PACKING>，前端稍后重试
-        FC->>OSS: 写入 ZIP 并回调结果
-        FE->>API: 再次请求
-        API->>OSS: 对新 ZIP 签名
+        API->>Worker: 投递打包触发任务
+        Worker->>FC: HTTP 异步触发
+        Worker-->>API: 返回触发结果
+        API->>Redis: 标记 packing
+        API-->>FE: 返回 <PACKING>（不计次）
+        FC->>OSS: 写入 ZIP
+        FC->>API: oss_packup_callback
+        API->>Redis: 缓存完成状态与路径
+        FE->>API: 重试下载请求
+        API->>Worker: 对新 ZIP 签名
+        Worker-->>API: 签名 URL
+        API->>DB: 回写路径、更新统计并提交
         API-->>FE: 返回下载 URL
     end
-    API->>DB: 更新统计（仅成功拿到 URL 时）
+    FE->>OSS: 直连下载
 ```
 
 “已有可用的 ZIP”包含两种情况：上传的源 ZIP 尚未被清理，或之前的打包结果仍在缓存有效期内。需要打包的典型场景是源 ZIP 已过保留期被清理（imzML 和 ibd 长期保留，可以随时重打包）。
