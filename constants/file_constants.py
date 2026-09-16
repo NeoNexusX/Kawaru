@@ -104,6 +104,14 @@ FC_CLUSTERING_ENDPOINT = config.oss.fc_clustering_endpoint
 FC_CLUSTERING_TIMEOUT_SECONDS = config.oss.fc_clustering_timeout_seconds
 
 
+# 中转下载（relay）配置
+OSS_INTERNAL_ENDPOINT = getattr(config.oss, "oss_internal_endpoint", None)
+RELAY_TOKEN_EXPIRE_SECONDS = 600  # 中转下载 token 有效期（秒），10 分钟
+RELAY_MAX_CONCURRENCY = int(getattr(config.oss, "relay_max_concurrency", 5))
+RELAY_ACQUIRE_TIMEOUT = float(getattr(config.oss, "relay_acquire_timeout_seconds", 10))
+RELAY_IDLE_TIMEOUT = float(getattr(config.oss, "relay_idle_timeout_seconds", 30))
+
+
 __all__ = [
     "BYTES_IN_KB",
     "BYTES_IN_MB",
@@ -140,6 +148,11 @@ __all__ = [
     "FC_RAW_CONVERT_TIMEOUT_SECONDS",
     "FC_CLUSTERING_ENDPOINT",
     "FC_CLUSTERING_TIMEOUT_SECONDS",
+    "OSS_INTERNAL_ENDPOINT",
+    "RELAY_TOKEN_EXPIRE_SECONDS",
+    "RELAY_MAX_CONCURRENCY",
+    "RELAY_ACQUIRE_TIMEOUT",
+    "RELAY_IDLE_TIMEOUT",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "OSS_DELETE_OBJECT_TIMEOUT_SECONDS",
     "OSS_DELETE_PREFIX_TIMEOUT_SECONDS",

@@ -7,7 +7,8 @@ from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
     ListPublicFilesDep, GetPublicFileDep,
-    OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep
+    OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
+    RelayDownloadNoauthDep, relay_download_file
 )
 from database.visit_stats import incr_visit
 
@@ -57,6 +58,23 @@ async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
     """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
+
+
+@file_router.get("/{file_id}/download_relay_noauth")
+async def download_file_relay_noauth(file_meta: RelayDownloadNoauthDep):
+    """中转下载（免登录）——返回两个指向后端的中转 URL，经服务器流式透传，免 OSS 公网流量"""
+    asyncio.create_task(incr_visit())
+    return file_meta
+
+
+# 中转下载流式透传：返回文件字节流（StreamingResponse），FastAPI 不允许对 Response 子类
+# 使用 Depends 注入，故直接用 add_api_route 注册带完整签名的处理函数。
+# HEAD 需显式声明：FastAPI 的 APIRoute 不会像 Starlette 那样在有 GET 时自动补 HEAD。
+file_router.add_api_route(
+    "/{file_id}/relay/download",
+    relay_download_file,
+    methods=["GET", "HEAD"],
+)
 
 
 @file_router.get("/{file_id}/download")

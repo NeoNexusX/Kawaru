@@ -1,14 +1,17 @@
 #########################
 # File API - API入口层
 #########################
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import Depends, Form, Query, HTTPException
+from fastapi import Depends, Form, Query, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
+from boot.config import get_config
 from api_helpers.file_helper import check_user_quota
 from api_services.composite_service import mark_file_for_deletion
+from api_services.relay_service import prepare_download_relay_oss, stream_relay_file
 from api_services.file_service import (
     assert_file_owner,
     build_file_filters,
@@ -686,6 +689,85 @@ async def get_raw_download_metadata_noauth(
     return response
 
 
+def _relay_base_url(request: Request) -> str:
+    """中转 URL 的公网前缀：server.public_base_url 配置优先，未配置则回退 request.base_url 推导。"""
+    configured = get_config().server.public_base_url
+    return (configured or str(request.base_url)).rstrip("/")
+
+
+async def get_relay_download_metadata_noauth(
+    file_id: int,
+    session: AsyncSessionDep,
+    request: Request,
+) -> RawDownloadResponse:
+    """【中转下载元数据接口（免登录）】
+
+    功能：不打包不签名，返回两个指向后端的中转 URL（内嵌短时 token）。
+    前端拿到后经服务器流式透传下载，OSS→服务器 走内网免费，免去 OSS 公网下行流量。
+    时机：公开文件分享场景调用。
+
+    与 raw 直链免登录版的区别：
+    - raw：签 OSS 预签名 URL，前端直连 OSS
+    - relay：拼后端中转 URL，服务器流式透传（本次新增）
+
+    流程：
+    1. 公开文件闸（非公开返回 404，不暴露存在性）
+    2. 校验文件类型（仅支持 OSS + imzML）
+    3. 校验 origin 就绪 → 拼两个中转 URL
+    4. 更新下载统计（仅文件维度，无登录态）
+
+    注意：
+    - 不做 Redis 缓存：token 是纯本地 jwt 生成，无外部调用，缓存无意义
+    - 不写 file_record.path，不产生中间产物，与被清理任务无关
+    """
+    file_record = await get_file_record_by_id(file_id, session)
+    if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
+        raise download_not_implemented_exception
+
+    files = await prepare_download_relay_oss(
+        session, file_record, base_url=_relay_base_url(request)
+    )
+
+    # 更新下载统计（仅文件维度）
+    await update_download_stats(session, file_record)
+    await session.commit()
+    await session.refresh(file_record)
+
+    logger.info(
+        f"relay download noauth success file_id={file_id} filename={file_record.filename}"
+    )
+
+    return RawDownloadResponse(files=files)
+
+
+async def relay_download_file(
+    file_id: int,
+    async_session: AsyncSessionDep,
+    request: Request,
+    part: Literal["imzml", "ibd"] = Query(...),
+    token: str = Query(...),
+) -> Response:
+    """【中转流式透传下载】
+
+    功能：验 token → 解析 origin 真实 OSS key → 内网拉取 → 边拉边发（不落盘）。
+    时机：前端/下载器拿到中转 URL 后直接 GET 本接口。
+
+    注意：
+    - 返回的是文件字节流，不是 JSON
+    - Range 头原样透传给 OSS，支持断点续传与多线程下载器
+    - HEAD 只返回头部信息（不拉正文），见 relay_service._relay_head_response
+    - token 由 download_relay* 接口签发，绑定 file_id + part
+    """
+    return await stream_relay_file(
+        async_session,
+        file_id,
+        part,
+        token,
+        range_header=request.headers.get("range"),
+        method=request.method,
+    )
+
+
 async def get_file_list(
     filters: FileFilter,
     async_session: AsyncSessionDep,
@@ -864,6 +946,7 @@ ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata_noauth)]
+RelayDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_relay_download_metadata_noauth)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]

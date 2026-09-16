@@ -9,6 +9,9 @@ class ServerSettings(BaseModel):
     name: str = "SpatialXomics"  # 项目名，用于邮件文案等对外展示
     port: int
     host: str
+    # 对外 API 公网前缀，用于拼接中转下载 URL（如 https://api.example.com）；
+    # 未配置时回退用请求的 request.base_url 推导（要求反向代理透传 Host）
+    public_base_url: str | None = None
 
 
 class TokenSettings(BaseModel):
@@ -138,6 +141,12 @@ class OSSSettings(BaseModel):
     fc_raw_convert_timeout_seconds: int | None = Field(default=120, description="FC raw_convert 调用超时时间，单位秒")
     fc_clustering_endpoint: str | None = Field(default=None, description="FC 聚类分析函数HTTP触发地址")
     fc_clustering_timeout_seconds: int | None = Field(default=180, description="FC 聚类分析调用超时时间，单位秒")
+    # 中转下载（relay）专用内网 endpoint：仅当服务器与 OSS 同地域时可达，OSS→服务器这跳免费。
+    # 未配置时中转下载不可用（create_internal_oss_client 返回 None，relay 接口报错）。
+    oss_internal_endpoint: str | None = Field(default=None, description="OSS 内网 endpoint（中转下载专用，如 https://oss-cn-hangzhou-internal.aliyuncs.com）")
+    relay_max_concurrency: int = Field(default=5, ge=1, description="中转下载最大并发数（保护服务器带宽）")
+    relay_acquire_timeout_seconds: float = Field(default=10, gt=0, description="中转下载排队等待上限（秒），超时返回 429")
+    relay_idle_timeout_seconds: float = Field(default=30, gt=0, description="中转下载空闲超时（秒）：客户端 X 秒不消费数据则中断传输")
 
 
 class UserSettings(BaseModel):
