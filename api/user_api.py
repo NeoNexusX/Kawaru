@@ -57,7 +57,7 @@ from database.redis_client import redis_client
 from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
-from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
+from models.auth import Token, RedisLoginData, oauth2_scheme, optional_oauth2_scheme, SECRET_KEY
 from models.email_models import EmailPurpose
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
@@ -142,8 +142,8 @@ async def get_activate_user(username: str, async_session: AsyncSessionDep) -> Us
     return user
 
 
-async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
-    """解析并校验 JWT Token 返回当前登录用户"""
+async def _authenticate_token(token: str, async_session: AsyncSession) -> UserInDB:
+    """解析并校验 JWT Token 返回当前登录用户（token_authen / optional_token_authen 共用）"""
     try:
         payload = jwt.decode(
             token, SECRET_KEY, algorithms=[config.token.algorithm]
@@ -176,6 +176,25 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_sess
     user = await get_activate_user(username, async_session)
 
     return user
+
+
+async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
+    """解析并校验 JWT Token 返回当前登录用户"""
+    return await _authenticate_token(token, async_session)
+
+
+async def optional_token_authen(
+    token: Annotated[str | None, Depends(optional_oauth2_scheme)],
+    async_session: AsyncSessionDep,
+) -> UserInDB | None:
+    """可选登录：未携带 token 返回 None（按匿名处理），携带了 token 则按 token_authen 校验
+
+    带了无效/过期 token 不降级为匿名，仍返回 401：前端可据此提示重新登录，
+    避免已登录用户因 token 过期而静默拿到匿名视角的结果（如自己的私有文件变成 404）。
+    """
+    if token is None:
+        return None
+    return await _authenticate_token(token, async_session)
 
 
 async def login(

@@ -58,8 +58,12 @@ async def create_algorithm_task(
         if not await validate_process_request(current_user, body.algorithms):
             raise invalid_process_request_exception
 
-        # 2. 查文件归属 + 就绪 origin，同时获取文件名和元数据
-        origin, filename, metadata, _ = await get_origin_for_processing(async_session, body.file_id, current_user, allow_public=True)
+        # 2. 查文件归属 + 就绪 origin，同时获取文件记录和元数据
+        origin, file_record, metadata = await get_origin_for_processing(
+            async_session, body.file_public_id, current_user, allow_public=True,
+        )
+        # commit 后 ORM 对象属性过期（expire_on_commit），异步会话下不能再惰性加载，先取出响应所需字段
+        filename, file_public_id = file_record.filename, file_record.public_id
 
         assert current_user.id is not None
         run_record = await create_process_run(
@@ -83,12 +87,14 @@ async def create_algorithm_task(
             metadata=metadata,
         )
 
-        return ExperimentProcessRunPublic(**run_record.model_dump(), filename=filename)
+        return ExperimentProcessRunPublic(
+            **run_record.model_dump(), filename=filename, source_file_public_id=file_public_id,
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("create algorithm task failed user=%s file_id=%s", current_user.id, body.file_id)
+        logger.exception("create algorithm task failed user=%s file_public_id=%s", current_user.id, body.file_public_id)
         await rollback_process_run(async_session, run_record)
         raise internal_server_error_exception from e
 
@@ -101,12 +107,16 @@ async def create_raw_convert_task(
     """创建 raw_convert 直转任务 — 写 DB + 异步触发 FC fc-raw-convert"""
     run_record = None
     try:
-        # 1. 查文件归属 + 就绪 origin，同时获取文件名、元数据和 default_run_id
+        # 1. 查文件归属 + 就绪 origin，同时获取文件记录（文件名、public_id、default_run_id）和元数据
         #    allow_public=True：公开文件允许任何登录用户直转
-        origin, filename, metadata, default_run_id = await get_origin_for_processing(
-            async_session, body.file_id, current_user,
+        origin, file_record, metadata = await get_origin_for_processing(
+            async_session, body.file_public_id, current_user,
             allow_public=True,
         )
+        # commit 后 ORM 对象属性过期（expire_on_commit），异步会话下不能再惰性加载，先取出所需字段
+        filename, file_public_id = file_record.filename, file_record.public_id
+        file_id, default_run_id = file_record.file_id, file_record.default_run_id
+        assert file_id is not None
 
         assert current_user.id is not None
 
@@ -116,11 +126,12 @@ async def create_raw_convert_task(
             if run_record:
                 return ExperimentProcessRunPublic(
                     **run_record.model_dump(), filename=filename,
+                    source_file_public_id=file_public_id,
                 )
 
         # 3. 创建 raw_convert run（含 PROCESSING 防重复）
         run_record, is_existing = await create_raw_convert_run(
-            file_id=body.file_id,
+            file_id=file_id,
             user_id=current_user.id,
             experiment_id=origin.id,  # type: ignore
             async_session=async_session,
@@ -132,6 +143,7 @@ async def create_raw_convert_task(
             await async_session.refresh(run_record)
             return ExperimentProcessRunPublic(
                 **run_record.model_dump(), filename=filename,
+                source_file_public_id=file_public_id,
             )
 
         # 构造 OSS 输出路径
@@ -153,13 +165,14 @@ async def create_raw_convert_task(
 
         return ExperimentProcessRunPublic(
             **run_record.model_dump(), filename=filename,
+            source_file_public_id=file_public_id,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("create raw_convert task failed user=%s file_id=%s",
-                         current_user.id, body.file_id)
+        logger.exception("create raw_convert task failed user=%s file_public_id=%s",
+                         current_user.id, body.file_public_id)
         await rollback_process_run(async_session, run_record)
         raise internal_server_error_exception from e
 
@@ -278,7 +291,7 @@ async def create_clustering_task(
 ) -> ExperimentProcessRunPublic:
     """创建聚类分析任务 — 对已完成的算法 run 执行 UMAP/KMeans 聚类，结果写回源 zarr"""
     try:
-        run_record = await validate_clustering_request(async_session, run_id, current_user)
+        run_record, source_file_public_id = await validate_clustering_request(async_session, run_id, current_user)
 
         # 聚类已完成 / 处理中 / 已失败，直接返回（幂等；failed 不自动重试，
         # 如需重跑由运维将 clustering_status 置空后再触发）
@@ -287,7 +300,9 @@ async def create_clustering_task(
             ProcessingStatus.PROCESSING,
             ProcessingStatus.FAILED,
         ):
-            return ExperimentProcessRunPublic(**run_record.model_dump())
+            return ExperimentProcessRunPublic(
+                **run_record.model_dump(), source_file_public_id=source_file_public_id,
+            )
 
         # 标记聚类状态为 processing
         await mark_clustering_run(async_session, run_record, status=ProcessingStatus.PROCESSING)
@@ -300,7 +315,9 @@ async def create_clustering_task(
             source_zarr_path=run_record.out_path,
         )
 
-        return ExperimentProcessRunPublic(**run_record.model_dump())
+        return ExperimentProcessRunPublic(
+            **run_record.model_dump(), source_file_public_id=source_file_public_id,
+        )
 
     except HTTPException:
         raise

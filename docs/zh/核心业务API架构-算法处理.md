@@ -20,7 +20,8 @@
 flowchart LR
     Frontend[前端] --> API[FastAPI 后端]
     API --> DB[(数据库)]
-    API --> Worker[Celery Worker]
+    API -- 投递任务 --> Broker[(Redis Broker)]
+    Broker -- 消费任务 --> Worker[Celery Worker]
     Worker -- 触发处理 --> FC[处理 FC]
     FC --> OSS[(OSS)]
     FC -- 结果回调 --> API
@@ -51,9 +52,11 @@ flowchart LR
 
 回调鉴权与上传回调一致，使用专用 Token。
 
+源文件对外统一用 `public_id` 标识：`POST /processes` 与 `POST /processes/raw-convert` 的请求体用 `file_public_id` 指定源文件；所有返回 run 记录的接口（含 `/processes/mine` 和聚类接口）用 `source_file_public_id` 标识源文件，不返回内部 `source_file_id`。源文件不存在或处于删除流程时返回 404。
+
 ## 4. 任务类型与流程
 
-三种任务共用同一套“创建 run -> 触发 FC -> 回调更新”的骨架，区别在输入输出和触发时机：
+算法与直转创建 run 后投递任务；聚类复用已完成的 run，单独更新 clustering_status。三者均由 Worker 触发 FC，再由回调更新结果：
 
 | 任务类型 | 对应 FC | 输入 | 特点 |
 |---|---|---|---|
@@ -68,13 +71,17 @@ sequenceDiagram
     participant FE as 前端
     participant API as 后端
     participant DB as 数据库
+    participant Broker as Redis Broker
+    participant Worker as Celery Worker
     participant FC as 处理 FC
     participant OSS as OSS
 
     User->>FE: 选择文件和算法配置
     FE->>API: 创建处理任务
     API->>DB: 校验配额、归属、文件状态，创建 run
-    API->>FC: 经 Celery 异步触发
+    API->>Broker: 提交 run 事务后投递任务
+    Broker->>Worker: 消费任务
+    Worker->>FC: HTTP 异步触发
     API-->>FE: 返回 run_id（不等处理完成）
     FC->>OSS: 写入 zarr 结果
     FC->>API: 回调处理结果
@@ -91,7 +98,7 @@ sequenceDiagram
 - 只有 `completed` 的文件才能发起处理；处理配额在创建时检查，按累计输出大小限制。
 - 创建接口立即返回 run_id，任务是否成功以数据库状态为准，FC 执行完成不等于业务完成。
 - 直转结果全局复用：同文件已有完成的直转 run 直接返回原 run；有正在进行的直转任务时也不会重复创建。
-- 公开文件的直转任务，任何登录用户都可以发起和查看结果。
+- 当前算法处理和直转都允许任意登录用户针对公开文件发起任务。公开文件的直转结果可被其他登录用户复用；普通算法 Run 的读权仍归创建者或管理员。
 - 聚类只对处理 `completed` 的 run 发起；重复触发是幂等的，但聚类失败不自动重试，需人工重置状态后重新触发。
 
 ## 5. 任务状态
@@ -113,14 +120,15 @@ stateDiagram-v2
 | `failed` | FC 失败、回调异常或超时 |
 
 - 聚类状态复用同一组取值，与处理状态互相独立，聚类的开始和超时单独判定。
-- 回调幂等：重复或迟到的失败回调不会覆盖终态。
+- Algorithm 失败回调只在 processing 状态落 failed；串行重复成功回调会跳过，但并发重复成功回调仍有重复计费窗口。
+- Clustering 回调当前没有终态保护，后到回调可覆盖先到结果。
 - 长时间没有回调的“僵尸”任务由定时巡检标记为 failed。
 - 被超时误判的 run 收到迟到的成功回调时可以翻转为 completed。
 
 ## 6. 结果访问、删除与配额
 
 - 结果访问：`GET /processes/{run_id}/zarr` 返回结果目录和只读 STS 凭证，仅限 `completed` 的 run，权限为所有者、管理员或公开文件的直转 run；凭证有有效期并短期缓存。
-- 删除 run：清理 OSS 上的结果目录，退还该 run 占用的处理配额，再删除记录；删除直转 run 会同时解除文件与默认直转结果的关联。
+- 删除 run：当前只允许 Run 创建者调用（没有管理员豁免）。接口先标记 deleting 并投递后台清理；Worker 删除 OSS 结果后退还配额并删除记录。删除直转 run 会同时解除文件与默认直转结果的关联。
 - 删除文件时，其全部运行记录和结果对象会一并清理。
 - 处理配额按“成功输出的累计大小”计：成功回调时累加，删除 run 时退还，和上传配额同属用户配额体系。
 

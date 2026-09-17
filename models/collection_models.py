@@ -101,7 +101,7 @@ class CollectionMember(SQLModel, table=True):
 # 请求 / 响应模型
 #########################
 class CollectionCreate(SQLModel):
-    """创建集合请求：元数据 + 初始成员（file_ids 数组顺序即初始 position 1..n）"""
+    """创建集合请求：元数据 + 初始成员（file_public_ids 数组顺序即初始 position 1..n）"""
 
     name: str = Field(max_length=128)
     description: str = Field(default="", max_length=512)
@@ -122,7 +122,7 @@ class CollectionCreate(SQLModel):
     polarity: list[str] = Field(default_factory=list)
     ionisation_source: list[str] = Field(default_factory=list)
     analyzer: list[str] = Field(default_factory=list)
-    file_ids: list[int] = Field(default_factory=list, description="初始成员文件 ID，数组顺序即初始顺序")
+    file_public_ids: list[str] = Field(default_factory=list, description="初始成员文件 public_id，数组顺序即初始顺序")
 
 
 class CollectionPatch(SQLModel):
@@ -150,9 +150,9 @@ class CollectionPatch(SQLModel):
 
 
 class CollectionMembersOperation(SQLModel):
-    """成员批量操作请求体（加成员 / 调序共用：全量 [file_id] 数组）"""
+    """成员批量操作请求体（加成员 / 调序 / 移除共用：文件 public_id 数组）"""
 
-    file_ids: list[int] = Field(default_factory=list)
+    file_public_ids: list[str] = Field(default_factory=list)
 
 
 class CollectionPublic(SQLModel):

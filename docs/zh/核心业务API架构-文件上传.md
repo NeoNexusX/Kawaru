@@ -1,6 +1,6 @@
 # 文件上传业务与 OSS 生命周期
 
-本文档面向新接手的开发者，介绍文件上传业务的整体流程。当前系统只支持将 imzML 数据打包成 ZIP 后上传。回调事务、失败回收等实现细节见[OSS 上传回调流程](上传回调流程.md)。
+本文档面向新接手的开发者，介绍文件上传业务的整体流程。当前系统只支持将 imzML 数据打包成 ZIP 后上传。回调事务、失败回收等实现细节见 [异步任务与回调架构](异步任务与回调架构.md)。
 
 ## 1. 业务目标
 
@@ -20,7 +20,8 @@ flowchart LR
     User[用户] --> Frontend[前端]
     Frontend --> API[FastAPI 后端]
     API --> DB[(数据库)]
-    API --> Worker[Celery Worker]
+    API -- 投递任务 --> Broker[(Redis Broker)]
+    Broker -- 消费任务 --> Worker[Celery Worker]
     Worker --> OSS[(OSS)]
     Frontend -- 使用 STS 直传 --> OSS
     OSS -- 上传事件 --> FC[解包 FC]
@@ -45,9 +46,11 @@ flowchart LR
 | `POST /files/upload` | 前端 | 获取 OSS 上传路径和 STS 临时凭证 |
 | `POST /files/upload_simple` | 前端 | 兼容上传入口，与 `/files/upload` 使用同一套逻辑 |
 | `POST /callback/oss_upload_callback` | 解包 FC | 报告解包成功或失败 |
-| `GET /files/{file_id}/metadata` | 前端 | 查询文件当前状态和基本信息 |
+| `GET /files/{public_id}/metadata` | 前端 | 查询文件当前状态和基本信息 |
 
 前端接口使用 Bearer Token 鉴权，FC 回调使用专用 Token 鉴权。
+
+文件对外统一用 `public_id`（16 位 base62 随机串）标识，接口不返回内部自增 `file_id`；路径中的 `public_id` 格式不合法时直接返回 422。元数据接口为可选登录：公开文件任何人可查；私有文件只有持有者或管理员可查，其他人一律 404，因此前端轮询自己私有文件的状态时必须携带 `Authorization` 头。
 
 ## 4. 上传流程
 
@@ -65,12 +68,12 @@ sequenceDiagram
     FE->>FE: 计算业务哈希和原始文件大小
     FE->>API: 调用上传预检
     API->>DB: 检查重复文件和配额，创建文件记录
-    API-->>FE: 返回 file_id 和是否秒传
+    API-->>FE: 返回 public_id 和是否秒传
 
     alt 可以秒传
         FE-->>User: 上传完成
     else 需要上传
-        FE->>API: 使用 file_id 获取 STS
+        FE->>API: 使用 public_id 获取 STS
         API-->>FE: 返回 OSS 路径和临时凭证
         FE->>OSS: 直传 ZIP
         OSS->>FC: 触发解包任务
@@ -78,7 +81,7 @@ sequenceDiagram
         FC->>API: 回调解包结果
         API->>DB: 保存路径并更新文件状态
         API-->>FC: 回调处理完成
-        FE->>API: 查询文件状态
+        FE->>API: 查询文件状态（携带登录态）
         API-->>FE: completed 或 failed
     end
 ```
@@ -87,7 +90,8 @@ sequenceDiagram
 
 - 预检通过即创建文件记录并占用用户配额；上传失败或过期后由清理任务退还。
 - 如果其他用户已成功上传过相同文件，预检直接返回秒传（`is_reuse=true`），前端不应再调用上传接口。
-- 需要上传时，前端用 `file_id` 换取 OSS 目标路径和 STS 临时凭证。凭证只对这一个对象有效，上传路径由后端指定，前端不能自行拼接。
+- 需要上传时，前端以预检返回的 `public_id` 作为表单字段 `pre_public_id`，换取 OSS 目标路径和 STS 临时凭证。凭证只对这一个对象有效，上传路径由后端指定，前端不能自行拼接。
+- 返回的 `oss_path` 形如 `data/{file_verify_code}/{file_id}.zip`，对象键中仍含内部 `file_id`（解包 FC 从文件名解析后回调后端），这是当前有意保留的暴露点，见 [文件存储与生命周期架构](文件存储与生命周期架构.md) 3.4 节。
 - ZIP 直传成功后，OSS 事件触发解包 FC，将 imzML 和 ibd 写回 OSS 并回调后端。
 - 后端校验通过后，文件状态才变为 `completed`；校验或解包失败则为 `failed`。
 
@@ -95,19 +99,22 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Preflight: 预检完成
-    Preflight --> Uploading: 获取 STS
-    Uploading --> Completed: FC 回调成功
+    [*] --> Preflight: 预检创建记录并预占配额
+    Preflight --> Uploading: 成功签发 STS
+    Uploading --> Uploading: 获取 STS / 直传 / 等待回调
+    Uploading --> Completed: 回调校验及持久化成功
     Uploading --> Failed: 解包或校验失败
-    Preflight --> Removed: 预检过期
-    Uploading --> Removed: 长时间没有回调
+    Completed --> Failed: 后续标签或预览任务投递失败
+    Preflight --> Removed: 空路径且超过预检 TTL
+    Uploading --> Removed: 空路径且超过预检 TTL
     Failed --> Removed: 失败记录过期清理
+    Removed --> [*]
 ```
 
 | 状态 | 含义 |
 |---|---|
-| 预检状态 | 已创建记录，但还没有开始上传 |
-| `uploading` | 已签发 STS，正在上传或等待 FC 回调 |
+| 预检态（内部值为空字符串） | 已创建记录并预占配额，尚未成功签发 STS |
+| `uploading` | 已成功签发 STS，正在上传或等待回调 |
 | `completed` | 解包和校验完成，可以用于后续业务 |
 | `failed` | 上传、解包或回调校验失败 |
 
@@ -125,4 +132,4 @@ OSS 直传成功不等于业务上传成功，客户端应以数据库状态 `co
 
 ## 延伸阅读
 
-回调事务边界、失败回收方式和幂等问题见[OSS 上传回调流程](上传回调流程.md)。
+回调事务边界、失败回收方式和幂等问题见 [异步任务与回调架构](异步任务与回调架构.md)。

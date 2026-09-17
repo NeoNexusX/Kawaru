@@ -7,6 +7,8 @@ from pydantic import BaseModel
 SECRET_KEY = os.getenv("SECRET_KEY") or secrets.token_hex(32)  # 优先使用环境变量，便于多实例共享
 PWD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")  # 获取登录令牌入口
+# 可选登录：未携带 Authorization 头时返回 None 而非直接 401（用于公开/私有混合访问的接口）
+optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/", auto_error=False)
 
 
 class Token(BaseModel):

@@ -12,7 +12,7 @@ test_delete_file_flow  [deletion]  清扫残留 → preflight → STS 直传 →
   ★5 OSS 对象最终删净（「要么都删除」OSS 侧，即不变式
      「DB 行已删 ⟹ OSS 已确认删完」）
 
-预览图（FC 生成 images/file_{id}/）不测、忽略：随机字节数据无法通过 FC 的
+预览图（FC 生成 images/{file_id%1000:03d}/file_{id}/）不测、忽略：随机字节数据无法通过 FC 的
 imzML 谱图校验（pyimzml 解析必失败），预览图不会生成；且 images 前缀已由
 删除快照的推导路径兜底，生成与否不影响删除收敛。
 
@@ -48,7 +48,7 @@ from database.db import get_standalone_async_session
 from constants.file_constants import OSS_ORIGIN_STORAGE_ROOT
 from models.file_models import FileInDB, FileStatus
 from .conftest import logger
-from .helpers.oss import upload_file_to_oss
+from .helpers.oss import parse_file_id_from_oss_path, upload_file_to_oss
 from .helpers.uploads import build_preflight_payload, make_test_zip_to_local
 
 # 回调验证 token：本地从 .env 读，CI 用 compose 默认值
@@ -79,7 +79,7 @@ async def _sweep_leftovers(client: AsyncClient, auth: dict) -> None:
     - 仍有 owner 的行：走 HTTP DELETE（正常路径退还配额 + 触发异步删除）
     残留 OSS 对象（如有）未打 persistent tag 的由 bucket 生命周期规则回收。
     """
-    linked_ids: list[int] = []
+    linked_public_ids: list[str] = []
     async with get_standalone_async_session() as session:
         rows = (await session.exec(
             select(FileInDB).where(FileInDB.filename == DELETION_TEST_FILENAME)
@@ -89,14 +89,13 @@ async def _sweep_leftovers(client: AsyncClient, auth: dict) -> None:
                 await session.delete(row)
                 logger.info("sweep: hard-deleted leftover row file_id=%s status=%s", row.file_id, row.status)
             else:
-                assert row.file_id is not None
-                linked_ids.append(row.file_id)
+                linked_public_ids.append(row.public_id)
         await session.commit()
 
-    for file_id in linked_ids:
-        rs = await client.delete(f"/files/{file_id}", headers=auth)
-        assert rs.status_code == 200, f"sweep delete failed: file_id={file_id} body={rs.text}"
-        logger.info("sweep: deleted linked leftover file_id=%s status=%s", file_id, rs.json().get("status"))
+    for public_id in linked_public_ids:
+        rs = await client.delete(f"/files/{public_id}", headers=auth)
+        assert rs.status_code == 200, f"sweep delete failed: public_id={public_id} body={rs.text}"
+        logger.info("sweep: deleted linked leftover public_id=%s status=%s", public_id, rs.json().get("status"))
 
 
 async def _wait_fc_unzip(file_id: int, file_verify_code: str, imzml_path: str, ibd_path: str) -> None:
@@ -169,21 +168,26 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
             ),
         )
         assert rs.status_code == 200, rs.text
-        pre_file_id = rs.json()["file_id"]
-        logger.info("preflight ok, pre_file_id=%s", pre_file_id)
+        pre_public_id = rs.json()["public_id"]
+        logger.info("preflight ok, pre_public_id=%s", pre_public_id)
 
         # 3. /files/upload 拿 STS → 直传 OSS
         rs = await client.post(
             "/files/upload",
             headers=auth,
-            data={"pre_file_id": str(pre_file_id), "filename": DELETION_TEST_FILENAME},
+            data={"pre_public_id": pre_public_id, "filename": DELETION_TEST_FILENAME},
         )
         assert rs.status_code == 200, rs.text
-        file_id = rs.json()["file_id"]
-        oss_sts_token = rs.json()["oss_sts_token"]
-        oss_path = rs.json()["oss_path"]
-        oss_bucket = rs.json()["oss_bucket"]
-        assert file_id == pre_file_id
+        body = rs.json()
+        # 内部自增 file_id 不得对外暴露（可枚举），对外标识一律用 public_id
+        assert "file_id" not in body, "upload must not expose file_id"
+        public_id = body["public_id"]
+        oss_sts_token = body["oss_sts_token"]
+        oss_path = body["oss_path"]
+        oss_bucket = body["oss_bucket"]
+        assert public_id == pre_public_id
+        # 拼 origin 路径、模拟 FC 回调、查 DB 行需要内部 file_id：与真实 FC 一样从对象键解析
+        file_id = parse_file_id_from_oss_path(oss_path)
 
         await upload_file_to_oss(
             oss_sts_token=oss_sts_token,
@@ -192,13 +196,13 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
             filepath=zip_path,
             checkpoint_dir=zip_path.parent / "checkpoint",
         )
-        logger.info("uploaded to oss, file_id=%s oss_path=%s", file_id, oss_path)
+        logger.info("uploaded to oss, public_id=%s file_id=%s oss_path=%s", public_id, file_id, oss_path)
 
         # 4. 等 FC 解压完成（origin 对象就绪）
         stem = Path(DELETION_TEST_FILENAME).stem
         origin_root = OSS_ORIGIN_STORAGE_ROOT.rstrip("/")
-        imzml_path = f"{origin_root}/{file_id}/{file_verify_code}/{stem}.imzML"
-        ibd_path = f"{origin_root}/{file_id}/{file_verify_code}/{stem}.ibd"
+        imzml_path = f"{origin_root}/{file_verify_code}/{file_id}/{stem}.imzML"
+        ibd_path = f"{origin_root}/{file_verify_code}/{file_id}/{stem}.ibd"
         await _wait_fc_unzip(file_id, file_verify_code, imzml_path, ibd_path)
 
         # 5. 模拟 FC 回调 → 文件 COMPLETED
@@ -227,9 +231,10 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
 
         # 7. ★1 删除接口秒回（新流程只做登记事务 + 投递，不等 OSS 删除）
         start = time.perf_counter()
-        rs = await client.delete(f"/files/{file_id}", headers=auth)
+        rs = await client.delete(f"/files/{public_id}", headers=auth)
         elapsed = time.perf_counter() - start
         assert rs.status_code == 200, rs.text
+        assert rs.json()["public_id"] == public_id, rs.text
         assert rs.json()["status"] == "deleted", rs.text
         assert elapsed < DELETE_API_MAX_SECONDS, (
             f"delete API took {elapsed:.2f}s (> {DELETE_API_MAX_SECONDS}s): "
@@ -238,7 +243,8 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
         logger.info("★1 delete returned in %.3fs with status=deleted", elapsed)
 
         # 8. ★2 读侧拦截：行还在 DELETING，metadata 应 404
-        rs = await client.get(f"/files/{file_id}/metadata")
+        #    带持有者登录态：确保 404 来自 DELETING 拦截，而不是私有文件对匿名的权限闸
+        rs = await client.get(f"/files/{public_id}/metadata", headers=auth)
         assert rs.status_code == 404, (
             f"expected 404 for DELETING file, got {rs.status_code}: {rs.text}"
         )
@@ -275,8 +281,8 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
         )
         logger.info("★5 OSS objects all gone: zip + imzML + ibd verified")
 
-        logger.info("test_delete_file_flow passed: file_id=%s imzml_hash=%s ibd_hash=%s",
-                    file_id, imzml_hash, ibd_hash)
+        logger.info("test_delete_file_flow passed: public_id=%s file_id=%s imzml_hash=%s ibd_hash=%s",
+                    public_id, file_id, imzml_hash, ibd_hash)
 
     finally:
         # 兜底清理：本地临时 zip 与解压产物；DB/OSS 残留（如断言失败时卡在

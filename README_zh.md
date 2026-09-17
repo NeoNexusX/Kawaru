@@ -180,12 +180,12 @@ uv run celery -A celery_runtime.beat_entrypoint:beat_app beat --loglevel info
 
 Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传链路已移除；客户端通过短期 STS 凭证把 ZIP 文件直传 OSS。
 
-1. 调用 `POST /files/preflight` 提交文件元数据、MD5、`storage_type=oss`、`spectrum_mode` 与 `storage_mode`。响应预留 `file_id`；`is_reuse=true` 表示同哈希的已有记录已关联给当前用户，不需要再次上传。
-2. 新对象调用 `POST /files/upload` 或 `POST /files/upload_simple`，传入 `pre_file_id` 与 `filename`。后端会检查预检记录归属和上传状态，再返回限定对象路径的 STS 凭证。ZIP 对象键为 `{oss_zip_storage_root}/{file_id}/{file_verify_code}.zip`。
-3. 客户端将 ZIP 直传 OSS。解包 FC 从对象键解析 `file_id`，把 imZML/ibd 写到 `{oss_origin_storage_root}/{file_id}/{file_verify_code}/` 下，并携带 `X-FC-Token` 和 `file_id` 回调 `POST /callback/oss_upload_callback`。
-4. 成功回调后，后端先保存三个对象键并提交事务，再给 ZIP、imZML 和 ibd 添加 `persistent=true` 标签。`storage_mode=continuous` 分发 feature FC 任务并由 `/callback/umap_callback` 接收结果，其他模式分发 TIC 并回调 `/callback/tic_callback`；两者都保存完整预览图对象键，通常为 `images/file_{file_id}/preview.jpg`。
-5. 算法处理（`POST /processes`）和 RAW 直转（`POST /processes/raw-convert`）输出 `{oss_processed_storage_root}/run_{run_id}.zarr/`。聚类（`POST /processes/{run_id}/clustering`）直接更新同一个 Zarr，不再创建独立聚类输出路径；基础 run 完成后，`GET /processes/{run_id}/zarr` 返回只读 STS 凭证。
-6. `GET /files/{file_id}/download_raw` 返回 imZML 与 ibd 的签名 URL。`GET /files/{file_id}/download` 启动或查询异步 ZIP 打包；打包对象键为 `{oss_packup_zip_storage_root}/{file_id}.zip`，在 `/callback/oss_packup_callback` 到达前可能保持 `<PACKING>`。
+1. 调用 `POST /files/preflight` 提交文件元数据、MD5、`storage_type=oss`、`spectrum_mode` 与 `storage_mode`。响应返回文件的 `public_id`（16 位 base62 随机串，不返回内部 `file_id`）；`is_reuse=true` 表示同哈希的已有记录已关联给当前用户，不需要再次上传。
+2. 新对象调用 `POST /files/upload` 或 `POST /files/upload_simple`，传入 `pre_public_id`（即预检返回的 `public_id`）与 `filename`。后端会检查预检记录归属和上传状态，再返回限定对象路径的 STS 凭证。ZIP 对象键为 `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`（哈希前置可将并发写入打散到 OSS 不同分区），因此 `oss_path` 中仍含内部 `file_id`。
+3. 客户端将 ZIP 直传 OSS。解包 FC 从对象键解析 `file_id`，把 imZML/ibd 写到 `{oss_origin_storage_root}/{file_verify_code}/{file_id}/` 下，并携带 `X-FC-Token` 和 `file_id` 回调 `POST /callback/oss_upload_callback`。
+4. 成功回调后，后端先保存三个对象键并提交事务，再给 ZIP、imZML 和 ibd 添加 `persistent=true` 标签。`storage_mode=continuous` 分发 feature FC 任务并由 `/callback/umap_callback` 接收结果，其他模式分发 TIC 并回调 `/callback/tic_callback`；两者都保存以 `/` 结尾的预览图目录键，通常为 `images/{file_id%1000:03d}/file_{file_id}/`；客户端在文件响应返回的 `image_path` 后拼接 `preview.jpg`。
+5. 算法处理（`POST /processes`）和 RAW 直转（`POST /processes/raw-convert`）以 `file_public_id` 指定源文件、以 `source_file_public_id` 返回源文件，输出 `{oss_processed_storage_root}/run_{run_id}.zarr/`。聚类（`POST /processes/{run_id}/clustering`）直接更新同一个 Zarr，不再创建独立聚类输出路径；基础 run 完成后，`GET /processes/{run_id}/zarr` 返回只读 STS 凭证。
+6. `GET /files/{public_id}/download_raw` 返回 imZML 与 ibd 的签名 URL。`GET /files/{public_id}/download` 启动或查询异步 ZIP 打包；打包对象键为 `{oss_packup_zip_storage_root}/{file_id}.zip`，在 `/callback/oss_packup_callback` 到达前可能保持 `<PACKING>`。
 
 配置中的对象根目录为 `oss_zip_storage_root`、`oss_packup_zip_storage_root`、`oss_origin_storage_root` 和 `oss_processed_storage_root`。Celery beat 会调度过期预检清理、下载清理、失败实验清理、超时处理 run 标记和心跳任务；完全未进入回调、因而从未获得 `persistent=true` 标签的对象仍由 OSS 生命周期规则回收。
 
@@ -193,7 +193,7 @@ Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传�
 
 | 范围 | 主要路由 |
 |------|----------|
-| 文件上传与访问 | `/files/preflight`、`/files/upload`、`/files/upload_simple`、`/files/{file_id}/metadata`、`/files/{file_id}/download_raw`、`/files/{file_id}/download_raw_noauth`、`/files/{file_id}/download` |
+| 文件上传与访问 | `/files/preflight`、`/files/upload`、`/files/upload_simple`、`/files/{public_id}/metadata`、`/files/{public_id}/download_raw`、`/files/{public_id}/download_raw_noauth`、`/files/{public_id}/download` |
 | 处理任务 | `POST /processes`、`POST /processes/raw-convert`、`POST /processes/{run_id}/clustering`、`GET /processes/{run_id}/zarr`、`GET /processes/mine`、`DELETE /processes/{run_id}` |
 | FC 回调 | `/callback/oss_upload_callback`、`/callback/algorithm_callback`、`/callback/tic_callback`、`/callback/umap_callback`、`/callback/clustering_callback`、`/callback/oss_packup_callback` |
 
