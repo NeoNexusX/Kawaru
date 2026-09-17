@@ -167,7 +167,7 @@ async def get_file_record_by_public_id(
 
     删除流程中的文件处理与 get_file_record_by_id 完全一致：DELETING / DELETE_FAILED
     默认按不存在处理，删除登记等管理路径用 include_deleting=True 显式放行。
-    不校验公开状态与持有关系，权限由调用方判断（分享页专用见 get_public_file_by_public_id）。
+    不校验公开状态与持有关系，权限由调用方判断。
 
     Returns:
         文件记录对象
@@ -185,39 +185,6 @@ async def get_file_record_by_public_id(
     if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
         logger.warning(
             "file is being deleted, treat as not found public_id=%s file_id=%s status=%s",
-            public_id, file_record.file_id, file_record.status,
-        )
-        raise file_not_found_exception
-
-    return file_record
-
-
-async def get_public_file_by_public_id(
-    async_session: AsyncSession, public_id: str
-) -> FileInDB:
-    """
-    根据 public_id 查询公开文件记录（免登录分享页用）
-
-    与 collection 的 get_public_collection_by_public_id 同构：
-    - 非公开文件即使 public_id 正确也按不存在处理（404 不暴露存在性）
-    - 非 completed（含删除流程状态位）同样 404，避免分享链接返回僵尸记录
-
-    Returns:
-        文件记录对象
-    Raises:
-        file_not_found_exception: 文件不存在、非公开或不可用
-    """
-    statement = select(FileInDB).where(FileInDB.public_id == public_id)
-
-    file_record = (await async_session.exec(statement)).first()
-
-    if not file_record or not file_record.is_public:
-        logger.warning("public file not found public_id=%s", public_id)
-        raise file_not_found_exception
-
-    if file_record.status != FileStatus.COMPLETED:
-        logger.warning(
-            "public file not available public_id=%s file_id=%s status=%s",
             public_id, file_record.file_id, file_record.status,
         )
         raise file_not_found_exception

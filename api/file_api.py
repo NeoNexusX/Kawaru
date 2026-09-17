@@ -3,16 +3,17 @@
 #########################
 from typing import Annotated, Any
 
-from fastapi import Depends, Form, Query, HTTPException
+from fastapi import Depends, Form, Path, Query, HTTPException
 from sqlmodel import select, and_, or_, col
 
-from api.user_api import optional_token_authen, token_authen
+from api.user_api import token_authen
 from api_helpers.file_helper import check_user_quota
 from api_services.composite_service import mark_file_for_deletion
 from api_services.file_service import (
     assert_file_owner,
     build_file_filters,
     build_file_order,
+    get_file_record_by_id,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
@@ -25,7 +26,6 @@ from api_services.file_service import (
     validate_simple_upload,
     validate_upload_request,
     get_file_record_by_public_id,
-    get_public_file_by_public_id,
     update_file_record,
 )
 from background.file_background import delete_objects_task
@@ -789,37 +789,30 @@ async def get_file_list(
 
 async def get_file_metadata(
     public_id: PublicIdPath,
-    current_user: Annotated[UserInDB | None, Depends(optional_token_authen)],
+    current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> FilePublic:
     """
     【文件元数据查询接口】
 
     功能:根据 public_id 查询文件的元数据信息
-    时机:在前端需要查看单个文件详情时调用（含上传后轮询文件状态）
+    时机:在前端需要查看单个文件详情时调用（含上传后轮询文件状态、分享页展示）
 
     流程:
-    1. 根据 public_id 查询文件记录
-    2. 权限闸:公开文件任何人可看;私有文件仅持有者或管理员可看
-    3. 返回文件元数据
+    1. 鉴权闸:public_id 相当于分享链接，必须登录，匿名一律 401
+    2. 根据 public_id 查询文件记录，返回元数据
+    3. 不区分公开/私有与持有关系——只要不是匿名，任意登录用户可看（含私有文件）
 
     注意:
-    - 可选登录:未带 token 按匿名处理;带了无效/过期 token 仍返回 401
-    - 私有文件对匿名及非持有者一律按 404 处理（不暴露存在性），与下载接口口径一致;
-      前端查询自己的私有文件（如上传后轮询状态）必须携带 Authorization 头
+    - 需登录:未带/无效/过期 token 一律返回 401
+    - 删除流程中的文件（DELETING/DELETE_FAILED）仍按 404 处理
+      （get_file_record_by_public_id 默认口径）
+    - 下载接口仍保留 is_public/持有者闸，此处放开仅针对元数据可见性
     """
     try:
         file_record = await get_file_record_by_public_id(public_id, async_session)
 
-        if not file_record.is_public and (
-            current_user is None
-            or not await assert_file_owner(async_session, file_record, current_user)
-        ):
-            logger.warning(
-                "metadata denied, file not public and not owner user=%s file_id=%s",
-                current_user.id if current_user else None, file_record.file_id,
-            )
-            raise file_not_found_exception
+        logger.debug(f"metadata request user={current_user.id} file_id={file_record.file_id}")
 
         return FilePublic(**file_record.model_dump())
 
@@ -830,37 +823,39 @@ async def get_file_metadata(
         raise internal_server_error_exception from e
 
 
-async def get_public_file_api(
-    public_id: PublicIdPath,
+async def get_file_public_id_by_id(
+    file_id: Annotated[int, Path(ge=80, le=95)],
+    current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> FilePublic:
+) -> dict[str, Any]:
     """
-    【公开文件详情接口（免登录）】
+    【file_id → public_id 兼容映射接口】
 
-    功能:凭 URL 中的 public_id 返回文件元数据，供分享页展示
-    时机:访客打开分享链接时调用
+    功能:根据内部 file_id 查询对应 public_id
+    时机:旧前端/历史数据(file_id 80-95)存的还是 file_id,切换 public_id 对外标识后的兼容查询
 
-    安全:
-    - 非公开文件即使 public_id 正确也返回 404（不暴露存在性）
-    - 非 completed 的文件返回 404（删除流程中的文件不可访问）
+    范围:仅支持 80-95 号历史数据,越界由 FastAPI 在请求校验阶段直接返回 422,不查库;
+         新数据一律不经过本接口,前端应直接使用接口返回的 public_id
+
+    流程:
+    1. 鉴权闸:必须登录,匿名一律 401
+    2. 按 file_id 查询文件记录
+    3. 记录调用者日志并返回 public_id
 
     注意:
-    - 响应沿用 FilePublic：只含 public_id，不含内部 file_id；前端凭同一个 public_id
-      调用免登录下载接口（/files/{public_id}/download_raw_noauth）
-    - 免登录下载仅覆盖 oss + imzML，其他实验类型的分享页目前拿不到下载地址
+    - 需登录:未带/无效/过期 token 一律返回 401
+    - 权限只看登录态:80-95 是固定历史窗口,枚举风险已被范围钳死,不校验持有者;
+      如需收紧,恢复 assert_file_owner 校验即可
+    - 删除流程中的文件(DELETING/DELETE_FAILED)按 404 处理(get_file_record_by_id 默认口径)
+    - 兼容接口,新前端不应调用;历史数据迁移完成后应下线(路由已标 deprecated)
     """
-    try:
-        file_record = await get_public_file_by_public_id(async_session, public_id)
-        logger.info(
-            f"get public file public_id={public_id} file_id={file_record.file_id}"
-        )
-        return FilePublic(**file_record.model_dump())
+    file_record = await get_file_record_by_id(file_id, async_session)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"failed to get_public_file_api: {e}")
-        raise internal_server_error_exception from e
+    logger.info(
+        f"legacy public_id lookup user={current_user.id} "
+        f"file_id={file_id} public_id={file_record.public_id}"
+    )
+    return {"file_id": file_id, "public_id": file_record.public_id}
 
 
 async def oss_upload_file(
@@ -891,6 +886,6 @@ PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
-GetPublicFileDep = Annotated[FilePublic, Depends(get_public_file_api)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
 PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]
+FilePublicIdDep = Annotated[dict[str, Any], Depends(get_file_public_id_by_id)]

@@ -2,7 +2,7 @@
 OSS 测试集合（与本地上传测试区分开）
 
 TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
-TestOss.test_file_metadata              [oss]   GET /files/{public_id}/metadata（可选登录，不依赖回调）
+TestOss.test_file_metadata              [oss]   GET /files/{public_id}/metadata（需登录，不依赖回调）
 TestOss.test_simulate_fc_callback       [oss]   轮询 OSS 等待 FC 解压 → 模拟回调
 TestOss.test_raw_download_metadata      [oss]   GET /files/{public_id}/download_raw（回调后直接验证）
 TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理 OSS 文件 + DB 记录 + 临时 zip
@@ -129,7 +129,7 @@ class TestOss:
 
     @pytest.mark.oss
     async def test_file_metadata(self, admin_login: Tuple[AsyncClient, str, str]):
-        """测试 GET /files/{public_id}/metadata（可选登录：持有者带登录态可看；公开文件匿名也可看）"""
+        """测试 GET /files/{public_id}/metadata（需登录：公开文件任意登录用户可看；匿名 401）"""
         if TestOss._uploaded_public_id is None:
             pytest.skip("no uploaded file to test metadata against")
 
@@ -137,7 +137,7 @@ class TestOss:
         auth = {"Authorization": f"{token_type.title()} {token}"}
         public_id = TestOss._uploaded_public_id
 
-        # 持有者带登录态查询（前端上传后轮询状态的调用方式；私有文件不带登录态会 404）
+        # 持有者带登录态查询（前端上传后轮询状态的调用方式）
         rs = await client.get(f"/files/{public_id}/metadata", headers=auth)
         assert rs.status_code == 200, f"metadata failed: {rs.text}"
         body = rs.json()
@@ -145,16 +145,37 @@ class TestOss:
         # 内部自增 file_id 不得对外暴露（可枚举）
         assert "file_id" not in body, "metadata must not expose file_id"
 
-        # build_preflight_payload 上传的是公开文件（is_public=True）：匿名同样可看
+        # 需登录：public_id 相当于分享链接，匿名访问（即使 is_public=True）一律 401
         rs = await client.get(f"/files/{public_id}/metadata")
-        assert rs.status_code == 200, f"anonymous metadata of public file failed: {rs.text}"
-        assert rs.json()["public_id"] == public_id
+        assert rs.status_code == 401, f"anonymous metadata should be rejected: {rs.text}"
         # 内容指纹（file_verify_code/MD5）不得对外泄露：匿名拿到即可通过预检秒传
         # 成为私有文件持有者（可改元数据、置公开、删除），响应必须不含该字段
         assert "file_verify_code" not in body, (
             "metadata must not expose file_verify_code: 防止秒传接管私有文件"
         )
         logger.info("test_file_metadata passed: public_id=%s filename=%s", public_id, body.get("filename"))
+
+    @pytest.mark.oss
+    async def test_public_id_by_file_id(self, admin_login: Tuple[AsyncClient, str, str]):
+        """GET /files/id/{file_id}/public_id（兼容接口：需登录，仅 80-95 号历史数据）"""
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+
+        # 需登录：匿名访问一律 401（子依赖先于参数校验求解，鉴权失败优先返回 401）
+        rs = await client.get("/files/id/80/public_id")
+        assert rs.status_code == 401, f"anonymous lookup should be rejected: {rs.text}"
+
+        # 范围外：登录态也直接 422（请求校验阶段拒绝，不查库）
+        rs = await client.get("/files/id/79/public_id", headers=auth)
+        assert rs.status_code == 422, rs.text
+        rs = await client.get("/files/id/96/public_id", headers=auth)
+        assert rs.status_code == 422, rs.text
+
+        # 范围内：该环境有这条历史记录则 200 且带 public_id；没有则 404
+        rs = await client.get("/files/id/80/public_id", headers=auth)
+        assert rs.status_code in (200, 404), rs.text
+        if rs.status_code == 200:
+            assert rs.json().get("public_id"), rs.text
 
     @pytest.mark.oss
     async def test_simulate_fc_callback(self, admin_login: Tuple[AsyncClient, str, str]):
