@@ -14,7 +14,7 @@ from database.visit_stats import incr_visit
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
 ########################
-# 公开端（免登录）——先于 /{file_id} 声明，避免路径被动态段吞掉
+# 公开端（免登录）——先于 /{public_id} 声明，避免路径被动态段吞掉
 ########################
 
 @file_router.get("/public/{public_id}", response_model=FilePublic)
@@ -45,28 +45,28 @@ async def list_user_files(files: ListFilesDep):
     return files
 
 
-@file_router.get("/{file_id}/download_raw")
+@file_router.get("/{public_id}/download_raw")
 async def download_file_raw(file_meta: RawDownloadDep):
     """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
 
 
-@file_router.get("/{file_id}/download_raw_noauth")
+@file_router.get("/{public_id}/download_raw_noauth")
 async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
     """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
 
 
-@file_router.get("/{file_id}/download")
+@file_router.get("/{public_id}/download")
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
     asyncio.create_task(incr_visit())
     return file_meta
 
 
-@file_router.delete("/{file_id}")
+@file_router.delete("/{public_id}")
 async def delete_file(result: DeleteFileDep):
     """删除文件"""
     return result
@@ -85,19 +85,19 @@ async def upload_file(file_record: OssUploadDep):
     return file_record
 
 
-@file_router.get("/{file_id}/metadata", response_model=FilePublic)
+@file_router.get("/{public_id}/metadata", response_model=FilePublic)
 async def get_file_metadata(metadata: FileMetadataDep):
-    """根据文件ID查询文件元数据"""
+    """根据 public_id 查询文件元数据（可选登录；私有文件仅持有者/管理员可见，否则 404）"""
     return metadata
 
 
-@file_router.put("/{file_id}/set_public")
+@file_router.put("/{public_id}/set_public")
 async def set_file_public(result: SetFilePublicDep):
     """将文件设为公开"""
     return result
 
 
-@file_router.patch("/{file_id}", response_model=FilePublic)
+@file_router.patch("/{public_id}", response_model=FilePublic)
 async def patch_file_metadata(metadata: PatchFileMetadataDep):
     """修改文件元数据（持有者；部分更新；公开状态走 set_public 专用接口）"""
     return metadata

@@ -47,10 +47,10 @@ class ExperimentPublic(SQLModel):
     """
     实验公共返回模型
     用于 API 返回，包含所有实验类型的公共字段
+    （不含内部 source_file_id：前端调用 origin 查询接口时本就持有文件 public_id）
     """
     id: int
     experiment_name: str
-    source_file_id: int
     created_at: datetime
     status: str
     error_message: str

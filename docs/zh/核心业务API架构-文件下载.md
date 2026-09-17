@@ -15,14 +15,16 @@
 
 | 维度 | RAW 直链 | ZIP 打包 |
 |---|---|---|
-| 接口 | `GET /files/{file_id}/download_raw` | `GET /files/{file_id}/download` |
+| 接口 | `GET /files/{public_id}/download_raw` | `GET /files/{public_id}/download` |
 | 返回产物 | imzML + ibd 两个文件 | 单个 ZIP |
 | 响应 | 立即返回 URL | 首次可能返回 `<PACKING>`，需重试 |
 | 中间产物 | 无 | FC 打包的临时 ZIP |
 | 下载配额 | 检查（免登录版除外） | 检查 |
 | 当前状态 | 前端在用 | 存量保留，用于扩展 |
 
-另有免登录版 `GET /files/{file_id}/download_raw_noauth`：无登录态、不限次数、只更新文件维度统计，用于公开文件分享场景。
+另有免登录版 `GET /files/{public_id}/download_raw_noauth`：无登录态、不限次数、只更新文件维度统计，用于公开文件分享场景。
+
+下载接口均以文件 `public_id` 标识文件（格式不合法直接返回 422），私有文件对非持有者一律按 404 处理。ZIP 下载的响应不含内部 `file_id` 和 OSS 对象键 `path`（对象键同时含 `file_id` 与内容指纹），前端只使用 `oss_download_url`。
 
 ## 3. RAW 直链流程
 

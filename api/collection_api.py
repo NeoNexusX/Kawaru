@@ -33,7 +33,7 @@ from models.collection_models import (
 )
 from models.user_models import UserInDB
 
-from tools import get_logger
+from tools import PublicIdPath, get_logger
 logger = get_logger("api.collection_api")
 
 
@@ -48,7 +48,7 @@ async def create_collection_api(
     """
     【创建集合接口】
 
-    功能:创建集合并写入元数据与初始成员（file_ids 数组顺序即初始 position 1..n）
+    功能:创建集合并写入元数据与初始成员（file_public_ids 数组顺序即初始 position 1..n）
 
     权限:任何登录用户
 
@@ -218,7 +218,7 @@ async def add_members_api(
     """
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    await add_members(async_session, collection, current_user, operation.file_ids)
+    await add_members(async_session, collection, current_user, operation.file_public_ids)
     await async_session.commit()
     await async_session.refresh(collection)
 
@@ -240,12 +240,12 @@ async def remove_members_api(
 
     权限:集合 owner 或 admin（两者权限相同）
 
-    幂等:不在集合内的 file_id 跳过、不报错（与批量添加的幂等语义对称），
-    响应返回 removed / skipped 两个列表供前端对账
+    幂等:不在集合内的 public_id 跳过、不报错（与批量添加的幂等语义对称），
+    响应返回 removed / skipped 两个 public_id 列表供前端对账
     """
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    removed, skipped = await remove_members(async_session, collection, operation.file_ids)
+    removed, skipped = await remove_members(async_session, collection, operation.file_public_ids)
     await async_session.commit()
     await async_session.refresh(current_user)
 
@@ -265,7 +265,7 @@ async def reorder_members_api(
     """
     【调整成员顺序接口】
 
-    功能:传全量 [file_id] 数组，按数组顺序重写 position = 1..n
+    功能:传全量文件 public_id 数组，按数组顺序重写 position = 1..n
 
     权限:集合 owner 或 admin（两者权限相同）
 
@@ -274,7 +274,7 @@ async def reorder_members_api(
     """
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    await reorder_members(async_session, collection, operation.file_ids)
+    await reorder_members(async_session, collection, operation.file_public_ids)
     await async_session.commit()
     await async_session.refresh(collection)
 
@@ -287,7 +287,7 @@ async def reorder_members_api(
 # 公开端（免登录）
 #########################
 async def get_public_collection_api(
-    public_id: str,
+    public_id: PublicIdPath,
     async_session: AsyncSessionDep,
 ) -> CollectionDetail:
     """

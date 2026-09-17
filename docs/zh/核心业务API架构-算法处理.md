@@ -52,6 +52,8 @@ flowchart LR
 
 回调鉴权与上传回调一致，使用专用 Token。
 
+源文件对外统一用 `public_id` 标识：`POST /processes` 与 `POST /processes/raw-convert` 的请求体用 `file_public_id` 指定源文件；所有返回 run 记录的接口（含 `/processes/mine` 和聚类接口）用 `source_file_public_id` 标识源文件，不返回内部 `source_file_id`。源文件不存在或处于删除流程时返回 404。
+
 ## 4. 任务类型与流程
 
 算法与直转创建 run 后投递任务；聚类复用已完成的 run，单独更新 clustering_status。三者均由 Worker 触发 FC，再由回调更新结果：
