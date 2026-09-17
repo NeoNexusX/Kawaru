@@ -39,7 +39,7 @@ async def get_public_collection(detail: GetPublicCollectionDep):
 
 @collection_router.post("", response_model=CollectionOwnedDetail)
 async def create_collection(detail: CreateCollectionDep):
-    """创建集合（可带初始成员 file_ids，数组顺序即初始顺序）"""
+    """创建集合（可带初始成员 file_public_ids，数组顺序即初始顺序）"""
     return detail
 
 
@@ -89,11 +89,11 @@ async def add_collection_members(detail: AddMembersDep):
 
 @collection_router.patch("/{collection_id}/members/order", response_model=CollectionOwnedDetail)
 async def reorder_collection_members(detail: ReorderMembersDep):
-    """调整成员顺序（owner 或 admin；全量 [file_id] 数组重写 position）"""
+    """调整成员顺序（owner 或 admin；全量文件 public_id 数组重写 position）"""
     return detail
 
 
 @collection_router.delete("/{collection_id}/members")
 async def remove_collection_members(result: RemoveMembersDep):
-    """批量移除成员（owner 或 admin；单个移除即传长度为 1 的数组；不在集合内的 file_id 跳过不报错）"""
+    """批量移除成员（owner 或 admin；单个移除即传长度为 1 的数组；不在集合内的 public_id 跳过不报错）"""
     return result

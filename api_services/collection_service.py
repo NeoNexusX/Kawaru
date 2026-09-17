@@ -127,14 +127,14 @@ async def create_collection(
     current_user: UserInDB,
     data: CollectionCreate,
 ) -> DataCollectionInDB:
-    """创建集合 + 初始成员（file_ids 数组顺序即初始 position 1..n）
+    """创建集合 + 初始成员（file_public_ids 数组顺序即初始 position 1..n）
 
     成员资格校验与加成员共用 validate_member_files。
     """
-    fields = data.model_dump(exclude={"file_ids"})
+    fields = data.model_dump(exclude={"file_public_ids"})
 
     # 成员资格校验（创建与加成员共用）
-    files = await validate_member_files(session, data.file_ids)
+    files = await validate_member_files(session, data.file_public_ids)
 
     collection = DataCollectionInDB(**fields, owner_id=current_user.id) # type: ignore
     session.add(collection)
@@ -389,15 +389,21 @@ async def build_collection_detail(
 #########################
 # Member - 查
 #########################
-async def get_member_file_ids(
+async def get_member_file_id_map(
     session: AsyncSession, collection_id: int
-) -> list[int]:
-    """获取集合成员的文件 ID 列表（不加载文件对象）"""
-    stmt = select(CollectionMember.file_id).where(
-        CollectionMember.collection_id == collection_id
+) -> dict[str, int]:
+    """获取集合成员的 {public_id: file_id} 映射（不加载文件对象）
+
+    请求以 public_id 标识成员，成员表以 file_id 关联：联表一次取出两者，
+    供加成员去重、移除成员比对与换算使用，不额外增加数据库往返。
+    """
+    stmt = (
+        select(FileInDB.public_id, CollectionMember.file_id)
+        .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
+        .where(CollectionMember.collection_id == collection_id)
     )
     res = await session.exec(stmt)
-    return list(res.all()) #type: ignore
+    return {public_id: file_id for public_id, file_id in res.all()} #type: ignore
 
 
 async def get_member_files(
@@ -449,44 +455,45 @@ async def get_member_stats(
 # Member - 校验器（创建与加成员共用）
 #########################
 async def validate_member_files(
-    session: AsyncSession, file_ids: list[int]
+    session: AsyncSession, public_ids: list[str]
 ) -> list[FileInDB]:
     """成员资格校验：文件存在 → status == completed → is_public → experiment_type 合法
 
     "必须是公开文件"的校验第一期保留（当前恒真），未来引入私有文件时即为安全闸。
     请求内重复 id 去重（保序）——否则重复成员会触发联合主键冲突（500）。
+    请求以 public_id 标识文件；查到的记录自带 file_id，供调用方写成员行。
 
     Raises:
         HTTPException(409): 存在不合法文件
     """
-    if not file_ids:
+    if not public_ids:
         return []
 
-    unique_ids = list(dict.fromkeys(file_ids))
+    unique_ids = list(dict.fromkeys(public_ids))
     records = (
-        await session.exec(select(FileInDB).where(FileInDB.file_id.in_(unique_ids)))  # type: ignore # pylint: disable=no-member
+        await session.exec(select(FileInDB).where(FileInDB.public_id.in_(unique_ids)))  # type: ignore # pylint: disable=no-member
     ).all()
-    found = {record.file_id: record for record in records}
+    found = {record.public_id: record for record in records}
 
     reasons: dict[str, str] = {}
     valid: list[FileInDB] = []
-    for file_id in unique_ids:
-        record = found.get(file_id)
-        # 删除流程中的文件按不存在处理（与 get_file_record_by_id 的 404 语义一致）
+    for public_id in unique_ids:
+        record = found.get(public_id)
+        # 删除流程中的文件按不存在处理（与 get_file_record_by_public_id 的 404 语义一致）
         if record is None or record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
-            reasons[str(file_id)] = "not_found"
+            reasons[public_id] = "not_found"
         elif record.status != FileStatus.COMPLETED:
-            reasons[str(file_id)] = "not_completed"
+            reasons[public_id] = "not_completed"
         elif not record.is_public:
-            reasons[str(file_id)] = "not_public"
+            reasons[public_id] = "not_public"
         elif record.experiment_type not in ALLOWED_MEMBER_EXPERIMENT_TYPES:
-            reasons[str(file_id)] = "invalid_experiment_type"
+            reasons[public_id] = "invalid_experiment_type"
         else:
             valid.append(record)
 
     if reasons:
         logger.warning(
-            "invalid collection members file_ids=%s reasons=%s",
+            "invalid collection members public_ids=%s reasons=%s",
             list(reasons.keys()), reasons,
         )
         raise invalid_members_exception
@@ -501,7 +508,7 @@ async def add_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
     current_user: UserInDB,
-    file_ids: list[int],
+    public_ids: list[str],
 ) -> int:
     """往集合追加成员（owner 或 admin，权限由 api 层校验）
 
@@ -517,15 +524,15 @@ async def add_members(
         HTTPException(409): 存在不合法的成员文件
     """
     assert collection.id is not None
-    existing = set(await get_member_file_ids(session, collection.id))
+    existing = set(await get_member_file_id_map(session, collection.id))
 
-    new_ids: list[int] = []
-    seen: set[int] = set()
-    for file_id in file_ids:
-        if file_id in seen or file_id in existing:
+    new_ids: list[str] = []
+    seen: set[str] = set()
+    for public_id in public_ids:
+        if public_id in seen or public_id in existing:
             continue
-        seen.add(file_id)
-        new_ids.append(file_id)
+        seen.add(public_id)
+        new_ids.append(public_id)
 
     if not new_ids:
         return 0
@@ -561,7 +568,7 @@ async def add_members(
 
     logger.info(
         "collection members added collection_id=%s user=%s added=%s skipped=%s",
-        collection.id, current_user.id, len(files), len(file_ids) - len(files),
+        collection.id, current_user.id, len(files), len(public_ids) - len(files),
     )
     return len(files)
 
@@ -569,32 +576,32 @@ async def add_members(
 async def remove_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    file_ids: list[int],
-) -> tuple[list[int], list[int]]:
+    public_ids: list[str],
+) -> tuple[list[str], list[str]]:
     """批量移除集合成员（owner 或 admin，权限由 api 层校验）：只删链接行，不动文件
 
-    与批量添加的幂等语义对称：不在集合内的 file_id 跳过、不报错——
+    与批量添加的幂等语义对称：不在集合内的 public_id 跳过、不报错——
     批量场景下误选一个不存在的 id 不应让整批失败。
     与单删一致：position 空洞保留不重排（下次全量调序自然压紧）。
 
     Returns:
-        (实际移除的 file_id 列表, 跳过的 file_id 列表)
+        (实际移除的 public_id 列表, 跳过的 public_id 列表)
     """
     assert collection.id is not None
-    if not file_ids:
+    if not public_ids:
         return [], []
 
-    unique_ids = list(dict.fromkeys(file_ids))
-    current_ids = set(await get_member_file_ids(session, collection.id))
-    to_remove = [file_id for file_id in unique_ids if file_id in current_ids]
-    skipped = [file_id for file_id in unique_ids if file_id not in current_ids]
+    unique_ids = list(dict.fromkeys(public_ids))
+    member_map = await get_member_file_id_map(session, collection.id)
+    to_remove = [public_id for public_id in unique_ids if public_id in member_map]
+    skipped = [public_id for public_id in unique_ids if public_id not in member_map]
 
     if to_remove:
         await session.exec(
             delete(CollectionMember).where(
                 and_(
                     CollectionMember.collection_id == collection.id,
-                    CollectionMember.file_id.in_(to_remove),  # type: ignore # pylint: disable=no-member
+                    CollectionMember.file_id.in_([member_map[public_id] for public_id in to_remove]),  # type: ignore # pylint: disable=no-member
                 )
             )
         )
@@ -611,11 +618,12 @@ async def remove_members(
 async def reorder_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    file_ids: list[int],
+    public_ids: list[str],
 ) -> None:
     """调整成员顺序（owner 或 admin，权限由 api 层校验）：全量数组重写 position = 1..n
 
-    请求体必须恰好等于集合当前成员全集（缺失/多出/重复 → 409）。
+    请求体必须恰好等于集合当前成员全集（缺失/多出/重复 → 409；
+    不存在的 public_id 必然使集合比对不一致，同样 409，不会被静默跳过）。
     与其他用户并发加/删成员时，事务内成员集与请求快照不一致即 409，
     前端刷新后重试（乐观并发控制）。
 
@@ -623,34 +631,35 @@ async def reorder_members(
         HTTPException(409): 数组与成员全集不一致或含重复
     """
     assert collection.id is not None
-    if len(file_ids) != len(set(file_ids)):
+    if len(public_ids) != len(set(public_ids)):
         logger.warning(
-            "reorder failed, duplicate file ids collection_id=%s", collection.id
+            "reorder failed, duplicate public ids collection_id=%s", collection.id
         )
         raise member_order_conflict_exception
 
-    members = (
+    # 成员行联出文件 public_id：请求按 public_id 标识成员，成员表按 file_id 关联
+    rows = (
         await session.exec(
-            select(CollectionMember).where(
-                CollectionMember.collection_id == collection.id
-            )
+            select(CollectionMember, FileInDB.public_id)
+            .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
+            .where(CollectionMember.collection_id == collection.id)
         )
     ).all()
-    current_ids = {member.file_id for member in members}
+    member_by_public_id = {public_id: member for member, public_id in rows}
+    current_ids = set(member_by_public_id)
 
-    request_ids = set(file_ids)
+    request_ids = set(public_ids)
     if request_ids != current_ids:
         logger.warning(
             "reorder failed, member set changed collection_id=%s missing=%s extra=%s",
             collection.id,
-            sorted(current_ids - request_ids), # type: ignore
+            sorted(current_ids - request_ids),
             sorted(request_ids - current_ids),
         )
         raise member_order_conflict_exception
 
-    member_by_file_id = {member.file_id: member for member in members}
-    for position, file_id in enumerate(file_ids, start=1):
-        member = member_by_file_id[file_id]
+    for position, public_id in enumerate(public_ids, start=1):
+        member = member_by_public_id[public_id]
         member.position = position
         session.add(member)
 

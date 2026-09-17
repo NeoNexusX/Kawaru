@@ -1,6 +1,5 @@
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Literal
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, Integer, BigInteger, Float
@@ -112,14 +111,16 @@ class FilePatch(SQLModel):
 
 
 class FilePublic(FileBase):
-    """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）"""
+    """对外返回的文件信息（通用元数据，不含 OSS 上传临时凭证）
 
-    file_id: int
+    不含内部自增 file_id：对外标识一律用 public_id（自增 id 可枚举）。
+    """
+
     # 内容指纹（MD5）仅内部使用：OSS 对象键、秒传去重、FC 回调校验。
     # 对外一律不返回——匿名/任意登录用户拿到它即可通过预检秒传成为文件持有者
     # （进而可改元数据、置公开、删除），因此序列化时显式排除。
     file_verify_code: str | None = Field(default=None, exclude=True, max_length=32)
-    # 公开分享标识（与 file_id 并存：下载链路仍按 file_id，分享页 URL 用 public_id）
+    # 对外唯一标识：分享页 URL、下载、元数据、删除等所有对外接口均按 public_id 调用
     public_id: str
     status: str = Field(default="", max_length=32, description="文件处理状态: uploading, completed, failed, deleting, delete_failed")
     uploaded_at: datetime
@@ -128,6 +129,9 @@ class FilePublic(FileBase):
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
     is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
     default_run_id: int | None = Field(default=None, description="指向默认展示的 raw_convert/algo run")
+    # 预览图目录（FC 回调写入，尾带 /，如 images/{file_id%1000:03d}/file_{file_id}/）：前端按约定拼接 preview.jpg；
+    # 为空表示预览图尚未生成，前端显示占位图。删掉 file_id 后前端无法自行拼目录，故由后端返回
+    image_path: str | None = Field(default=None, description="预览图片目录的 OSS 对象键（尾带 /），为空表示尚未生成")
 
 
 class FileOssUploadResponse(FilePublic):
@@ -156,7 +160,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1, description="兼容保留的总分片数字段")
-    image_path: str | None = Field(default=None, max_length=255, description="预览图片目录在 OSS 上的对象键（尾带 /，如 images/file_{file_id}/），由 FC 回调写入；具体文件名由消费方按 preview.jpg/preview_2.jpg/preview_3.jpg 约定拼接")
+    image_path: str | None = Field(default=None, max_length=255, description="预览图片目录在 OSS 上的对象键（尾带 /，如 images/{file_id%1000:03d}/file_{file_id}/），由 FC 回调写入；具体文件名由消费方按 preview.jpg/preview_2.jpg/preview_3.jpg 约定拼接")
     default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
     # 压缩率 = 上传 zip 实际大小 / 压缩前大小（size 字段），由 FC 回调写入；
     # 值越小压缩收益越大，供下载分流（打包 zip vs RAW 直链）参考；NULL 表示回调未完成
@@ -172,11 +176,13 @@ class FileInDB(FileBase, table=True):
     )
 
 class FileDownloadMeta(FileBase):
-    """下载所需的文件元数据"""
+    """下载所需的文件元数据
 
-    path: Path
+    不含 file_id 与 path：path 是 OSS 对象键（如 data/{file_verify_code}/{file_id}.zip），
+    会暴露内部 file_id 与内容指纹；前端下载只需 oss_download_url。
+    """
+
     oss_download_url: str | None = None
-    file_id: int | None = None
     uploaded_at: datetime
     download_count: int
     last_downloaded_at: datetime
@@ -185,14 +191,12 @@ class FileDownloadMeta(FileBase):
     def from_record(cls, record: FileInDB) -> "FileDownloadMeta":
         """从文件记录创建下载元数据"""
         return cls(
-            file_id=record.file_id,
             filename=record.filename,
             file_type=record.file_type,
             size=record.size,
             storage_type=record.storage_type,
             # file_verify_code 有意不回填（保持 None）：内容指纹是秒传接管的钥匙，
             # 即使此接口已限制为持有者/公开文件，也不对外下发，避免被二次秒传接管
-            path=Path(record.path),
             uploaded_at=record.uploaded_at,
             download_count=record.download_count,
             last_downloaded_at=record.last_downloaded_at,

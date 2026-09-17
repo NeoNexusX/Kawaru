@@ -46,9 +46,11 @@ flowchart LR
 | `POST /files/upload` | 前端 | 获取 OSS 上传路径和 STS 临时凭证 |
 | `POST /files/upload_simple` | 前端 | 兼容上传入口，与 `/files/upload` 使用同一套逻辑 |
 | `POST /callback/oss_upload_callback` | 解包 FC | 报告解包成功或失败 |
-| `GET /files/{file_id}/metadata` | 前端 | 查询文件当前状态和基本信息 |
+| `GET /files/{public_id}/metadata` | 前端 | 查询文件当前状态和基本信息 |
 
 前端接口使用 Bearer Token 鉴权，FC 回调使用专用 Token 鉴权。
+
+文件对外统一用 `public_id`（16 位 base62 随机串）标识，接口不返回内部自增 `file_id`；路径中的 `public_id` 格式不合法时直接返回 422。元数据接口为可选登录：公开文件任何人可查；私有文件只有持有者或管理员可查，其他人一律 404，因此前端轮询自己私有文件的状态时必须携带 `Authorization` 头。
 
 ## 4. 上传流程
 
@@ -66,12 +68,12 @@ sequenceDiagram
     FE->>FE: 计算业务哈希和原始文件大小
     FE->>API: 调用上传预检
     API->>DB: 检查重复文件和配额，创建文件记录
-    API-->>FE: 返回 file_id 和是否秒传
+    API-->>FE: 返回 public_id 和是否秒传
 
     alt 可以秒传
         FE-->>User: 上传完成
     else 需要上传
-        FE->>API: 使用 file_id 获取 STS
+        FE->>API: 使用 public_id 获取 STS
         API-->>FE: 返回 OSS 路径和临时凭证
         FE->>OSS: 直传 ZIP
         OSS->>FC: 触发解包任务
@@ -79,7 +81,7 @@ sequenceDiagram
         FC->>API: 回调解包结果
         API->>DB: 保存路径并更新文件状态
         API-->>FC: 回调处理完成
-        FE->>API: 查询文件状态
+        FE->>API: 查询文件状态（携带登录态）
         API-->>FE: completed 或 failed
     end
 ```
@@ -88,7 +90,8 @@ sequenceDiagram
 
 - 预检通过即创建文件记录并占用用户配额；上传失败或过期后由清理任务退还。
 - 如果其他用户已成功上传过相同文件，预检直接返回秒传（`is_reuse=true`），前端不应再调用上传接口。
-- 需要上传时，前端用 `file_id` 换取 OSS 目标路径和 STS 临时凭证。凭证只对这一个对象有效，上传路径由后端指定，前端不能自行拼接。
+- 需要上传时，前端以预检返回的 `public_id` 作为表单字段 `pre_public_id`，换取 OSS 目标路径和 STS 临时凭证。凭证只对这一个对象有效，上传路径由后端指定，前端不能自行拼接。
+- 返回的 `oss_path` 形如 `data/{file_verify_code}/{file_id}.zip`，对象键中仍含内部 `file_id`（解包 FC 从文件名解析后回调后端），这是当前有意保留的暴露点，见 [文件存储与生命周期架构](文件存储与生命周期架构.md) 3.4 节。
 - ZIP 直传成功后，OSS 事件触发解包 FC，将 imzML 和 ibd 写回 OSS 并回调后端。
 - 后端校验通过后，文件状态才变为 `completed`；校验或解包失败则为 `failed`。
 

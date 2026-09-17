@@ -99,7 +99,7 @@ The service is OSS-only. Complete this checklist before the first deployment:
 - In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the four object roots (`oss_zip_storage_root`, `oss_packup_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and all six FC endpoints/timeouts.
 - In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, all six `OSS_FC_*_TOKEN` values (packup, algorithm, TIC, feature, raw-convert, clustering), and `FC_CALLBACK_TOKEN`.
 - Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue the generated path-scoped upload/download STS policies to clients.
-- Configure the OSS upload event to invoke the extraction FC function. Uploaded keys use `{oss_zip_storage_root}/{file_id}/{file_verify_code}.zip`; FC must parse `file_id`, write imZML/ibd below `{oss_origin_storage_root}/{file_id}/{file_verify_code}/`, and call `/callback/oss_upload_callback` with `file_id` and the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
+- Configure the OSS upload event to invoke the extraction FC function. Uploaded keys use `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`; FC must parse `file_id` from the file name, write imZML/ibd below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and call `/callback/oss_upload_callback` with `file_id` and the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
 - Configure every other FC function to call its matching `/callback/*` route with `X-FC-Token`. Feature/UMAP results use `/callback/umap_callback`, TIC uses `/callback/tic_callback`, and `image_path` must be the full key including `preview.jpg`. The callback URL must be reachable from FC, and app/worker containers must have outbound access to OSS and all FC endpoints.
 - Configure an OSS lifecycle rule to remove abandoned objects that never receive the `persistent=true` tag. Do not expire tagged source/extracted objects with that rule.
 
@@ -107,12 +107,12 @@ Default object placement is controlled by configuration rather than host directo
 
 | Content | OSS location |
 |---------|--------------|
-| Uploaded ZIP | `{oss_zip_storage_root}/{file_id}/{file_verify_code}.zip` |
+| Uploaded ZIP | `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip` |
 | FC-created download ZIP | `{oss_packup_zip_storage_root}/{file_id}.zip` |
-| Extracted imZML/ibd | `{oss_origin_storage_root}/{file_id}/{file_verify_code}/{original_name}.imzML/.ibd` |
+| Extracted imZML/ibd | `{oss_origin_storage_root}/{file_verify_code}/{file_id}/{original_name}.imzML/.ibd` |
 | Algorithm/raw-convert Zarr | `{oss_processed_storage_root}/run_{run_id}.zarr/` |
 | Clustering result | Written back into the run's Zarr; no second output directory |
-| TIC/UMAP preview | `images/file_{file_id}/preview.jpg` (full key supplied by the FC callback) |
+| TIC/UMAP preview | `images/{file_id%1000:03d}/file_{file_id}/preview.jpg` (full key supplied by the FC callback) |
 
 > A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, run one end-to-end smoke test: preflight → STS upload → extraction callback → RAW signed download. Also verify one processing callback and one packup callback if those features are enabled for clients.
 

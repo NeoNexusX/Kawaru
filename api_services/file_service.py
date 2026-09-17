@@ -156,32 +156,35 @@ async def get_file_record_by_id(
     return file_record
 
 
-async def get_public_file_by_public_id(
-    async_session: AsyncSession, public_id: str
+async def get_file_record_by_public_id(
+    public_id: str,
+    async_session: AsyncSession,
+    *,
+    include_deleting: bool = False,
 ) -> FileInDB:
     """
-    根据 public_id 查询公开文件记录（免登录分享页用）
+    根据 public_id 查询文件记录（对外接口统一入口，内部 file_id 不再对外暴露）
 
-    与 collection 的 get_public_collection_by_public_id 同构：
-    - 非公开文件即使 public_id 正确也按不存在处理（404 不暴露存在性）
-    - 非 completed（含删除流程状态位）同样 404，避免分享链接返回僵尸记录
+    删除流程中的文件处理与 get_file_record_by_id 完全一致：DELETING / DELETE_FAILED
+    默认按不存在处理，删除登记等管理路径用 include_deleting=True 显式放行。
+    不校验公开状态与持有关系，权限由调用方判断。
 
     Returns:
         文件记录对象
     Raises:
-        file_not_found_exception: 文件不存在、非公开或不可用
+        file_not_found_exception: 文件记录不存在（或处于删除流程且未放行）
     """
     statement = select(FileInDB).where(FileInDB.public_id == public_id)
 
     file_record = (await async_session.exec(statement)).first()
 
-    if not file_record or not file_record.is_public:
-        logger.warning("public file not found public_id=%s", public_id)
+    if not file_record:
+        logger.warning("file record not found public_id=%s", public_id)
         raise file_not_found_exception
 
-    if file_record.status != FileStatus.COMPLETED:
+    if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
         logger.warning(
-            "public file not available public_id=%s file_id=%s status=%s",
+            "file is being deleted, treat as not found public_id=%s file_id=%s status=%s",
             public_id, file_record.file_id, file_record.status,
         )
         raise file_not_found_exception
@@ -493,10 +496,10 @@ async def validate_simple_upload(
         HTTPException: 其他验证失败时抛出异常
     """
     # 归属校验：当前用户必须拥有该预检记录，防止越权签发 STS 覆盖他人对象
-    # 使用 404 而非 403，避免泄露该 pre_file_id 是否存在
+    # 使用 404 而非 403，避免泄露该 pre_public_id 是否存在
     if not await assert_file_owner(async_session, pre_record, current_user):
         logger.warning(
-            f"unauthorized upload attempt user={current_user.id} pre_file_id={pre_record.file_id}"
+            f"unauthorized upload attempt user={current_user.id} file_id={pre_record.file_id}"
         )
         raise file_not_found_exception
 
@@ -901,8 +904,8 @@ async def _prepare_download_url_for_completed_packup(
     await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
     await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
 
-    # 回写 path 指向 packup zip：cleanup_old_download_zips 靠它定位清理对象，
-    # 且 FileDownloadMeta 返回的 path 与实际下载内容一致。
+    # 回写 path 指向 packup zip：cleanup_old_download_zips 靠它定位清理对象。
+    # （path 仅内部使用，FileDownloadMeta 不对外返回：对象键含 file_id 与 file_verify_code）
     # 注意：此处不 flush/commit，依赖外层 get_download_file_metadata 的事务提交生效。
     # 绝不回写 size：size 是计费字段，恒为压缩前大小，不能被 packup zip 大小污染。
     file_record.path = zip_path
