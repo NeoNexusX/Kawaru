@@ -336,11 +336,13 @@ class TestOss:
         client, token, token_type = admin_login
         auth = {"Authorization": f"{token_type.title()} {token}"}
         file_id = TestOss._uploaded_file_id
+        public_id = TestOss._uploaded_public_id
 
         # 1. 置公开（公开不可逆；该文件在 cleanup 步骤会整体删除）
-        rs = await client.put(f"/files/{file_id}/set_public", headers=auth)
+        #    set_public 路径参数是 public_id（内部 file_id 不对外暴露，仅 relay/回调链路使用）
+        rs = await client.put(f"/files/{public_id}/set_public", headers=auth)
         assert rs.status_code == 200, rs.text
-        logger.info("relay test: file_id=%s set public", file_id)
+        logger.info("relay test: public_id=%s set public", public_id)
 
         # 2. 免登录获取中转 URL（不携带任何鉴权头）
         rs = await async_client.get(f"/files/{file_id}/download_relay_noauth")
