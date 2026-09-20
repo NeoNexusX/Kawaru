@@ -74,9 +74,15 @@ jobs:
             set -e
             set -o pipefail
             # 杭州节点访问 ghcr.io 需走代理：先开 clash + TUN（TUN 透明代理才能覆盖 docker daemon 的拉镜像流量）
-            trap 'clashctl off' EXIT   # 无论成功/失败退出都关掉代理，避免部署中途失败把梯子留在服务器上
-            clashctl on
-            clashtun on
+            # trap 内加 set +e：EXIT trap 执行时 set -e 仍生效，避免 off 函数内部的"无害失败"把清理中途打断、梯子留在服务器上
+            trap 'set +e; clashctl off' EXIT   # 无论成功/失败退出都关掉代理
+            # clashctl/clashtun 是服务器 .bashrc 里的交互函数，内部探测命令（grep/pkill 等）可能返回非零：
+            # 交互终端里无害，但在 set -e 下会静默终止整个脚本 → 容忍其返回码，真实可用性由下方 curl 检查兜底
+            clashctl on  || echo "WARN: clashctl on rc=$?"
+            clashtun on || echo "WARN: clashtun on rc=$?"
+            # 显式验证代理连通性；不带 -f：匿名访问 /v2/ 返回 401 是 registry API 正常行为，收到响应即视为连通
+            curl -sS -o /dev/null --max-time 10 https://ghcr.io/v2/ \
+              || { echo "ERROR: ghcr.io 不可达，代理未生效，中止部署"; exit 1; }
             export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
             cd /opt/kawaru-dev
             echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
