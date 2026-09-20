@@ -104,6 +104,16 @@ FC_CLUSTERING_ENDPOINT = config.oss.fc_clustering_endpoint
 FC_CLUSTERING_TIMEOUT_SECONDS = config.oss.fc_clustering_timeout_seconds
 
 
+# 中转下载（relay）配置
+OSS_INTERNAL_ENDPOINT = getattr(config.oss, "oss_internal_endpoint", None)
+# token 有效期与 RAW 直链签名 URL 对齐，保证与缓存 TTL 的既有不变式一致：
+# PACKUP_CACHE_TTL_SECONDS 恒早于本值过期，缓存里返回的 URL 不会指向已失效的 token
+RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS
+RELAY_MAX_CONCURRENCY = int(getattr(config.oss, "relay_max_concurrency", 5))
+RELAY_ACQUIRE_TIMEOUT = float(getattr(config.oss, "relay_acquire_timeout_seconds", 10))
+RELAY_IDLE_TIMEOUT = float(getattr(config.oss, "relay_idle_timeout_seconds", 30))
+
+
 __all__ = [
     "BYTES_IN_KB",
     "BYTES_IN_MB",
@@ -140,6 +150,11 @@ __all__ = [
     "FC_RAW_CONVERT_TIMEOUT_SECONDS",
     "FC_CLUSTERING_ENDPOINT",
     "FC_CLUSTERING_TIMEOUT_SECONDS",
+    "OSS_INTERNAL_ENDPOINT",
+    "RELAY_TOKEN_EXPIRE_SECONDS",
+    "RELAY_MAX_CONCURRENCY",
+    "RELAY_ACQUIRE_TIMEOUT",
+    "RELAY_IDLE_TIMEOUT",
     "OSS_DEFAULT_TIMEOUT_SECONDS",
     "OSS_DELETE_OBJECT_TIMEOUT_SECONDS",
     "OSS_DELETE_PREFIX_TIMEOUT_SECONDS",

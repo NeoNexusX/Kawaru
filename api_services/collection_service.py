@@ -130,11 +130,23 @@ async def create_collection(
     """创建集合 + 初始成员（file_public_ids 数组顺序即初始 position 1..n）
 
     成员资格校验与加成员共用 validate_member_files。
+
+    Raises:
+        collection_member_limit_exception: 初始成员数超过上限
+        HTTPException(409): 存在不合法的成员文件
     """
     fields = data.model_dump(exclude={"file_public_ids"})
 
     # 成员资格校验（创建与加成员共用）
     files = await validate_member_files(session, data.file_public_ids)
+
+    # 成员数上限与 add_members 同口径（validate_member_files 已去重，len(files) 即有效唯一成员数）
+    if len(files) > MAX_COLLECTION_MEMBERS:
+        logger.warning(
+            "collection member limit exceeded at create user=%s members=%s",
+            current_user.id, len(files),
+        )
+        raise collection_member_limit_exception
 
     collection = DataCollectionInDB(**fields, owner_id=current_user.id) # type: ignore
     session.add(collection)

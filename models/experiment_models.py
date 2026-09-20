@@ -118,3 +118,10 @@ class OriginImzMLPublic(ExperimentPublic):
 # class OriginRawPublic(ExperimentPublic):
 #     """RAW 原始数据公开模型"""
 #     raw_size: int
+
+
+# 运行时导入（不能只放 TYPE_CHECKING）：process_runs 的 Relationship 以字符串引用
+# 'ExperimentProcessRunInDB'，mapper 配置要求该类已在本进程注册；只导入本模块的独立
+# 进程（pytest 收集、脚本）若不导入 processing_models 会抛 InvalidRequestError。
+# 两侧交叉导入均放模块末尾（各自类的定义之后），任意导入顺序都不会循环导入。
+from models.processing_models import ExperimentProcessRunInDB  # noqa: E402,F401
