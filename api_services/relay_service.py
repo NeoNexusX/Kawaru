@@ -22,6 +22,7 @@ from alibabacloud_oss_v2 import GetObjectRequest, HeadObjectRequest
 
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_services.file_service import assert_origin_files_ready, get_file_record_by_id
+from boot.config import get_config
 from storage.oss.oss_client import create_internal_oss_client
 
 from constants.file_constants import (
@@ -85,6 +86,15 @@ def _content_disposition(filename: str) -> str:
         or "download"
     )
     return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quote(name, safe="")}'
+
+
+def resolve_relay_base_url(request_base_url: str) -> str:
+    """中转 URL 公网前缀：server.public_base_url 配置优先，未配置则回退请求的 base_url 推导。
+
+    API 层负责从 Request 取 base_url 传入，本函数只做配置决策，不耦合 fastapi.Request。
+    """
+    configured = get_config().server.public_base_url
+    return (configured or request_base_url).rstrip("/")
 
 
 async def _close_client(client) -> None:

@@ -18,7 +18,11 @@ from api_services.relay_service import (
     issue_relay_token,
     verify_relay_token,
 )
-from constants.file_constants import RELAY_MAX_CONCURRENCY, RELAY_TOKEN_EXPIRE_SECONDS
+from constants.file_constants import (
+    PACKUP_CACHE_TTL_SECONDS,
+    RELAY_MAX_CONCURRENCY,
+    RELAY_TOKEN_EXPIRE_SECONDS,
+)
 from models.auth import SECRET_KEY
 
 
@@ -58,8 +62,9 @@ class TestRelayToken:
         )
         assert not verify_relay_token(forged, 42, "ibd")
 
-    def test_ttl_is_positive(self):
-        assert RELAY_TOKEN_EXPIRE_SECONDS > 0
+    def test_ttl_aligns_with_cache_invariant(self):
+        """token 有效期须严格大于缓存 TTL：缓存过期时 token 必然仍有效（与 RAW 直链不变式一致）"""
+        assert RELAY_TOKEN_EXPIRE_SECONDS > PACKUP_CACHE_TTL_SECONDS
 
 
 class TestContentDisposition:

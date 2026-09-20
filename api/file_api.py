@@ -8,10 +8,13 @@ from fastapi.responses import Response, StreamingResponse
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
-from boot.config import get_config
 from api_helpers.file_helper import check_user_quota
 from api_services.composite_service import mark_file_for_deletion
-from api_services.relay_service import prepare_download_relay_oss, stream_relay_file
+from api_services.relay_service import (
+    prepare_download_relay_oss,
+    resolve_relay_base_url,
+    stream_relay_file,
+)
 from api_services.file_service import (
     assert_file_owner,
     build_file_filters,
@@ -689,12 +692,6 @@ async def get_raw_download_metadata_noauth(
     return response
 
 
-def _relay_base_url(request: Request) -> str:
-    """中转 URL 的公网前缀：server.public_base_url 配置优先，未配置则回退 request.base_url 推导。"""
-    configured = get_config().server.public_base_url
-    return (configured or str(request.base_url)).rstrip("/")
-
-
 async def get_relay_download_metadata_noauth(
     file_id: int,
     session: AsyncSessionDep,
@@ -713,20 +710,47 @@ async def get_relay_download_metadata_noauth(
     流程：
     1. 公开文件闸（非公开返回 404，不暴露存在性）
     2. 校验文件类型（仅支持 OSS + imzML）
-    3. 校验 origin 就绪 → 拼两个中转 URL
+    3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 拼两个中转 URL → 写缓存
     4. 更新下载统计（仅文件维度，无登录态）
 
     注意：
-    - 不做 Redis 缓存：token 是纯本地 jwt 生成，无外部调用，缓存无意义
+    - Redis 缓存与 raw 直链同构：TTL 取 PACKUP_CACHE_TTL_SECONDS，恒早于 token 有效期
+      （RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS），缓存里的 URL 不会指向已失效的 token
+    - 缓存值内嵌 base_url：生产配置了 public_base_url 时无影响；回退模式（public_base_url 为空）
+      下首次请求的 host 会被固化进缓存
     - 不写 file_record.path，不产生中间产物，与被清理任务无关
     """
     file_record = await get_file_record_by_id(file_id, session)
+
+    # 免登录下载仅服务公开文件（404 不暴露存在性）：该接口无登录态且任意 file_id 可触达，
+    # 必须以 is_public 为闸，否则自增 file_id 可被匿名遍历下载私有文件
+    if not file_record.is_public:
+        logger.warning(f"relay download noauth denied, file not public file_id={file_id}")
+        raise file_not_found_exception
+
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
         raise download_not_implemented_exception
 
+    # Redis 缓存命中 → 直接返回（缓存命中仍然计一次下载，与 raw 直链语义一致）
+    cache_key = f"raw_dl_relay:{file_id}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        response = RawDownloadResponse.model_validate_json(cached)
+        await update_download_stats(session, file_record)
+        await session.commit()
+        await session.refresh(file_record)
+        logger.info(
+            f"relay download noauth (cached) file_id={file_id} filename={file_record.filename}"
+        )
+        return response
+
     files = await prepare_download_relay_oss(
-        session, file_record, base_url=_relay_base_url(request)
+        session, file_record, base_url=resolve_relay_base_url(str(request.base_url))
     )
+    response = RawDownloadResponse(files=files)
+
+    # 写缓存：TTL 与 raw 直链同源，恒早于 token 过期
+    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
 
     # 更新下载统计（仅文件维度）
     await update_download_stats(session, file_record)
@@ -737,7 +761,7 @@ async def get_relay_download_metadata_noauth(
         f"relay download noauth success file_id={file_id} filename={file_record.filename}"
     )
 
-    return RawDownloadResponse(files=files)
+    return response
 
 
 async def relay_download_file(
