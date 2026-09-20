@@ -21,7 +21,7 @@ from starlette.background import BackgroundTask
 from alibabacloud_oss_v2 import GetObjectRequest, HeadObjectRequest
 
 from api_services.experiment_service import get_origin_imzml_by_file_id
-from api_services.file_service import assert_origin_files_ready, get_file_record_by_id
+from api_services.file_service import assert_origin_files_ready, get_file_record_by_public_id
 from boot.config import get_config
 from storage.oss.oss_client import create_internal_oss_client
 
@@ -50,27 +50,29 @@ RelayPart = Literal["imzml", "ibd"]
 _CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def issue_relay_token(file_id: int, part: RelayPart) -> str:
-    """签发中转下载 token：绑定 file_id + part，短时有效。
+def issue_relay_token(public_id: str, part: RelayPart) -> str:
+    """签发中转下载 token：绑定 public_id + part，短时有效。
 
     token 可复用（不做一次性消费）：下载器/浏览器断点续传会并发多条 Range 连接，
     共用同一个 URL 与 token。
+    绑定 public_id 而非内部 file_id：JWT payload 对持有者可解码，
+    内部自增 id 不得泄露进对外 URL。
     """
     payload = {
-        "file_id": file_id,
+        "public_id": public_id,
         "part": part,
         "exp": int(time.time()) + RELAY_TOKEN_EXPIRE_SECONDS,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 
-def verify_relay_token(token: str, file_id: int, part: RelayPart) -> bool:
-    """校验中转 token：签名有效且 file_id/part 与请求一致，防止被拿来取任意 OSS 对象。"""
+def verify_relay_token(token: str, public_id: str, part: RelayPart) -> bool:
+    """校验中转 token：签名有效且 public_id/part 与请求一致，防止被拿来取任意 OSS 对象。"""
     try:
         data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.PyJWTError:
         return False
-    return data.get("file_id") == file_id and data.get("part") == part
+    return data.get("public_id") == public_id and data.get("part") == part
 
 
 def _resolve_relay_origin(origin: OriginImzMLInDB, part: RelayPart) -> str:
@@ -118,12 +120,11 @@ async def prepare_download_relay_oss(
     """
     origin = await assert_origin_files_ready(session, file_record)
 
-    file_id = file_record.file_id
-    assert file_id is not None
+    public_id = file_record.public_id
 
     def relay_url(part: RelayPart) -> str:
-        token = issue_relay_token(file_id, part)
-        return f"{base_url.rstrip('/')}/files/{file_id}/relay/download?part={part}&token={token}"
+        token = issue_relay_token(public_id, part)
+        return f"{base_url.rstrip('/')}/files/{public_id}/relay/download?part={part}&token={token}"
 
     return [
         OssDownloadFile(
@@ -178,7 +179,7 @@ async def _relay_head_response(oss_path: str) -> Response:
 
 async def stream_relay_file(
     session: AsyncSession,
-    file_id: int,
+    public_id: str,
     part: RelayPart,
     token: str,
     range_header: str | None,
@@ -187,26 +188,28 @@ async def stream_relay_file(
     """流式透传下载：验 token → 解析真实 oss key → 内网拉取 → 边拉边发，不落盘。
 
     关键点：
+    - 对外入参为 public_id：验 token 后在库内换回内部 file_id 定位 origin
     - get_object 在构造响应前发起：响应状态码（200/206/416）依赖 res.status_code。
     - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429），
       release 在 generator 的 finally（含客户端断开 CancelledError），不漏放。
     - 逐 chunk 空闲超时：客户端停止消费 → 背压使 OSS read 阻塞 → 超时中断传输。
     - HEAD 走 head_object 分支，不拉正文（见 _relay_head_response）。
     """
-    if not verify_relay_token(token, file_id, part):
-        logger.warning("relay download rejected: invalid or expired token file_id=%s part=%s", file_id, part)
+    if not verify_relay_token(token, public_id, part):
+        logger.warning("relay download rejected: invalid or expired token public_id=%s part=%s", public_id, part)
         raise HTTPException(status_code=401, detail="下载链接无效或已过期")
 
     # 文件存在性（含删除流程过滤）；origin 路径从数据库解析
-    await get_file_record_by_id(file_id, session)
+    file_record = await get_file_record_by_public_id(public_id, session)
+    file_id = file_record.file_id
     origin = await get_origin_imzml_by_file_id(session, file_id)
     if not origin:
-        logger.warning("relay download origin missing file_id=%s", file_id)
+        logger.warning("relay download origin missing public_id=%s file_id=%s", public_id, file_id)
         raise file_content_missing_exception
 
     oss_path = _resolve_relay_origin(origin, part)
     if not oss_path:
-        logger.warning("relay download path empty file_id=%s part=%s", file_id, part)
+        logger.warning("relay download path empty public_id=%s file_id=%s part=%s", public_id, file_id, part)
         raise file_content_missing_exception
 
     if method == "HEAD":

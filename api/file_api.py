@@ -698,41 +698,60 @@ async def get_raw_download_metadata_noauth(
     return response
 
 
-async def get_relay_download_metadata_noauth(
-    file_id: int,
+async def get_relay_download_metadata(
+    public_id: PublicIdPath,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
     session: AsyncSessionDep,
     request: Request,
 ) -> RawDownloadResponse:
-    """【中转下载元数据接口（免登录）】
+    """【中转下载元数据接口（需登录）】
 
     功能：不打包不签名，返回两个指向后端的中转 URL（内嵌短时 token）。
     前端拿到后经服务器流式透传下载，OSS→服务器 走内网免费，免去 OSS 公网下行流量。
-    时机：公开文件分享场景调用。
+    时机：公开文件分享或本人下载场景调用。
 
-    与 raw 直链免登录版的区别：
+    与 raw 直链版的区别：
     - raw：签 OSS 预签名 URL，前端直连 OSS
     - relay：拼后端中转 URL，服务器流式透传（本次新增）
 
     流程：
-    1. 公开文件闸（非公开返回 404，不暴露存在性）
-    2. 校验文件类型（仅支持 OSS + imzML）
-    3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 拼两个中转 URL → 写缓存
-    4. 更新下载统计（仅文件维度，无登录态）
+    1. 登录闸（未带/无效/过期 token 一律 401）
+    2. 权限闸：公开文件任意登录用户可下载；私有文件仅持有者或管理员
+       （非持有者一律按 404 处理，不暴露存在性）
+    3. 下载次数限制检查（非管理员用户）
+    4. 校验文件类型（仅支持 OSS + imzML）
+    5. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 拼两个中转 URL → 写缓存
+    6. 更新下载统计（文件维度 + 用户维度）
 
     注意：
+    - 路径参数为 public_id（对外统一标识），与 raw 直链版一致；中转 URL 与
+      token 也一并绑定 public_id，内部 file_id 不再出现在任何对外出参里
+    - 中转 URL 内嵌 token，下载端点 /relay/download 无需再携带登录态
     - Redis 缓存与 raw 直链同构：TTL 取 PACKUP_CACHE_TTL_SECONDS，恒早于 token 有效期
       （RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS），缓存里的 URL 不会指向已失效的 token
     - 缓存值内嵌 base_url：生产配置了 public_base_url 时无影响；回退模式（public_base_url 为空）
       下首次请求的 host 会被固化进缓存
     - 不写 file_record.path，不产生中间产物，与被清理任务无关
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    file_record = await get_file_record_by_public_id(public_id, session)
+    file_id = file_record.file_id
 
-    # 免登录下载仅服务公开文件（404 不暴露存在性）：该接口无登录态且任意 file_id 可触达，
-    # 必须以 is_public 为闸，否则自增 file_id 可被匿名遍历下载私有文件
-    if not file_record.is_public:
-        logger.warning(f"relay download noauth denied, file not public file_id={file_id}")
+    logger.debug(f"relay download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸：公开文件任意登录用户可下载；私有文件仅持有者/管理员可下载，
+    # 非持有者一律按 404 处理（不暴露存在性），与 download_raw 口径一致
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "relay download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
         raise file_not_found_exception
+
+    # 下载次数限制检查
+    if current_user.identity != "admin":
+        used = current_user.download_used or 0
+        if used >= current_user.max_download_count:
+            raise user_download_limit_exception
 
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
         raise download_not_implemented_exception
@@ -742,11 +761,12 @@ async def get_relay_download_metadata_noauth(
     cached = await redis_client.get(cache_key)
     if cached:
         response = RawDownloadResponse.model_validate_json(cached)
-        await update_download_stats(session, file_record)
+        await update_download_stats(session, file_record, current_user)
         await session.commit()
         await session.refresh(file_record)
+        await session.refresh(current_user)
         logger.info(
-            f"relay download noauth (cached) file_id={file_id} filename={file_record.filename}"
+            f"relay download (cached) user={current_user.id} file_id={file_id} filename={file_record.filename}"
         )
         return response
 
@@ -758,20 +778,21 @@ async def get_relay_download_metadata_noauth(
     # 写缓存：TTL 与 raw 直链同源，恒早于 token 过期
     await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
 
-    # 更新下载统计（仅文件维度）
-    await update_download_stats(session, file_record)
+    # 更新下载统计（文件维度 + 用户维度）
+    await update_download_stats(session, file_record, current_user)
     await session.commit()
     await session.refresh(file_record)
+    await session.refresh(current_user)
 
     logger.info(
-        f"relay download noauth success file_id={file_id} filename={file_record.filename}"
+        f"relay download success user={current_user.id} file_id={file_id} filename={file_record.filename}"
     )
 
     return response
 
 
 async def relay_download_file(
-    file_id: int,
+    public_id: PublicIdPath,
     async_session: AsyncSessionDep,
     request: Request,
     part: Literal["imzml", "ibd"] = Query(...),
@@ -786,11 +807,11 @@ async def relay_download_file(
     - 返回的是文件字节流，不是 JSON
     - Range 头原样透传给 OSS，支持断点续传与多线程下载器
     - HEAD 只返回头部信息（不拉正文），见 relay_service._relay_head_response
-    - token 由 download_relay* 接口签发，绑定 file_id + part
+    - token 由 download_relay* 接口签发，绑定 public_id + part
     """
     return await stream_relay_file(
         async_session,
-        file_id,
+        public_id,
         part,
         token,
         range_header=request.headers.get("range"),
@@ -988,7 +1009,7 @@ ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
 DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata_noauth)]
-RelayDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_relay_download_metadata_noauth)]
+RelayDownloadDep = Annotated[RawDownloadResponse, Depends(get_relay_download_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
 OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]

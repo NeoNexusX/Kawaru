@@ -27,40 +27,40 @@ from models.auth import SECRET_KEY
 
 
 class TestRelayToken:
-    """中转 token：绑定 file_id + part，短时有效，防篡改"""
+    """中转 token：绑定 public_id + part，短时有效，防篡改"""
 
     def test_roundtrip(self):
-        assert verify_relay_token(issue_relay_token(42, "ibd"), 42, "ibd")
-        assert verify_relay_token(issue_relay_token(42, "imzml"), 42, "imzml")
+        assert verify_relay_token(issue_relay_token("pub_42", "ibd"), "pub_42", "ibd")
+        assert verify_relay_token(issue_relay_token("pub_42", "imzml"), "pub_42", "imzml")
 
-    def test_wrong_file_id_rejected(self):
-        """token 不能被挪用到其它 file_id（防越权取任意对象）"""
-        assert not verify_relay_token(issue_relay_token(42, "ibd"), 43, "ibd")
+    def test_wrong_public_id_rejected(self):
+        """token 不能被挪用到其它 public_id（防越权取任意对象）"""
+        assert not verify_relay_token(issue_relay_token("pub_42", "ibd"), "pub_43", "ibd")
 
     def test_wrong_part_rejected(self):
-        assert not verify_relay_token(issue_relay_token(42, "ibd"), 42, "imzml")
+        assert not verify_relay_token(issue_relay_token("pub_42", "ibd"), "pub_42", "imzml")
 
     def test_tampered_rejected(self):
-        tok = issue_relay_token(42, "ibd")
-        assert not verify_relay_token(tok + "x", 42, "ibd")
-        assert not verify_relay_token("garbage", 42, "ibd")
-        assert not verify_relay_token("", 42, "ibd")
+        tok = issue_relay_token("pub_42", "ibd")
+        assert not verify_relay_token(tok + "x", "pub_42", "ibd")
+        assert not verify_relay_token("garbage", "pub_42", "ibd")
+        assert not verify_relay_token("", "pub_42", "ibd")
 
     def test_expired_rejected(self):
         expired = jwt.encode(
-            {"file_id": 42, "part": "ibd", "exp": int(time.time()) - 1},
+            {"public_id": "pub_42", "part": "ibd", "exp": int(time.time()) - 1},
             SECRET_KEY,
             algorithm="HS256",
         )
-        assert not verify_relay_token(expired, 42, "ibd")
+        assert not verify_relay_token(expired, "pub_42", "ibd")
 
     def test_forged_with_other_key_rejected(self):
         forged = jwt.encode(
-            {"file_id": 42, "part": "ibd", "exp": int(time.time()) + 60},
+            {"public_id": "pub_42", "part": "ibd", "exp": int(time.time()) + 60},
             "not-the-real-secret",
             algorithm="HS256",
         )
-        assert not verify_relay_token(forged, 42, "ibd")
+        assert not verify_relay_token(forged, "pub_42", "ibd")
 
     def test_ttl_aligns_with_cache_invariant(self):
         """token 有效期须严格大于缓存 TTL：缓存过期时 token 必然仍有效（与 RAW 直链不变式一致）"""
