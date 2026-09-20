@@ -1,0 +1,225 @@
+import os
+import json
+import logging
+from pydantic import BaseModel, Field
+from httpx import AsyncClient, Client
+
+logger = logging.getLogger()
+
+# 获取全局配置的端口
+GET_CONFIG_ENDPOINT = os.getenv("GET_CONFIG_ENDPOINT")
+if not GET_CONFIG_ENDPOINT:
+    logger.error("can not get config, GET_CONFIG_ENDPOINT is not set")
+    raise RuntimeError("can not get config, GET_CONFIG_ENDPOINT is not set")
+
+# FC 回调验证 Token
+FC_CALLBACK_TOKEN = os.environ["CALLBACK_TOKEN"]
+
+class ServerSettings(BaseModel):
+    """服务器配置模型"""
+    name: str
+    port: int
+    host: str
+
+
+class TokenSettings(BaseModel):
+    """令牌配置模型"""
+    token_expire_minutes: int
+    login_expire_minutes: int
+    algorithm: str
+
+
+class DatabaseSettings(BaseModel):
+    """数据库配置模型"""
+    db_username: str
+    db_name: str
+    db_type: str
+    pool_size: int
+    pool_recycle: int
+    max_overflow: int
+    echo_pool: bool
+    host: str
+    port: int
+
+
+class RedisSettings(BaseModel):
+    """Redis服务器配置模型"""
+    username: str
+    host: str
+    port: int
+    max_connection: int
+    default_db_index: int
+    celery_broker_db_index: int
+    celery_backend_db_index: int
+    celery_redbeat_db_index: int
+
+
+class CelerySettings(BaseModel):
+    """Celery配置模型"""
+    enable_embedded_celery: bool = True
+    worker_concurrency: int
+    worker_log_level: str
+    worker_log_file: str
+    worker_disable_rate_limits: bool
+    worker_pool: str
+    large_file_poll_time: int
+
+
+class EmailSettings(BaseModel):
+    """邮件配置模型"""
+    # Support for SMTP
+    smtp_port: int
+    smtp_username: str
+    smtp_from_email: str
+    smtp_server: str
+    totp_window: int
+    reset_password_max_attempts: int = Field(default=5, ge=1, description="单轮密码重置中，验证码允许的最大校验失败次数")
+    email_send_cooldown_seconds: int = Field(default=60, ge=1, description="同一邮箱两次发送验证码的最小间隔（秒）")
+
+
+
+class StorageSettings(BaseModel):
+    """文件存储配置模型"""
+    max_chunks_per_upload: int
+    allowed_storage_types: list[str]
+    allowed_file_types: list[str]
+    allowed_experiment_types: list[str]
+    max_path_length: int
+    max_filename_length: int
+    max_file_type_length: int
+    cleanup_preflights_interval_minutes: int
+    cleanup_download_zip_interval_minutes: int
+    cleanup_failed_experiments_interval_minutes: int
+    preflight_ttl_minutes: int
+    download_zip_ttl_minutes: int
+    signed_url_ttl_minutes: int
+    failed_experiment_ttl_minutes: int
+    stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
+    cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")
+    max_file_size_gb: int | None = Field(default=None, gt=0, description="允许的最大单文件大小（GB）")
+    min_upload_bandwidth_mbps: float | None = Field(default=None, gt=0, description="最低上传带宽假设（Mbps）")
+    upload_ttl_safety_factor: float = Field(default=1.5, gt=0, description="预检 TTL 安全余量系数")
+    stale_clustering_run_timeout_minutes: int = Field(default=120, description="聚类 run 超时兜底")
+
+
+
+class OSSSettings(BaseModel):
+    """OSS配置模型"""
+    region_id: str | None  = None
+    bucket_name: str | None = None
+    oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
+    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
+    oss_zip_storage_root: str | None = None
+    oss_packup_zip_storage_root: str | None = None
+    oss_origin_storage_root: str | None = None
+    oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
+    oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
+    oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间（秒）")
+    oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间（秒）")
+    fc_logstore_name: str | None = Field(default=None, description="函数计算SLS日志存储名称")
+    fc_log_project_name: str | None = Field(default=None, description="函数计算SLS日志项目名称")
+    fc_unzip_timeout_seconds: int | None = Field(default=20, description="函数调用超时时间，单位秒")
+    fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包公网地址")
+    fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
+    fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
+    fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
+    fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
+    fc_tic_timeout_seconds: int | None = Field(default=60, description="FC TIC 处理调用超时时间，单位秒")
+    fc_feature_endpoint: str | None = Field(default=None, description="FC 特征分析函数HTTP触发地址")
+    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC 特征分析调用超时时间，单位秒")
+    fc_raw_convert_endpoint: str | None = Field(default=None, description="FC raw_convert 直转函数HTTP触发地址")
+    fc_raw_convert_timeout_seconds: int | None = Field(default=120, description="FC raw_convert 调用超时时间（秒）")
+    fc_clustering_endpoint: str | None = Field(default=None, description="FC 聚类分析函数HTTP触发地址")
+    fc_clustering_timeout_seconds: int | None = Field(default=180, description="FC 聚类分析调用超时时间（秒）")
+
+
+
+class UserSettings(BaseModel):
+    """用户信息配置模型"""
+    allowed_position_types: list[str]
+    max_identity_length: int
+    max_username_length: int
+    max_useremail_length: int
+    max_institution_length: int
+    max_position_length: int
+    max_research_field_length: int
+    max_region_length: int
+    max_orcid_length: int
+    max_homepage_length: int
+
+
+class SampleInfoSettings(BaseModel):
+    """样品信息配置模型"""
+    max_experiment_name_length: int
+    max_experiment_type_length: int
+    max_instrument_types_length: int
+    max_organism_length: int
+    max_organism_part_length: int
+    max_condition_length: int
+    max_sample_growth_conditions_length: int
+    max_sample_stabilization_length: int
+    max_tissue_modification_length: int
+    max_maldi_matrix_length: int
+    max_maldi_matrix_application_length: int
+    max_solvent_length: int
+    max_polarity_length: int
+    max_ionisation_source_length: int
+    max_analyzer_length: int
+
+
+# Initial admin user's information 初始管理员信息
+class AdminInfo(BaseModel):
+    """初始管理员信息配置模型"""
+    username: str
+    institution: str
+    position: str
+    research_field: str
+    region: str
+    orcid: str
+    homepage: str
+    email: str
+    max_total_file_size: int
+    max_file_count: int
+    max_processing_size: int
+    max_download_count: int
+
+
+class CORSSettings(BaseModel):
+    """CORS 配置模型"""
+    allow_origins: list[str]
+    allow_credentials: bool
+    allow_methods: list[str]
+    allow_headers: list[str]
+    expose_headers: list[str]
+
+
+class Config(BaseModel):
+    """全局配置模型"""
+    server: ServerSettings
+    email: EmailSettings
+    database: DatabaseSettings
+    redis: RedisSettings
+    celery: CelerySettings
+    storage: StorageSettings
+    oss: OSSSettings
+    user: UserSettings
+    token: TokenSettings
+    admin_info: AdminInfo
+    sample_info: SampleInfoSettings
+    cors: CORSSettings
+
+CONFIG: Config | None = None
+
+def get_config() -> Config:
+    """获取全局配置"""
+    global CONFIG
+    if CONFIG is None:
+        with Client(timeout=10) as client:
+            res = client.get(
+                GET_CONFIG_ENDPOINT,
+                headers={"X-FC-Token": FC_CALLBACK_TOKEN},
+            )
+            res.raise_for_status()
+            config = Config(**res.json())
+            CONFIG = config
+    return CONFIG

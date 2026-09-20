@@ -34,10 +34,11 @@ class OssStorage:
     def prepare_storage_path(file_id: int, file_verify_code: str, file_type: str) -> str:
         """为 OSS 存储准备最终保存路径。
 
-        对象键使用唯一标识而非文件名：data/{file_id}/{file_verify_code}.{file_type}
-        file_id 随对象键经 OSS 事件传给解压 FC，FC 解析后用 file_id 回调后端。
+        对象键使用唯一标识而非文件名：data/{file_verify_code}/{file_id}.{file_type}
+        verify_code 前置将键打散到随机前缀，避免自增 file_id 造成 OSS 分区热点；
+        file_id 随对象键经 OSS 事件传给解压 FC，FC 从文件名解析后回调后端。
         """
-        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{file_id}/{file_verify_code}.{file_type}"  # type: ignore
+        return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{file_verify_code}/{file_id}.{file_type}"  # type: ignore
 
     @staticmethod
     async def get_upload_sts_token(file_path: str) -> OssStsToken | None:

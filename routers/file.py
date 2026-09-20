@@ -6,22 +6,13 @@ from models.filter_models import ListDataResponse
 from api.file_api import (
     DeleteFileDep, ListFilesDep, SimpleUploadDep,
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
-    ListPublicFilesDep, GetPublicFileDep,
+    ListPublicFilesDep,
     OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
-    RelayDownloadNoauthDep, relay_download_file
+    FilePublicIdDep,RelayDownloadNoauthDep, relay_download_file
 )
 from database.visit_stats import incr_visit
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
-
-########################
-# 公开端（免登录）——先于 /{file_id} 声明，避免路径被动态段吞掉
-########################
-
-@file_router.get("/public/{public_id}", response_model=FilePublic)
-async def get_public_file(file_record: GetPublicFileDep):
-    """公开文件详情（免登录，凭 public_id；非公开文件返回 404）"""
-    return file_record
 
 ########################
 # 文件管理 API
@@ -46,14 +37,14 @@ async def list_user_files(files: ListFilesDep):
     return files
 
 
-@file_router.get("/{file_id}/download_raw")
+@file_router.get("/{public_id}/download_raw")#直接下载两个文件
 async def download_file_raw(file_meta: RawDownloadDep):
     """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
     return file_meta
 
 
-@file_router.get("/{file_id}/download_raw_noauth")
+@file_router.get("/{public_id}/download_raw_noauth")#免登录下载两个文件
 async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
     """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
     asyncio.create_task(incr_visit())
@@ -84,38 +75,45 @@ async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数
     return file_meta
 
 
-@file_router.delete("/{file_id}")
+@file_router.delete("/{public_id}")#删除文件
 async def delete_file(result: DeleteFileDep):
     """删除文件"""
     return result
 
 
-@file_router.post("/list_files", response_model=ListDataResponse)
+@file_router.post("/list_files", response_model=ListDataResponse)#列出文件文件
 async def list_files(list_file_response: ListPublicFilesDep):
     """查询文件列表"""
     asyncio.create_task(incr_visit())
     return list_file_response
 
 
-@file_router.post("/upload", response_model=FileOssUploadResponse)
+@file_router.post("/upload", response_model=FileOssUploadResponse)#上传接口
 async def upload_file(file_record: OssUploadDep):
     """上传文件至OSS存储"""
     return file_record
 
 
-@file_router.get("/{file_id}/metadata", response_model=FilePublic)
+@file_router.get("/{public_id}/metadata", response_model=FilePublic)#只获取特定元素的信息
 async def get_file_metadata(metadata: FileMetadataDep):
-    """根据文件ID查询文件元数据"""
+    """根据 public_id 查询文件元数据（需登录；不区分公开/私有，任意登录用户可看，匿名 401）"""
     return metadata
 
 
-@file_router.put("/{file_id}/set_public")
+@file_router.get("/id/{file_id}/public_id", deprecated=True)#file_id 转 public_id(仅 80-95 历史数据兼容)
+async def get_file_public_id_by_id(result: FilePublicIdDep):
+    """根据内部 file_id 查询 public_id（兼容接口：需登录，仅 80-95 号历史数据，匿名 401）"""
+    asyncio.create_task(incr_visit())
+    return result
+
+
+@file_router.put("/{public_id}/set_public")#设置文件为公开
 async def set_file_public(result: SetFilePublicDep):
     """将文件设为公开"""
     return result
 
 
-@file_router.patch("/{file_id}", response_model=FilePublic)
+@file_router.patch("/{public_id}", response_model=FilePublic)#修改文件元数据
 async def patch_file_metadata(metadata: PatchFileMetadataDep):
     """修改文件元数据（持有者；部分更新；公开状态走 set_public 专用接口）"""
     return metadata

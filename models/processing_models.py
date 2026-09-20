@@ -182,25 +182,43 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
 class ExperimentProcessRunCreate(SQLModel):
     """前端提交算法处理请求
 
-    使用 file_id 而非 experiment_id 的原因：
-    - 前端上传文件后已持有 file_id，无需额外查询 experiment
-    - fileindb.file_id → origin_imzml.source_file_id 是 1:1（UNIQUE），
-      后端通过 file_id 即可唯一确定 experiment
+    使用文件 public_id 而非 experiment_id 的原因：
+    - 前端上传文件后已持有 public_id，无需额外查询 experiment
+    - fileindb → origin_imzml.source_file_id 是 1:1（UNIQUE），
+      后端按 public_id 查到文件后即可唯一确定 experiment
     """
-    file_id: int
+    file_public_id: str
     algorithms: ProcessingAlgorithmsConfig
 
 
 class ExperimentProcessRunRawConvert(SQLModel):
-    """前端提交 raw_convert 直转请求（无算法处理，仅需 file_id）"""
-    file_id: int
+    """前端提交 raw_convert 直转请求（无算法处理，仅需文件 public_id）"""
+    file_public_id: str
 
 
 class ExperimentProcessRunPublic(ExperimentProcessRunBase):
-    """API 返回模型"""
+    """API 返回模型
+
+    源文件以 public_id 对外标识（source_file_public_id），不返回内部 source_file_id；
+    该字段不落库，由查询时关联 fileindb.public_id 得到。
+    """
+    id: int
+    experiment_id: int
+    source_file_public_id: str
+    user_id: int
+    created_at: datetime
+    filename: str = ""
+
+
+class ExperimentProcessRunCallbackResponse(ExperimentProcessRunBase):
+    """FC 回调（algorithm_callback / clustering_callback）的响应模型
+
+    与前端返回模型 ExperimentProcessRunPublic 分开：回调是后端与 FC 之间的内部接口，
+    FC 只判断 HTTP 状态码、不读取响应内容。回调直接返回数据库记录，没有前端专用的
+    source_file_public_id / filename，若共用前端模型会因必填字段缺失导致响应校验失败（500）。
+    """
     id: int
     experiment_id: int
     source_file_id: int
     user_id: int
     created_at: datetime
-    filename: str = ""

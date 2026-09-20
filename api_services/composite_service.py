@@ -118,8 +118,9 @@ async def collect_file_delete_snapshot(
     if file_record.image_path:
         paths.append(file_record.image_path)
     # 预览图目录按约定命名推导（image_dest 约定见 processing_background）：
-    # FC 可能在删除登记之后才写回 image_path，仅凭 DB 字段会漏删成孤儿
-    paths.append(f"images/file_{file_id}/")
+    # FC 可能在删除登记之后才写回 image_path，仅凭 DB 字段会漏删成孤儿；
+    # file_id 取模 1000 分片，避免自增目录前缀造成 OSS 写入热点
+    paths.append(f"images/{file_id % 1000:03d}/file_{file_id}/")
 
     origin = await get_origin_imzml_by_file_id(session, file_id)
     if origin:

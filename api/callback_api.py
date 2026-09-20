@@ -27,7 +27,7 @@ from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCall
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
-from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunPublic, RAW_CONVERT_MARKER
+from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunCallbackResponse, RAW_CONVERT_MARKER
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
@@ -61,7 +61,7 @@ async def get_expected_hash(
     """
     获取文件的理论哈希
 
-    :param file_id: 文件ID（FC 从 OSS 对象键 data/{file_id}/{file_verify_code}.zip 解析）
+    :param file_id: 文件ID（FC 从 OSS 对象键 data/{file_verify_code}/{file_id}.zip 解析）
     :param async_session: 异步会话依赖
     :return: 文件的理论哈希
     """
@@ -386,7 +386,7 @@ async def _handle_preview_callback(
     TIC/UMAP 预览图回调共享处理（两个入口仅回调模型不同，逻辑完全一致）。
 
     成功时更新文件的 image_path 字段（图片目录的对象键，尾带 /，如
-    images/file_{file_id}/；具体文件名由消费方按 preview.jpg /
+    images/{file_id%1000:03d}/file_{file_id}/；具体文件名由消费方按 preview.jpg /
     preview_2.jpg / preview_3.jpg 约定拼接）；失败仅记录日志，
     文件状态不受影响（预览缺失由前端占位图兜底）。
     对象存在性：成功落库前探测图片目录，缺失软处理不落库。
@@ -572,8 +572,8 @@ async def verify_fc_callback_token(
 GetExpectHashDep = Annotated[str, Depends(get_expected_hash)]
 GetConfigDep = Annotated[Config, Depends(get_config)]
 OssUploadCallbackDep = Annotated[FilePublic, Depends(oss_upload_callback)]
-AlgorithmCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(algorithm_callback)]
+AlgorithmCallbackDep = Annotated[ExperimentProcessRunCallbackResponse, Depends(algorithm_callback)]
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
 UmapCallbackDep = Annotated[FileInDB, Depends(umap_callback)]
-ClusteringCallbackDep = Annotated[ExperimentProcessRunPublic, Depends(clustering_callback)]
+ClusteringCallbackDep = Annotated[ExperimentProcessRunCallbackResponse, Depends(clustering_callback)]
 OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

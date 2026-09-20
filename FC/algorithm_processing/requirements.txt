@@ -1,0 +1,18 @@
+# FC 算法处理函数 — 所有依赖写在 requirements.txt
+# massflow 不在 PyPI 上，需预先 pip install wheel -t code/ 打包进去
+
+# massflow 算法核心的传递依赖（PyPI 上有）
+numpy>=2.4.3
+scipy>=1.16.3
+numba>=0.64.0
+h5py>=3.16.0
+hdf5plugin>=6.0.0
+pyimzml>=1.5.5
+pywavelets>=1.9.0
+zarr>=3.2.1
+matplotlib>=3.10.7
+colorama>=0.4.6
+
+# FC 函数自身依赖
+requests>=2.31.0
+pydantic>=2.0.0

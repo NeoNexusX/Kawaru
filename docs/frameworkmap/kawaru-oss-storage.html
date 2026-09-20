@@ -5498,10 +5498,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>对象路径示例（根目录可配置）</h3>
         </div>
         <ul>
-          <li>&bull; 上传 ZIP：data/{file_id}/{hash}.zip</li>
+          <li>&bull; 上传 ZIP：data/{hash}/{file_id}.zip</li>
           <li>&bull; Origin 路径由解包 FC 回调提供并落库</li>
           <li>&bull; 处理结果：processed/run_{id}.zarr/</li>
-          <li>&bull; 预览图：images/file_{file_id}/</li>
+          <li>&bull; 预览图：images/{file_id%1000:03d}/file_{file_id}/</li>
           <li>&bull; 打包 ZIP：packup/{file_id}.zip</li>
         </ul>
       </div>

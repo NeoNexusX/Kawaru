@@ -7,7 +7,7 @@ OSS 直传共用工具
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import alibabacloud_oss_v2 as oss
 from alibabacloud_oss_v2 import PutObjectRequest
@@ -48,3 +48,12 @@ async def upload_file_to_oss(
     result = await loop.run_in_executor(None, _put_object)
     assert result.status_code == 200, f"oss put failed: status={result.status}"
     return result
+
+
+def parse_file_id_from_oss_path(oss_path: str) -> int:
+    """从上传对象键 {oss_zip_storage_root}/{file_verify_code}/{file_id}.zip 解析内部 file_id。
+
+    对外接口不再返回 file_id；模拟 FC 回调、拼 origin 路径仍需内部 file_id，
+    与真实 FC 一样从对象键解析（file_id 在文件名中）。
+    """
+    return int(PurePosixPath(oss_path).stem)
