@@ -2,7 +2,7 @@ name: Dev CD
 
 on:
   push:
-    branches: [dev]
+    branches: [feature_new,dev]
 
 permissions:
   contents: read
