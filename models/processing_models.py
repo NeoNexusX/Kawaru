@@ -222,3 +222,9 @@ class ExperimentProcessRunCallbackResponse(ExperimentProcessRunBase):
     source_file_id: int
     user_id: int
     created_at: datetime
+
+
+# 运行时导入（不能只放 TYPE_CHECKING）：experiment 反向 Relationship 以字符串引用
+# 'OriginImzMLInDB'，mapper 配置要求该类已在本进程注册（与 experiment_models 末尾的
+# 导入互为闭环，任意导入顺序都不会循环导入）。
+from models.experiment_models import OriginImzMLInDB  # noqa: E402,F401

@@ -82,6 +82,9 @@ oss:
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
+  # 中转下载（relay）取源 endpoint：GitHub 托管 runner 不在阿里云内网，
+  # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
+  oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
   # 以下 FC 函数端点测试用不到，留空（check_oss_config 不校验它们）
   fc_packup_endpoint: ""
   fc_algorithm_endpoint: ""

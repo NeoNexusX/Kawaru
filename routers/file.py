@@ -8,7 +8,7 @@ from api.file_api import (
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
     ListPublicFilesDep,
     OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
-    FilePublicIdDep
+    FilePublicIdDep,RelayDownloadDep, relay_download_file
 )
 from database.visit_stats import incr_visit
 
@@ -51,7 +51,24 @@ async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
     return file_meta
 
 
-@file_router.get("/{public_id}/download")#下载文件
+@file_router.get("/{public_id}/download_relay")#中转下载
+async def download_file_relay(file_meta: RelayDownloadDep):
+    """中转下载（需登录）——返回两个指向后端的中转 URL，经服务器流式透传，免 OSS 公网流量"""
+    asyncio.create_task(incr_visit())
+    return file_meta
+
+
+# 中转下载流式透传：返回文件字节流（StreamingResponse），FastAPI 不允许对 Response 子类
+# 使用 Depends 注入，故直接用 add_api_route 注册带完整签名的处理函数。
+# HEAD 需显式声明：FastAPI 的 APIRoute 不会像 Starlette 那样在有 GET 时自动补 HEAD。
+file_router.add_api_route(
+    "/{public_id}/relay/download",
+    relay_download_file,
+    methods=["GET", "HEAD"],
+)
+
+
+@file_router.get("/{file_id}/download")
 async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
     """下载文件"""
     asyncio.create_task(incr_visit())

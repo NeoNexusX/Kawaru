@@ -4,6 +4,8 @@ OSS 测试集合（与本地上传测试区分开）
 TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
 TestOss.test_file_metadata              [oss]   GET /files/{public_id}/metadata（需登录，不依赖回调）
 TestOss.test_simulate_fc_callback       [oss]   轮询 OSS 等待 FC 解压 → 模拟回调
+TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（回调后直接验证）
+TestOss.test_relay_download            [oss]   置公开 → 中转 URL（需登录）→ 经服务器透传下载（MD5 + Range + 401）
 TestOss.test_raw_download_metadata      [oss]   GET /files/{public_id}/download_raw（回调后直接验证）
 TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理 OSS 文件 + DB 记录 + 临时 zip
 
@@ -315,6 +317,89 @@ class TestOss:
                         f.get("size"), got_hash)
 
         logger.info("test_raw_download_metadata passed: got %d files", len(body["files"]))
+
+    @pytest.mark.oss
+    async def test_relay_download(
+        self,
+        admin_login: Tuple[AsyncClient, str, str],
+        async_client: AsyncClient,
+    ):
+        """测试中转下载（需登录）：置公开 → 取中转 URL → 经服务器流式透传下载并校验 MD5
+
+        说明：中转由后端走【内网 endpoint】拉取 OSS，本地开发机不可达内网域名，
+        需用 CONFIG_PATH 指向覆盖配置，把 oss_internal_endpoint 临时改为公网 endpoint
+        （https://oss-cn-hangzhou.aliyuncs.com）；服务器上则用内网值直测。
+        """
+        if TestOss._uploaded_file_id is None:
+            pytest.skip("no uploaded file to test relay download against")
+
+        client, token, token_type = admin_login
+        auth = {"Authorization": f"{token_type.title()} {token}"}
+        public_id = TestOss._uploaded_public_id
+
+        # 1. 置公开（公开不可逆；该文件在 cleanup 步骤会整体删除）
+        #    set_public 路径参数是 public_id（内部 file_id 不对外暴露，仅回调链路使用）
+        rs = await client.put(f"/files/{public_id}/set_public", headers=auth)
+        assert rs.status_code == 200, rs.text
+        logger.info("relay test: public_id=%s set public", public_id)
+
+        # 2. 登录态获取中转 URL（元数据接口需鉴权；中转 URL 本身内嵌 token，下载时无需鉴权头）
+        rs = await client.get(f"/files/{public_id}/download_relay", headers=auth)
+        assert rs.status_code == 200, f"relay metadata failed: {rs.text}"
+        body = rs.json()
+        assert len(body["files"]) == 2, f"expected 2 files, got {len(body['files'])}"
+
+        files = sorted(body["files"], key=lambda f: f["filename"])
+        stem = Path(TEST_FILENAME).stem
+        assert files[0]["filename"] == f"{stem}.ibd"
+        assert files[1]["filename"] == f"{stem}.imzML"
+
+        # 3. 中转 URL 指向后端（而非 OSS），且内嵌 part + token
+        for f in files:
+            url = f["url"]
+            assert "/relay/download" in url, f"expected relay url, got {url[:80]}"
+            assert "part=" in url and "token=" in url, f"missing part/token in {url[:80]}"
+            assert "aliyuncs.com" not in url, "中转 URL 不应指向 OSS"
+
+        # 4. 无效 token 必须被拒绝（防越权取任意对象）
+        bad = await async_client.get(
+            f"/files/{public_id}/relay/download", params={"part": "ibd", "token": "garbage"}
+        )
+        assert bad.status_code == 401, f"expected 401 for bad token, got {bad.status_code}"
+
+        # 5. 逐个文件：HEAD 校验头、Range 校验 206、完整下载校验 MD5
+        import hashlib
+        for f, expected_hash in zip(files, [TestOss._ibd_hash, TestOss._imzml_hash]):
+            url = f["url"]
+
+            head = await async_client.head(url)
+            assert head.status_code == 200, f"HEAD failed: {head.status_code}"
+            assert head.headers.get("accept-ranges") == "bytes"
+            assert int(head.headers.get("content-length", 0)) == f["size"], (
+                f"content-length mismatch for {f['filename']}"
+            )
+
+            rng = await async_client.get(url, headers={"Range": "bytes=0-1023"})
+            assert rng.status_code == 206, f"expected 206 for range, got {rng.status_code}"
+            assert rng.headers.get("content-range", "").startswith("bytes 0-1023/"), (
+                f"bad content-range: {rng.headers.get('content-range')}"
+            )
+            assert len(rng.content) == 1024, f"expected 1024 bytes, got {len(rng.content)}"
+
+            h = hashlib.md5()
+            async with async_client.stream("GET", url) as stream:
+                assert stream.status_code == 200
+                async for chunk in stream.aiter_bytes(1024 * 1024):
+                    h.update(chunk)
+            got_hash = h.hexdigest()
+            assert got_hash == expected_hash, (
+                f"MD5 mismatch for {f['filename']}: expected={expected_hash} got={got_hash}"
+            )
+            logger.info(
+                "relay downloaded %s size=%s hash=%s", f["filename"], f["size"], got_hash
+            )
+
+        logger.info("test_relay_download passed: got %d files", len(body["files"]))
 
     @pytest.mark.oss
     @pytest.mark.order("last")

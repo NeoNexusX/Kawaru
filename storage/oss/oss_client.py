@@ -7,6 +7,7 @@ import alibabacloud_oss_v2.aio as oss_aio
 from alibabacloud_oss_v2 import GetBucketLocationRequest
 
 from boot.config import get_config
+from constants.file_constants import RELAY_IDLE_TIMEOUT
 from exceptions.oss_exceptions import oss_client_create_failed_exception
 from models.config_models import OSSSettings
 from tools.logger import get_logger
@@ -69,6 +70,38 @@ def create_oss_sync_client() -> oss.Client | None:
         oss_client = oss.Client(cfg)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("create oss client failed: %s", exc)
+    return oss_client
+
+
+def create_internal_oss_client() -> oss_aio.AsyncClient | None:
+    """Create an async OSS client bound to the internal endpoint (relay download only).
+
+    中转下载专用：走内网 endpoint，OSS→服务器 这跳不计公网流量费；仅同地域服务器可达。
+    返回 None 表示中转不可用（未配置 oss_internal_endpoint 或凭证缺失）。
+    """
+    oss_client = None
+    logger = get_logger("oss_storage")
+    try:
+        oss_config = get_config().oss
+        access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
+        access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
+        if not access_key_id or not access_key_secret:
+            raise ValueError("oss access_key_id or access_key_secret is empty")
+        if not oss_config.oss_internal_endpoint:
+            raise ValueError("oss_internal_endpoint is not configured")
+        credentials_provider = oss.credentials.EnvironmentVariableCredentialsProvider()
+        cfg = oss.config.load_default()
+        cfg.credentials_provider = credentials_provider
+        if not oss_config.region_id:
+            raise ValueError("oss region_id is empty")
+        cfg.region = oss_config.region_id
+        cfg.endpoint = oss_config.oss_internal_endpoint
+        # SDK 默认 readwrite_timeout=20s，慢客户端场景下会抢在 relay 空闲超时前抛错；
+        # 调大让"是否判卡死"由 RELAY_IDLE_TIMEOUT 说了算。
+        cfg.readwrite_timeout = max(60.0, RELAY_IDLE_TIMEOUT * 2)
+        oss_client = oss_aio.AsyncClient(cfg)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("create internal oss client failed: %s", exc)
     return oss_client
 
 
