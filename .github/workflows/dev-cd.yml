@@ -73,6 +73,10 @@ jobs:
           script: |
             set -e
             set -o pipefail
+            # 杭州节点访问 ghcr.io 需走代理：先开 clash + TUN（TUN 透明代理才能覆盖 docker daemon 的拉镜像流量）
+            trap 'clashctl off' EXIT   # 无论成功/失败退出都关掉代理，避免部署中途失败把梯子留在服务器上
+            clashctl on
+            clashtun on
             export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
             cd /opt/kawaru-dev
             echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
