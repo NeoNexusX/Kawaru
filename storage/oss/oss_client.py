@@ -1,16 +1,37 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 import alibabacloud_oss_v2 as oss
 import alibabacloud_oss_v2.aio as oss_aio
 from alibabacloud_oss_v2 import GetBucketLocationRequest
+from alibabacloud_oss_v2.aio.transport import AioHttpClient
+from alibabacloud_oss_v2.types import HttpRequest
 
 from boot.config import get_config
 from constants.file_constants import RELAY_IDLE_TIMEOUT
 from exceptions.oss_exceptions import oss_client_create_failed_exception
 from models.config_models import OSSSettings
 from tools.logger import get_logger
+
+# 中转下载流式透传的 chunk 大小：SDK 默认 16KB 过碎，逐 chunk 循环开销大，调大减少循环次数
+RELAY_STREAM_BLOCK_SIZE = 512 * 1024
+
+
+class _StreamingAioHttpClient(AioHttpClient):
+    """AioHttpClient that forces streaming responses.
+
+    SDK v1.2.4 异步客户端从不向 transport 传 stream=True（aio/_aioclient.py 中
+    该传参被注释掉），导致 GetObject 的响应体被整体读进内存后 get_object 才返回，
+    大文件中转会先占满服务器内存、浏览器长时间无响应。强制 stream=True 让
+    GetObject 走真正的逐 chunk 流式。本客户端仅供中转下载使用（GetObject /
+    HeadObject 无 body），非 2xx 时 SDK 会自行 read() 解析错误体，不受影响。
+    """
+
+    async def send(self, request: HttpRequest, **kwargs: Any):
+        kwargs["stream"] = True
+        return await super().send(request, **kwargs)
 
 
 @asynccontextmanager
@@ -96,9 +117,14 @@ def create_internal_oss_client() -> oss_aio.AsyncClient | None:
             raise ValueError("oss region_id is empty")
         cfg.region = oss_config.region_id
         cfg.endpoint = oss_config.oss_internal_endpoint
+        # 注入强制流式的 HTTP 客户端，超时与 block_size 走构造参数直传：
+        # 注入 http_client 后 SDK 不再消费 cfg.readwrite_timeout（_resolve_httpclient 直接返回）。
         # SDK 默认 readwrite_timeout=20s，慢客户端场景下会抢在 relay 空闲超时前抛错；
         # 调大让"是否判卡死"由 RELAY_IDLE_TIMEOUT 说了算。
-        cfg.readwrite_timeout = max(60.0, RELAY_IDLE_TIMEOUT * 2)
+        cfg.http_client = _StreamingAioHttpClient( # type: ignore
+            readwrite_timeout=max(60.0, RELAY_IDLE_TIMEOUT * 2),
+            block_size=RELAY_STREAM_BLOCK_SIZE,
+        )
         oss_client = oss_aio.AsyncClient(cfg)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("create internal oss client failed: %s", exc)
