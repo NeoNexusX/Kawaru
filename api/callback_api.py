@@ -207,9 +207,9 @@ async def oss_upload_callback(
         # continuous → fc-feature（UMAP 预览图，大内存）
         # 其他模式   → fc-tic（TIC 预览图，轻量）
         if source_file.storage_mode == "continuous":
-            trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+            trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path, public_id=source_file.public_id) # type: ignore
         else:
-            trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path) # type: ignore
+            trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path, public_id=source_file.public_id) # type: ignore
 
         return source_file
 
@@ -386,7 +386,7 @@ async def _handle_preview_callback(
     TIC/UMAP 预览图回调共享处理（两个入口仅回调模型不同，逻辑完全一致）。
 
     成功时更新文件的 image_path 字段（图片目录的对象键，尾带 /，如
-    images/{file_id%1000:03d}/file_{file_id}/；具体文件名由消费方按 preview.jpg /
+    images/{public_id}/；具体文件名由消费方按 preview.jpg /
     preview_2.jpg / preview_3.jpg 约定拼接）；失败仅记录日志，
     文件状态不受影响（预览缺失由前端占位图兜底）。
     对象存在性：成功落库前探测图片目录，缺失软处理不落库。

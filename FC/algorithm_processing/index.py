@@ -45,7 +45,7 @@ def handler(event, context):  # pylint: disable=unused-argument
         run_id:        算法处理运行 ID
         imzml_path:    imzML 文件的 OSS 路径（如 origin/org_123/sample.imzML）
         config_json:   算法配置 JSON 字符串
-        output_path:   处理结果的 OSS 输出路径（如 processed/run_456.zarr/）
+        output_path:   处理结果的 OSS 输出路径（如 processed/run_a1b2c3_456.zarr/）
     """
     # ---------- 1. 解析 FC HTTP 事件 ----------
 
@@ -77,7 +77,7 @@ def handler(event, context):  # pylint: disable=unused-argument
     run_id = body.get("run_id")
     imzml_oss_path = body.get("imzml_path")       # 如 "origin/org_123/sample.imzML"
     config_json_str = body.get("config_json")
-    output_oss_path = body.get("output_path")      # 如 "processed/run_456.zarr/"
+    output_oss_path = body.get("output_path")      # 如 "processed/run_a1b2c3_456.zarr/"
     metadata = body.get("metadata", {}) 
 
     if not all([run_id, imzml_oss_path, config_json_str, output_oss_path]):

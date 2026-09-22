@@ -461,7 +461,7 @@ def get_zarr_read_sts_token_task(folder_path: str, expires: int) -> dict:
     """
     获取 zarr 文件夹的只读 STS Token。
 
-    :param folder_path: OSS 文件夹路径，如 "processed/run_42.zarr"
+    :param folder_path: OSS 文件夹路径，如 "processed/run_a1b2c3_42.zarr"
     :param expires: Token 有效期（秒）
     """
     folder_path = folder_path.rstrip("/")

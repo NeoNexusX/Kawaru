@@ -129,8 +129,8 @@ class FilePublic(FileBase):
     first_uploaded_by: str | None = Field(default=None, description="首次上传该文件的用户名")
     is_reuse: bool = Field(default=False, description="是否为复用已有文件（秒传）")
     default_run_id: int | None = Field(default=None, description="指向默认展示的 raw_convert/algo run")
-    # 预览图目录（FC 回调写入，尾带 /，如 images/{file_id%1000:03d}/file_{file_id}/）：前端按约定拼接 preview.jpg；
-    # 为空表示预览图尚未生成，前端显示占位图。删掉 file_id 后前端无法自行拼目录，故由后端返回
+    # 预览图目录（FC 回调写入，尾带 /，如 images/{public_id}/）：前端按约定拼接 preview.jpg；
+    # 为空表示预览图尚未生成，前端显示占位图；public_id 为随机前缀，前端亦可凭它按约定自行拼接
     image_path: str | None = Field(default=None, description="预览图片目录的 OSS 对象键（尾带 /），为空表示尚未生成")
 
 
@@ -160,7 +160,7 @@ class FileInDB(FileBase, table=True):
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
     total_parts: int | None = Field(default=1, description="兼容保留的总分片数字段")
-    image_path: str | None = Field(default=None, max_length=255, description="预览图片目录在 OSS 上的对象键（尾带 /，如 images/{file_id%1000:03d}/file_{file_id}/），由 FC 回调写入；具体文件名由消费方按 preview.jpg/preview_2.jpg/preview_3.jpg 约定拼接")
+    image_path: str | None = Field(default=None, max_length=255, description="预览图片目录在 OSS 上的对象键（尾带 /，如 images/{public_id}/），由 FC 回调写入；具体文件名由消费方按 preview.jpg/preview_2.jpg/preview_3.jpg 约定拼接")
     default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
     # 压缩率 = 上传 zip 实际大小 / 压缩前大小（size 字段），由 FC 回调写入；
     # 值越小压缩收益越大，供下载分流（打包 zip vs RAW 直链）参考；NULL 表示回调未完成

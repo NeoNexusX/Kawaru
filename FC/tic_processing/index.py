@@ -4,7 +4,7 @@ FC TIC 图像生成函数入口。
 
 OSS Bucket 通过 OSSFS 挂载到 /home/storage，文件直接本地读写。
 
-回调上报的 image_path 是图片所在目录（如 images/file_15/）而非具体图片路径，
+回调上报的 image_path 是图片所在目录（如 images/{public_id}/）而非具体图片路径，
 具体文件名由消费方拼接（本函数只生成 preview.jpg）。
 
 环境变量（需在 FC 控制台手动配置）:
@@ -34,7 +34,7 @@ def handler(event, context):  # pylint: disable=unused-argument
     触发事件（JSON body）:
         file_id:    文件 ID
         imzml_path: imzML 文件的 OSS 相对路径（如 origin/org_123/sample.imzML）
-        image_dest: 图像输出 OSS 相对目录（如 images/file_15/）
+        image_dest: 图像输出 OSS 相对目录（如 images/{public_id}/）
     """
     logger.info("fc-tic receive event: %s", event)
 
@@ -50,7 +50,7 @@ def handler(event, context):  # pylint: disable=unused-argument
         return _fc_response(400, "Missing required fields: file_id, imzml_path, image_dest")
 
     image_dest_dir = image_dest.rstrip("/")
-    # 回调/数据库记录输出目录本身（如 images/file_15/）而非具体图片路径，
+    # 回调/数据库记录输出目录本身（如 images/{public_id}/）而非具体图片路径，
     # 具体文件名由消费方拼接（本函数只生成 preview.jpg）
     image_dest = f"{image_dest_dir}/"
     local_imzml = str(STORAGE_ROOT / imzml_path)

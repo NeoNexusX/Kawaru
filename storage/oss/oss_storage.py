@@ -1,3 +1,4 @@
+import hashlib
 from typing import Sequence
 
 from background.file_background_helper import (
@@ -14,6 +15,7 @@ from celery import group
 from celery.result import AsyncResult, GroupResult
 
 from celery_runtime.result import wait_for_result
+from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import (
     OSS_DEFAULT_TIMEOUT_SECONDS,
     OSS_DELETE_OBJECT_TIMEOUT_SECONDS,
@@ -39,6 +41,18 @@ class OssStorage:
         file_id 随对象键经 OSS 事件传给解压 FC，FC 从文件名解析后回调后端。
         """
         return f"{OSS_ZIP_STORAGE_ROOT.rstrip('/')}/{file_verify_code}/{file_id}.{file_type}"  # type: ignore
+
+    @staticmethod
+    def prepare_run_output_path(run_id: int) -> str:
+        """为算法 run 的 zarr 输出准备最终保存路径。
+
+        对象键打散到随机前缀，避免自增 run_id 形成 OSS 分区热点：
+        run_{md5后6位}_{run_id}.zarr/。md5(run_id) 后 6 位为确定性派生前缀
+        （同 id 恒同值，重触发幂等）；run_id 保留在键中保证唯一（6 位哈希
+        空间有限会碰撞，仅负责打散）。
+        """
+        hash6 = hashlib.md5(str(run_id).encode()).hexdigest()[-6:]
+        return f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{hash6}_{run_id}.zarr/"  # type: ignore
 
     @staticmethod
     async def get_upload_sts_token(file_path: str) -> OssStsToken | None:
