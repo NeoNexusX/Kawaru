@@ -14,6 +14,7 @@ from api_services.collection_service import (
     build_collection_detail,
     create_collection,
     delete_collection,
+    get_collection_id_by_public_id,
     get_owned_collection,
     get_public_collection_by_public_id,
     list_all_collections,
@@ -28,7 +29,6 @@ from models.collection_models import (
     CollectionCreate,
     CollectionDetail,
     CollectionMembersOperation,
-    CollectionOwnedDetail,
     CollectionPatch,
 )
 from models.user_models import UserInDB
@@ -44,7 +44,7 @@ async def create_collection_api(
     data: CollectionCreate,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """
     【创建集合接口】
 
@@ -137,10 +137,10 @@ async def list_all_collections_api(
 
 
 async def get_collection_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """
     【集合详情接口】
 
@@ -148,19 +148,20 @@ async def get_collection_api(
 
     权限:集合 owner 或 admin（两者权限相同）——免登录浏览走公开端 public_id 接口
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     detail = await build_collection_detail(async_session, collection)
-    logger.info(f"get collection user={current_user.id} collection_id={collection_id}")
+    logger.info(f"get collection user={current_user.id} collection_id={collection.id}")
     return detail
 
 
 async def patch_collection_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     patch: CollectionPatch,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """
     【修改集合元数据接口】
 
@@ -168,6 +169,7 @@ async def patch_collection_api(
 
     权限:集合 owner 或 admin（两者权限相同）
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     await update_collection(async_session, collection, patch)
@@ -175,12 +177,12 @@ async def patch_collection_api(
     await async_session.refresh(collection)
 
     detail = await build_collection_detail(async_session, collection)
-    logger.info(f"patch collection user={current_user.id} collection_id={collection_id}")
+    logger.info(f"patch collection user={current_user.id} collection_id={collection.id}")
     return detail
 
 
 async def delete_collection_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> dict:
@@ -191,22 +193,23 @@ async def delete_collection_api(
 
     权限:集合 owner 或 admin（两者权限相同）
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     await delete_collection(async_session, collection)
     await async_session.commit()
     await async_session.refresh(current_user)
 
-    logger.info(f"delete collection user={current_user.id} collection_id={collection_id}")
-    return {"collection_id": collection_id, "deleted": True}
+    logger.info(f"delete collection user={current_user.id} collection_id={collection.id}")
+    return {"public_id": public_id, "deleted": True}
 
 
 async def add_members_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """
     【批量添加成员接口】
 
@@ -216,6 +219,7 @@ async def add_members_api(
 
     幂等:已在集合内的文件跳过、只加新文件，不报错
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     await add_members(async_session, collection, current_user, operation.file_public_ids)
@@ -223,12 +227,12 @@ async def add_members_api(
     await async_session.refresh(collection)
 
     detail = await build_collection_detail(async_session, collection)
-    logger.info(f"add collection members user={current_user.id} collection_id={collection_id}")
+    logger.info(f"add collection members user={current_user.id} collection_id={collection.id}")
     return detail
 
 
 async def remove_members_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
@@ -243,6 +247,7 @@ async def remove_members_api(
     幂等:不在集合内的 public_id 跳过、不报错（与批量添加的幂等语义对称），
     响应返回 removed / skipped 两个 public_id 列表供前端对账
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     removed, skipped = await remove_members(async_session, collection, operation.file_public_ids)
@@ -250,18 +255,18 @@ async def remove_members_api(
     await async_session.refresh(current_user)
 
     logger.info(
-        f"remove collection members user={current_user.id} collection_id={collection_id} "
+        f"remove collection members user={current_user.id} collection_id={collection.id} "
         f"removed={len(removed)} skipped={len(skipped)}"
     )
-    return {"collection_id": collection_id, "removed": removed, "skipped": skipped}
+    return {"public_id": public_id, "removed": removed, "skipped": skipped}
 
 
 async def reorder_members_api(
-    collection_id: int,
+    public_id: PublicIdPath,
     operation: CollectionMembersOperation,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """
     【调整成员顺序接口】
 
@@ -272,6 +277,7 @@ async def reorder_members_api(
     校验:数组必须恰好等于集合当前成员全集（缺失/多出/重复 → 409，
     前端刷新成员列表后重试——乐观并发控制）
     """
+    collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
     await reorder_members(async_session, collection, operation.file_public_ids)
@@ -279,7 +285,7 @@ async def reorder_members_api(
     await async_session.refresh(collection)
 
     detail = await build_collection_detail(async_session, collection)
-    logger.info(f"reorder collection members user={current_user.id} collection_id={collection_id}")
+    logger.info(f"reorder collection members user={current_user.id} collection_id={collection.id}")
     return detail
 
 
@@ -298,14 +304,12 @@ async def get_public_collection_api(
     安全:
     - 非公开集合即使 public_id 正确也返回 404（不暴露存在性）
     - 成员仅返回 status == completed 的文件
-    - 响应不包含集合数字 id：公开页禁止暴露自增 id，对外标识一律用 public_id
-      （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿数字 id，
-      非 owner 拿到 id 也无权调用，故无暴露必要）
+    - 响应不包含集合数字 id：禁止暴露自增 id，对外标识一律用 public_id
+      （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿 public_id，
+      非 owner 拿到 public_id 也无权调用管理端，故无暴露必要）
     """
     collection = await get_public_collection_by_public_id(async_session, public_id)
-    owned_detail = await build_collection_detail(async_session, collection, only_completed=True)
-    # 剥掉内部数字 id 后返回公开详情模型（id 为多余字段，model_validate 默认忽略）
-    detail = CollectionDetail.model_validate(owned_detail)
+    detail = await build_collection_detail(async_session, collection, only_completed=True)
     logger.info(f"get public collection public_id={public_id}")
     return detail
 
@@ -313,13 +317,13 @@ async def get_public_collection_api(
 #########################
 # 依赖注入别名（供 routers 使用）
 #########################
-CreateCollectionDep = Annotated[CollectionOwnedDetail, Depends(create_collection_api)]
+CreateCollectionDep = Annotated[CollectionDetail, Depends(create_collection_api)]
 ListCollectionsDep = Annotated[ListDataResponse, Depends(list_collections_api)]
 ListAllCollectionsDep = Annotated[ListDataResponse, Depends(list_all_collections_api)]
-GetCollectionDep = Annotated[CollectionOwnedDetail, Depends(get_collection_api)]
-PatchCollectionDep = Annotated[CollectionOwnedDetail, Depends(patch_collection_api)]
+GetCollectionDep = Annotated[CollectionDetail, Depends(get_collection_api)]
+PatchCollectionDep = Annotated[CollectionDetail, Depends(patch_collection_api)]
 DeleteCollectionDep = Annotated[dict, Depends(delete_collection_api)]
-AddMembersDep = Annotated[CollectionOwnedDetail, Depends(add_members_api)]
+AddMembersDep = Annotated[CollectionDetail, Depends(add_members_api)]
 RemoveMembersDep = Annotated[dict, Depends(remove_members_api)]
-ReorderMembersDep = Annotated[CollectionOwnedDetail, Depends(reorder_members_api)]
+ReorderMembersDep = Annotated[CollectionDetail, Depends(reorder_members_api)]
 GetPublicCollectionDep = Annotated[CollectionDetail, Depends(get_public_collection_api)]

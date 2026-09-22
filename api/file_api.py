@@ -3,7 +3,7 @@
 #########################
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, Form, Query, HTTPException, Request, Path
+from fastapi import Depends, Form, Query, HTTPException, Request
 from fastapi.responses import Response
 from sqlmodel import select, and_, or_, col
 
@@ -19,7 +19,6 @@ from api_services.file_service import (
     assert_file_owner,
     build_file_filters,
     build_file_order,
-    get_file_record_by_id,
     get_user_file_ids,
     link_file_to_user,
     prepare_download_file_oss,
@@ -950,41 +949,6 @@ async def get_file_metadata(
         raise internal_server_error_exception from e
 
 
-async def get_file_public_id_by_id(
-    file_id: Annotated[int, Path(ge=80, le=95)],
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    async_session: AsyncSessionDep,
-) -> dict[str, Any]:
-    """
-    【file_id → public_id 兼容映射接口】
-
-    功能:根据内部 file_id 查询对应 public_id
-    时机:旧前端/历史数据(file_id 80-95)存的还是 file_id,切换 public_id 对外标识后的兼容查询
-
-    范围:仅支持 80-95 号历史数据,越界由 FastAPI 在请求校验阶段直接返回 422,不查库;
-         新数据一律不经过本接口,前端应直接使用接口返回的 public_id
-
-    流程:
-    1. 鉴权闸:必须登录,匿名一律 401
-    2. 按 file_id 查询文件记录
-    3. 记录调用者日志并返回 public_id
-
-    注意:
-    - 需登录:未带/无效/过期 token 一律返回 401
-    - 权限只看登录态:80-95 是固定历史窗口,枚举风险已被范围钳死,不校验持有者;
-      如需收紧,恢复 assert_file_owner 校验即可
-    - 删除流程中的文件(DELETING/DELETE_FAILED)按 404 处理(get_file_record_by_id 默认口径)
-    - 兼容接口,新前端不应调用;历史数据迁移完成后应下线(路由已标 deprecated)
-    """
-    file_record = await get_file_record_by_id(file_id, async_session)
-
-    logger.info(
-        f"legacy public_id lookup user={current_user.id} "
-        f"file_id={file_id} public_id={file_record.public_id}"
-    )
-    return {"file_id": file_id, "public_id": file_record.public_id}
-
-
 async def oss_upload_file(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
@@ -1016,4 +980,3 @@ OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
 PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]
-FilePublicIdDep = Annotated[dict[str, Any], Depends(get_file_public_id_by_id)]

@@ -29,10 +29,10 @@ from exceptions.collection_exceptions import (
 )
 from models.collection_models import (
     CollectionCreate,
+    CollectionDetail,
     CollectionMember,
-    CollectionOwnedDetail,
-    CollectionOwnedPublic,
     CollectionPatch,
+    CollectionPublic,
     DataCollectionInDB,
 )
 from models.file_models import FileInDB, FilePublic, FileStatus
@@ -63,6 +63,27 @@ async def get_collection_by_id(
         logger.warning("collection not found collection_id=%s", collection_id)
         raise collection_not_found_exception
     return collection
+
+
+async def get_collection_id_by_public_id(
+    session: AsyncSession, public_id: str
+) -> int:
+    """按 public_id 查内部数字 id（对外接口统一入口：外部一律 public_id，内部一律数字 id）
+
+    只取 id 一列，不加载整行（调用方随后按 id 走 get_owned_collection 等内部函数）。
+
+    Raises:
+        collection_not_found_exception: 集合不存在
+    """
+    collection_id = (
+        await session.exec(
+            select(DataCollectionInDB.id).where(DataCollectionInDB.public_id == public_id)  # type: ignore
+        )
+    ).first()
+    if not collection_id:
+        logger.warning("collection not found public_id=%s", public_id)
+        raise collection_not_found_exception
+    return collection_id
 
 
 async def get_public_collection_by_public_id(
@@ -205,7 +226,7 @@ async def list_user_collections(
     filters: CollectionFilter,
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """当前用户自己的集合列表分页查询（按 updated_at 倒序），供集合管理与"加入集合"选择器
 
     filters 对两个列表接口语义一致（"我的集合"下按 owner 筛选通常无意义，但无害）。
@@ -223,7 +244,7 @@ async def list_all_collections(
     filters: CollectionFilter,
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """数据表内所有用户的集合列表分页查询（按 updated_at 倒序），供登录后的全量集合列表
 
     Returns:
@@ -308,7 +329,7 @@ async def _paginate_collections(
     base_query: SelectOfScalar[DataCollectionInDB],
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """集合列表分页公共实现：分页查询 + 当前页成员数/总大小聚合 + owner 用户名回填"""
     # 总数（分页元数据；口径与列表查询一致）
     total_records = await count_items(session, base_query, DataCollectionInDB)
@@ -355,7 +376,7 @@ async def _paginate_collections(
     for collection in collections:
         member_count, total_size = stats.get(collection.id, (0, 0))
         result.append(
-            CollectionOwnedPublic.model_validate(
+            CollectionPublic.model_validate(
                 collection,
                 update={
                     "owner_username": owner_names.get(collection.owner_id, ""),
@@ -372,7 +393,7 @@ async def build_collection_detail(
     collection: DataCollectionInDB,
     *,
     only_completed: bool = False,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """聚合集合详情：元数据 + 成员文件列表（按 position 排序）+ 成员数/总大小 + owner 用户名
 
     Args:
@@ -385,11 +406,10 @@ async def build_collection_detail(
     )
     owner = await get_user_by_id(collection.owner_id, session)
 
-    return CollectionOwnedDetail.model_validate(
+    return CollectionDetail.model_validate(
         collection,
         update={
-            # owner 用户名供公开页展示；响应含数字 id（管理端用），
-            # 公开端在 api 层转 CollectionDetail 剥掉
+            # owner 用户名供公开页展示；响应不含数字 id（CollectionDetail 骨架已剔除）
             "owner_username": owner.username if owner else "",
             "member_count": member_count,
             "total_size": total_size,
