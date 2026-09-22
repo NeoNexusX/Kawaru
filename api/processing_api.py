@@ -26,7 +26,6 @@ from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
-from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS, ZARR_STS_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
 from models.user_models import UserInDB
@@ -71,7 +70,7 @@ async def create_algorithm_task(
         )
 
         # 构造 OSS 输出路径
-        oss_output_path = f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{run_record.id}.zarr/" # type: ignore
+        oss_output_path = OssStorage.prepare_run_output_path(run_record.id)  # type: ignore
 
         # 先提交数据库，让 run_id 生效
         await async_session.commit()
@@ -147,7 +146,7 @@ async def create_raw_convert_task(
             )
 
         # 构造 OSS 输出路径
-        oss_output_path = f"{OSS_PROCESSED_STORAGE_ROOT.rstrip('/')}/run_{run_record.id}.zarr/"  # type: ignore
+        oss_output_path = OssStorage.prepare_run_output_path(run_record.id)  # type: ignore
 
         # 提交数据库，让 run_id 生效
         await async_session.commit()

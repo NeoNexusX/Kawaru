@@ -12,7 +12,7 @@ test_delete_file_flow  [deletion]  清扫残留 → preflight → STS 直传 →
   ★5 OSS 对象最终删净（「要么都删除」OSS 侧，即不变式
      「DB 行已删 ⟹ OSS 已确认删完」）
 
-预览图（FC 生成 images/{file_id%1000:03d}/file_{id}/）不测、忽略：随机字节数据无法通过 FC 的
+预览图（FC 生成 images/{public_id}/）不测、忽略：随机字节数据无法通过 FC 的
 imzML 谱图校验（pyimzml 解析必失败），预览图不会生成；且 images 前缀已由
 删除快照的推导路径兜底，生成与否不影响删除收敛。
 

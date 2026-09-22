@@ -9,7 +9,7 @@ FC 图像分析函数入口。
     preview_3.jpg 随机离子图（mz_tolerance=0.1，structure_only 仅采集区域）
 - 非 continuous (centroid 模式): 降级生成 TIC 图像 preview.jpg（三种 cmap 随机）
 
-回调上报的 image_path 是图片所在目录（如 images/file_15/）而非具体图片路径，
+回调上报的 image_path 是图片所在目录（如 images/{public_id}/）而非具体图片路径，
 具体文件名由消费方按 preview.jpg / preview_2.jpg / preview_3.jpg 拼接。
 
 OSS Bucket 通过 OSSFS 挂载到 /home/storage，文件直接本地读写。
@@ -54,7 +54,7 @@ def handler(event, context):  # pylint: disable=unused-argument
     触发事件（JSON body）:
         file_id:      文件 ID
         imzml_path:   imzML 文件的 OSS 相对路径（如 origin/org_123/sample.imzML）
-        image_dest:   输出 OSS 相对目录（如 images/file_15/）
+        image_dest:   输出 OSS 相对目录（如 images/{public_id}/）
 
     分析逻辑:
         1. 根据 imzML + ibd 总体积决定走 OSSFS 流式还是先缓存到 /tmp
@@ -63,7 +63,7 @@ def handler(event, context):  # pylint: disable=unused-argument
                                 + preview_3.jpg (随机离子, tol=0.1)
            - continuous=False → 降级只生成 preview.jpg (TIC，三种 cmap 随机)
         3. 三张图任一失败按整体失败处理：清理输出目录并回调 is_success=False
-        4. 回调/数据库记录的 image_path 为输出目录本身（如 images/file_15/）
+        4. 回调/数据库记录的 image_path 为输出目录本身（如 images/{public_id}/）
     """
     logger.info("fc-feature receive event: %s", event)
 
@@ -79,7 +79,7 @@ def handler(event, context):  # pylint: disable=unused-argument
         return _fc_response(400, "Missing required fields: file_id, imzml_path, image_dest")
 
     image_dest_dir = image_dest.rstrip("/")
-    # 回调/数据库记录输出目录本身（如 images/file_15/）而非具体图片路径，
+    # 回调/数据库记录输出目录本身（如 images/{public_id}/）而非具体图片路径，
     # 具体文件名由消费方按 preview.jpg / preview_2.jpg / preview_3.jpg 拼接
     image_dest = f"{image_dest_dir}/"
     remote_imzml = STORAGE_ROOT / imzml_path
