@@ -156,10 +156,10 @@ class CollectionMembersOperation(SQLModel):
 
 
 class CollectionPublic(SQLModel):
-    """集合公开返回骨架（公开端与管理端共用字段；成员数与总大小由成员实时聚合）
+    """集合返回骨架（公开端与管理端共用字段；成员数与总大小由成员实时聚合）
 
-    不含内部数字 id：公开页禁止暴露自增 id（可枚举），对外标识一律用 public_id；
-    管理端响应在此基础上扩展 CollectionOwnedPublic / CollectionOwnedDetail。
+    不含内部数字 id：禁止暴露自增 id（可枚举），对外标识一律用 public_id；
+    管理端与公开端复用本骨架（列表项 CollectionPublic / 详情 CollectionDetail）。
     """
 
     public_id: str
@@ -191,18 +191,6 @@ class CollectionPublic(SQLModel):
 
 
 class CollectionDetail(CollectionPublic):
-    """公开页集合详情响应：公开骨架 + 成员文件列表（按 position 排序，不含数字 id）"""
-
-    members: list[FilePublic] = Field(default_factory=list)
-
-
-class CollectionOwnedPublic(CollectionPublic):
-    """管理端列表项：公开骨架 + 内部数字 id（前端用数字 id 调管理端接口；登录态接口，无枚举风险）"""
-
-    id: int
-
-
-class CollectionOwnedDetail(CollectionOwnedPublic):
-    """管理端集合详情响应：管理端骨架 + 成员文件列表（按 position 排序）"""
+    """集合详情响应（公开端与管理端共用）：骨架 + 成员文件列表（按 position 排序，不含数字 id）"""
 
     members: list[FilePublic] = Field(default_factory=list)

@@ -8,7 +8,7 @@ from api.file_api import (
     DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
     ListPublicFilesDep,
     OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
-    FilePublicIdDep,RelayDownloadDep, relay_download_file
+    RelayDownloadDep, relay_download_file
 )
 from database.visit_stats import incr_visit
 
@@ -98,13 +98,6 @@ async def upload_file(file_record: OssUploadDep):
 async def get_file_metadata(metadata: FileMetadataDep):
     """根据 public_id 查询文件元数据（需登录；不区分公开/私有，任意登录用户可看，匿名 401）"""
     return metadata
-
-
-@file_router.get("/id/{file_id}/public_id", deprecated=True)#file_id 转 public_id(仅 80-95 历史数据兼容)
-async def get_file_public_id_by_id(result: FilePublicIdDep):
-    """根据内部 file_id 查询 public_id（兼容接口：需登录，仅 80-95 号历史数据，匿名 401）"""
-    asyncio.create_task(incr_visit())
-    return result
 
 
 @file_router.put("/{public_id}/set_public")#设置文件为公开

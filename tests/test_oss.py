@@ -158,28 +158,6 @@ class TestOss:
         logger.info("test_file_metadata passed: public_id=%s filename=%s", public_id, body.get("filename"))
 
     @pytest.mark.oss
-    async def test_public_id_by_file_id(self, admin_login: Tuple[AsyncClient, str, str]):
-        """GET /files/id/{file_id}/public_id（兼容接口：需登录，仅 80-95 号历史数据）"""
-        client, token, token_type = admin_login
-        auth = {"Authorization": f"{token_type.title()} {token}"}
-
-        # 需登录：匿名访问一律 401（子依赖先于参数校验求解，鉴权失败优先返回 401）
-        rs = await client.get("/files/id/80/public_id")
-        assert rs.status_code == 401, f"anonymous lookup should be rejected: {rs.text}"
-
-        # 范围外：登录态也直接 422（请求校验阶段拒绝，不查库）
-        rs = await client.get("/files/id/79/public_id", headers=auth)
-        assert rs.status_code == 422, rs.text
-        rs = await client.get("/files/id/96/public_id", headers=auth)
-        assert rs.status_code == 422, rs.text
-
-        # 范围内：该环境有这条历史记录则 200 且带 public_id；没有则 404
-        rs = await client.get("/files/id/80/public_id", headers=auth)
-        assert rs.status_code in (200, 404), rs.text
-        if rs.status_code == 200:
-            assert rs.json().get("public_id"), rs.text
-
-    @pytest.mark.oss
     async def test_simulate_fc_callback(self, admin_login: Tuple[AsyncClient, str, str]):
         """等待 FC 解压完成 → 模拟 FC 回调
 

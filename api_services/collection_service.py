@@ -12,6 +12,7 @@ from sqlmodel import select, and_, col, delete, func, or_
 from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from api_services.file_service import get_file_ids_by_public_ids
 from api_services.user_service import count_items, get_user_by_id
 from constants.collection_constants import (
     COLLECTION_EXACT_FILTER_FIELDS,
@@ -29,10 +30,10 @@ from exceptions.collection_exceptions import (
 )
 from models.collection_models import (
     CollectionCreate,
+    CollectionDetail,
     CollectionMember,
-    CollectionOwnedDetail,
-    CollectionOwnedPublic,
     CollectionPatch,
+    CollectionPublic,
     DataCollectionInDB,
 )
 from models.file_models import FileInDB, FilePublic, FileStatus
@@ -63,6 +64,27 @@ async def get_collection_by_id(
         logger.warning("collection not found collection_id=%s", collection_id)
         raise collection_not_found_exception
     return collection
+
+
+async def get_collection_id_by_public_id(
+    session: AsyncSession, public_id: str
+) -> int:
+    """按 public_id 查内部数字 id（对外接口统一入口：外部一律 public_id，内部一律数字 id）
+
+    只取 id 一列，不加载整行（调用方随后按 id 走 get_owned_collection 等内部函数）。
+
+    Raises:
+        collection_not_found_exception: 集合不存在
+    """
+    collection_id = (
+        await session.exec(
+            select(DataCollectionInDB.id).where(DataCollectionInDB.public_id == public_id)  # type: ignore
+        )
+    ).first()
+    if not collection_id:
+        logger.warning("collection not found public_id=%s", public_id)
+        raise collection_not_found_exception
+    return collection_id
 
 
 async def get_public_collection_by_public_id(
@@ -126,10 +148,12 @@ async def create_collection(
     session: AsyncSession,
     current_user: UserInDB,
     data: CollectionCreate,
+    member_file_ids: list[int],
 ) -> DataCollectionInDB:
-    """创建集合 + 初始成员（file_public_ids 数组顺序即初始 position 1..n）
+    """创建集合 + 初始成员（member_file_ids 数组顺序即初始 position 1..n）
 
     成员资格校验与加成员共用 validate_member_files。
+    请求以 public_id 标识成员，由 api 层换算成 file_id 传入（本层只认内部 file_id）。
 
     Raises:
         collection_member_limit_exception: 初始成员数超过上限
@@ -138,7 +162,7 @@ async def create_collection(
     fields = data.model_dump(exclude={"file_public_ids"})
 
     # 成员资格校验（创建与加成员共用）
-    files = await validate_member_files(session, data.file_public_ids)
+    files = await validate_member_files(session, member_file_ids)
 
     # 成员数上限与 add_members 同口径（validate_member_files 已去重，len(files) 即有效唯一成员数）
     if len(files) > MAX_COLLECTION_MEMBERS:
@@ -205,7 +229,7 @@ async def list_user_collections(
     filters: CollectionFilter,
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """当前用户自己的集合列表分页查询（按 updated_at 倒序），供集合管理与"加入集合"选择器
 
     filters 对两个列表接口语义一致（"我的集合"下按 owner 筛选通常无意义，但无害）。
@@ -223,7 +247,7 @@ async def list_all_collections(
     filters: CollectionFilter,
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """数据表内所有用户的集合列表分页查询（按 updated_at 倒序），供登录后的全量集合列表
 
     Returns:
@@ -308,7 +332,7 @@ async def _paginate_collections(
     base_query: SelectOfScalar[DataCollectionInDB],
     page: int,
     size: int,
-) -> tuple[list[CollectionOwnedPublic], int]:
+) -> tuple[list[CollectionPublic], int]:
     """集合列表分页公共实现：分页查询 + 当前页成员数/总大小聚合 + owner 用户名回填"""
     # 总数（分页元数据；口径与列表查询一致）
     total_records = await count_items(session, base_query, DataCollectionInDB)
@@ -355,7 +379,7 @@ async def _paginate_collections(
     for collection in collections:
         member_count, total_size = stats.get(collection.id, (0, 0))
         result.append(
-            CollectionOwnedPublic.model_validate(
+            CollectionPublic.model_validate(
                 collection,
                 update={
                     "owner_username": owner_names.get(collection.owner_id, ""),
@@ -372,7 +396,7 @@ async def build_collection_detail(
     collection: DataCollectionInDB,
     *,
     only_completed: bool = False,
-) -> CollectionOwnedDetail:
+) -> CollectionDetail:
     """聚合集合详情：元数据 + 成员文件列表（按 position 排序）+ 成员数/总大小 + owner 用户名
 
     Args:
@@ -385,11 +409,10 @@ async def build_collection_detail(
     )
     owner = await get_user_by_id(collection.owner_id, session)
 
-    return CollectionOwnedDetail.model_validate(
+    return CollectionDetail.model_validate(
         collection,
         update={
-            # owner 用户名供公开页展示；响应含数字 id（管理端用），
-            # 公开端在 api 层转 CollectionDetail 剥掉
+            # owner 用户名供公开页展示；响应不含数字 id（CollectionDetail 骨架已剔除）
             "owner_username": owner.username if owner else "",
             "member_count": member_count,
             "total_size": total_size,
@@ -401,21 +424,15 @@ async def build_collection_detail(
 #########################
 # Member - 查
 #########################
-async def get_member_file_id_map(
+async def get_member_file_ids(
     session: AsyncSession, collection_id: int
-) -> dict[str, int]:
-    """获取集合成员的 {public_id: file_id} 映射（不加载文件对象）
-
-    请求以 public_id 标识成员，成员表以 file_id 关联：联表一次取出两者，
-    供加成员去重、移除成员比对与换算使用，不额外增加数据库往返。
-    """
-    stmt = (
-        select(FileInDB.public_id, CollectionMember.file_id)
-        .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
-        .where(CollectionMember.collection_id == collection_id)
+) -> list[int]:
+    """获取集合成员的文件 ID 列表（不加载文件对象）"""
+    stmt = select(CollectionMember.file_id).where(
+        CollectionMember.collection_id == collection_id
     )
     res = await session.exec(stmt)
-    return {public_id: file_id for public_id, file_id in res.all()} #type: ignore
+    return list(res.all()) #type: ignore
 
 
 async def get_member_files(
@@ -466,46 +483,70 @@ async def get_member_stats(
 #########################
 # Member - 校验器（创建与加成员共用）
 #########################
+async def resolve_member_file_ids(
+    session: AsyncSession,
+    public_ids: list[str],
+) -> list[int]:
+    """成员引用换算（对外接口统一入口）：成员 public_id → file_id（保序、保留重复）
+
+    API 层调用本函数完成换算后，成员相关 service 函数一律收 file_id。
+    幂等去重/重复校验交给 add_members / validate_member_files；
+    查不到的 public_id（文件不存在）按 not_found 口径整批 409，
+    与 validate_member_files 的 not_found 语义一致（创建集合与加成员共用）。
+
+    Raises:
+        HTTPException(409): 有 public_id 无法换算（invalid_members_exception）
+    """
+    id_map = await get_file_ids_by_public_ids(session, public_ids)
+    missing = [p for p in dict.fromkeys(public_ids) if p not in id_map]
+    if missing:
+        logger.warning(
+            "invalid collection members public_ids=%s reasons=%s",
+            missing, {p: "not_found" for p in missing},
+        )
+        raise invalid_members_exception
+    return [id_map[p] for p in public_ids]
+
+
 async def validate_member_files(
-    session: AsyncSession, public_ids: list[str]
+    session: AsyncSession, file_ids: list[int]
 ) -> list[FileInDB]:
     """成员资格校验：文件存在 → status == completed → is_public → experiment_type 合法
 
     "必须是公开文件"的校验第一期保留（当前恒真），未来引入私有文件时即为安全闸。
     请求内重复 id 去重（保序）——否则重复成员会触发联合主键冲突（500）。
-    请求以 public_id 标识文件；查到的记录自带 file_id，供调用方写成员行。
 
     Raises:
         HTTPException(409): 存在不合法文件
     """
-    if not public_ids:
+    if not file_ids:
         return []
 
-    unique_ids = list(dict.fromkeys(public_ids))
+    unique_ids = list(dict.fromkeys(file_ids))
     records = (
-        await session.exec(select(FileInDB).where(FileInDB.public_id.in_(unique_ids)))  # type: ignore # pylint: disable=no-member
+        await session.exec(select(FileInDB).where(FileInDB.file_id.in_(unique_ids)))  # type: ignore # pylint: disable=no-member
     ).all()
-    found = {record.public_id: record for record in records}
+    found = {record.file_id: record for record in records}
 
     reasons: dict[str, str] = {}
     valid: list[FileInDB] = []
-    for public_id in unique_ids:
-        record = found.get(public_id)
-        # 删除流程中的文件按不存在处理（与 get_file_record_by_public_id 的 404 语义一致）
+    for file_id in unique_ids:
+        record = found.get(file_id)
+        # 删除流程中的文件按不存在处理（与 get_file_record_by_id 的 404 语义一致）
         if record is None or record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
-            reasons[public_id] = "not_found"
+            reasons[str(file_id)] = "not_found"
         elif record.status != FileStatus.COMPLETED:
-            reasons[public_id] = "not_completed"
+            reasons[str(file_id)] = "not_completed"
         elif not record.is_public:
-            reasons[public_id] = "not_public"
+            reasons[str(file_id)] = "not_public"
         elif record.experiment_type not in ALLOWED_MEMBER_EXPERIMENT_TYPES:
-            reasons[public_id] = "invalid_experiment_type"
+            reasons[str(file_id)] = "invalid_experiment_type"
         else:
             valid.append(record)
 
     if reasons:
         logger.warning(
-            "invalid collection members public_ids=%s reasons=%s",
+            "invalid collection members file_ids=%s reasons=%s",
             list(reasons.keys()), reasons,
         )
         raise invalid_members_exception
@@ -520,7 +561,7 @@ async def add_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
     current_user: UserInDB,
-    public_ids: list[str],
+    file_ids: list[int],
 ) -> int:
     """往集合追加成员（owner 或 admin，权限由 api 层校验）
 
@@ -536,15 +577,15 @@ async def add_members(
         HTTPException(409): 存在不合法的成员文件
     """
     assert collection.id is not None
-    existing = set(await get_member_file_id_map(session, collection.id))
+    existing = set(await get_member_file_ids(session, collection.id))
 
-    new_ids: list[str] = []
-    seen: set[str] = set()
-    for public_id in public_ids:
-        if public_id in seen or public_id in existing:
+    new_ids: list[int] = []
+    seen: set[int] = set()
+    for file_id in file_ids:
+        if file_id in seen or file_id in existing:
             continue
-        seen.add(public_id)
-        new_ids.append(public_id)
+        seen.add(file_id)
+        new_ids.append(file_id)
 
     if not new_ids:
         return 0
@@ -580,7 +621,7 @@ async def add_members(
 
     logger.info(
         "collection members added collection_id=%s user=%s added=%s skipped=%s",
-        collection.id, current_user.id, len(files), len(public_ids) - len(files),
+        collection.id, current_user.id, len(files), len(file_ids) - len(files),
     )
     return len(files)
 
@@ -588,32 +629,32 @@ async def add_members(
 async def remove_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    public_ids: list[str],
-) -> tuple[list[str], list[str]]:
+    file_ids: list[int],
+) -> tuple[list[int], list[int]]:
     """批量移除集合成员（owner 或 admin，权限由 api 层校验）：只删链接行，不动文件
 
-    与批量添加的幂等语义对称：不在集合内的 public_id 跳过、不报错——
+    与批量添加的幂等语义对称：不在集合内的 file_id 跳过、不报错——
     批量场景下误选一个不存在的 id 不应让整批失败。
     与单删一致：position 空洞保留不重排（下次全量调序自然压紧）。
 
     Returns:
-        (实际移除的 public_id 列表, 跳过的 public_id 列表)
+        (实际移除的 file_id 列表, 跳过的 file_id 列表)
     """
     assert collection.id is not None
-    if not public_ids:
+    if not file_ids:
         return [], []
 
-    unique_ids = list(dict.fromkeys(public_ids))
-    member_map = await get_member_file_id_map(session, collection.id)
-    to_remove = [public_id for public_id in unique_ids if public_id in member_map]
-    skipped = [public_id for public_id in unique_ids if public_id not in member_map]
+    unique_ids = list(dict.fromkeys(file_ids))
+    current_ids = set(await get_member_file_ids(session, collection.id))
+    to_remove = [file_id for file_id in unique_ids if file_id in current_ids]
+    skipped = [file_id for file_id in unique_ids if file_id not in current_ids]
 
     if to_remove:
         await session.exec(
             delete(CollectionMember).where(
                 and_(
                     CollectionMember.collection_id == collection.id,
-                    CollectionMember.file_id.in_([member_map[public_id] for public_id in to_remove]),  # type: ignore # pylint: disable=no-member
+                    CollectionMember.file_id.in_(to_remove),  # type: ignore # pylint: disable=no-member
                 )
             )
         )
@@ -630,12 +671,12 @@ async def remove_members(
 async def reorder_members(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    public_ids: list[str],
+    file_ids: list[int],
 ) -> None:
     """调整成员顺序（owner 或 admin，权限由 api 层校验）：全量数组重写 position = 1..n
 
     请求体必须恰好等于集合当前成员全集（缺失/多出/重复 → 409；
-    不存在的 public_id 必然使集合比对不一致，同样 409，不会被静默跳过）。
+    不存在的文件 id 必然使集合比对不一致，同样 409，不会被静默跳过）。
     与其他用户并发加/删成员时，事务内成员集与请求快照不一致即 409，
     前端刷新后重试（乐观并发控制）。
 
@@ -643,35 +684,34 @@ async def reorder_members(
         HTTPException(409): 数组与成员全集不一致或含重复
     """
     assert collection.id is not None
-    if len(public_ids) != len(set(public_ids)):
+    if len(file_ids) != len(set(file_ids)):
         logger.warning(
-            "reorder failed, duplicate public ids collection_id=%s", collection.id
+            "reorder failed, duplicate file ids collection_id=%s", collection.id
         )
         raise member_order_conflict_exception
 
-    # 成员行联出文件 public_id：请求按 public_id 标识成员，成员表按 file_id 关联
-    rows = (
+    members = (
         await session.exec(
-            select(CollectionMember, FileInDB.public_id)
-            .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
-            .where(CollectionMember.collection_id == collection.id)
+            select(CollectionMember).where(
+                CollectionMember.collection_id == collection.id
+            )
         )
     ).all()
-    member_by_public_id = {public_id: member for member, public_id in rows}
-    current_ids = set(member_by_public_id)
+    current_ids = {member.file_id for member in members}
 
-    request_ids = set(public_ids)
+    request_ids = set(file_ids)
     if request_ids != current_ids:
         logger.warning(
             "reorder failed, member set changed collection_id=%s missing=%s extra=%s",
             collection.id,
-            sorted(current_ids - request_ids),
+            sorted(current_ids - request_ids), # type: ignore
             sorted(request_ids - current_ids),
         )
         raise member_order_conflict_exception
 
-    for position, public_id in enumerate(public_ids, start=1):
-        member = member_by_public_id[public_id]
+    member_by_file_id = {member.file_id: member for member in members}
+    for position, file_id in enumerate(file_ids, start=1):
+        member = member_by_file_id[file_id]
         member.position = position
         session.add(member)
 

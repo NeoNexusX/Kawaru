@@ -192,6 +192,52 @@ async def get_file_record_by_public_id(
     return file_record
 
 
+async def get_file_ids_by_public_ids(
+    async_session: AsyncSession,
+    public_ids: list[str],
+) -> dict[str, int]:
+    """批量换算 public_id → file_id（API 层对外标识换算入口，业务层一律走 file_id）
+
+    只返回能查到的映射；查不到的 public_id 不在结果中，缺失语义由调用方决定
+    （批量加成员/创建集合 409、移除成员记 skipped、调序 409）。
+    不过滤删除流程中的记录（含 DELETING）——移除成员等场景需要能换算到它们。
+
+    Returns:
+        {public_id: file_id}（仅含存在的记录）
+    """
+    if not public_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(public_ids))
+    rows = (await async_session.exec(
+        select(FileInDB.public_id, FileInDB.file_id).where(
+            FileInDB.public_id.in_(unique_ids)  # type: ignore # pylint: disable=no-member
+        )
+    )).all()
+    return {public_id: file_id for public_id, file_id in rows}  # type: ignore
+
+
+async def get_public_ids_by_file_ids(
+    async_session: AsyncSession,
+    file_ids: list[int],
+) -> dict[int, str]:
+    """批量换算 file_id → public_id（API 层响应装配用：内部 id → 对外标识）
+
+    Returns:
+        {file_id: public_id}（仅含存在的记录）
+    """
+    if not file_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(file_ids))
+    rows = (await async_session.exec(
+        select(FileInDB.file_id, FileInDB.public_id).where(
+            FileInDB.file_id.in_(unique_ids)  # type: ignore # pylint: disable=no-member
+        )
+    )).all()
+    return {file_id: public_id for file_id, public_id in rows}  # type: ignore
+
+
 #########################
 # File  - 增
 #########################
