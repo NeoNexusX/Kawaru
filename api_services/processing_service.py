@@ -21,7 +21,7 @@ from models.experiment_models import OriginImzMLInDB
 from models.filter_models import RunFilter
 from models.file_models import FileInDB, FileStatus
 from models.user_models import UserInDB
-from api_services.file_service import assert_file_owner, get_file_record_by_public_id
+from api_services.file_service import assert_file_owner
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_helpers.processing_helper import (
     assert_origin_ready,
@@ -266,13 +266,13 @@ async def get_user_runs(
     page: int = 1,
     size: int = 10,
 ) -> tuple[Sequence[dict], int]:
-    """分页查询当前用户的所有 run（含源文件名与源文件 public_id），支持文件名/参数模糊搜索。
+    """分页查询当前用户的所有 run（含源文件名），支持文件名/参数模糊搜索。
 
     删除流程中的 run（DELETING / DELETE_FAILED）不展示：删除登记后立即从
     列表消失，接口语义与文件删除一致（前端零改动）。
     """
     base_query = (
-        select(ExperimentProcessRunInDB, FileInDB.filename, FileInDB.public_id)
+        select(ExperimentProcessRunInDB, FileInDB.filename)
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(ExperimentProcessRunInDB.user_id == user_id)
         .where(ExperimentProcessRunInDB.status.notin_(( # pylint: disable=no-member # type: ignore
@@ -294,7 +294,7 @@ async def get_user_runs(
         .limit(size)
     )).all()
     return [
-        {**row[0].model_dump(), "filename": row[1], "source_file_public_id": row[2]}
+        {**row[0].model_dump(), "filename": row[1]}
         for row in rows
     ], total
 
@@ -329,9 +329,9 @@ async def validate_clustering_request(
     async_session: AsyncSession,
     run_id: int,
     current_user: UserInDB,
-) -> tuple[ExperimentProcessRunInDB, str]:
+) -> ExperimentProcessRunInDB:
     """
-    校验聚类分析请求，返回通过校验的 run_record 及源文件 public_id。
+    校验聚类分析请求，返回通过校验的 run_record。
 
     校验链：
     1. run 记录存在
@@ -339,9 +339,6 @@ async def validate_clustering_request(
     3. 算法处理已完成
     4. 算法输出路径不为空
     5. 聚类未在处理中
-
-    Returns:
-        (run_record, source_file_public_id)
 
     Raises:
         invalid_process_request_exception
@@ -351,20 +348,13 @@ async def validate_clustering_request(
         logger.warning("run not found for clustering run_id=%s", run_id)
         raise invalid_process_request_exception
 
-    # 源文件状态与 public_id 同一次查询取出（public_id 供响应的 source_file_public_id）
-    file_row = (await async_session.exec(
-        select(FileInDB.status, FileInDB.public_id).where(FileInDB.file_id == run_record.source_file_id)
-    )).first()
-    if file_row is None:
-        # 外键级联删除保证 run 存在时源文件必然存在，此处仅防御
-        logger.warning("source file not found for clustering run_id=%s file_id=%s",
-                       run_id, run_record.source_file_id)
-        raise invalid_process_request_exception
-    file_status, source_file_public_id = file_row
-
     # 删除流程中的文件不接受聚类请求：聚类结果写回源 zarr，而快照删除可能
-    # 已清掉该目录，迟到的 FC 写入会成为孤儿对象
-    if file_status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    # 已清掉该目录，迟到的 FC 写入会成为孤儿对象；文件缺失仅防御
+    # （外键级联删除保证 run 存在时源文件必然存在）
+    file_status = (await async_session.exec(
+        select(FileInDB.status).where(FileInDB.file_id == run_record.source_file_id)
+    )).first()
+    if file_status is None or file_status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
         logger.warning("file is being deleted, reject clustering run_id=%s file_id=%s",
                        run_id, run_record.source_file_id)
         raise invalid_process_request_exception
@@ -383,36 +373,45 @@ async def validate_clustering_request(
 
     if run_record.clustering_status == ProcessingStatus.PROCESSING:
         logger.info("clustering already in progress run_id=%s", run_id)
-        return run_record, source_file_public_id
+        return run_record
 
-    return run_record, source_file_public_id
+    return run_record
 
 
 async def get_origin_for_processing(
     async_session: AsyncSession,
-    file_public_id: str,
+    file_id: int,
     current_user: UserInDB,
     allow_public: bool = False,
-) -> tuple[OriginImzMLInDB, FileInDB, dict]:
+) -> tuple[OriginImzMLInDB, str, dict, int | None]:
     """
     校验文件归属 + 获取就绪的 origin 记录。
 
     Args:
-        file_public_id: 源文件 public_id（前端不再持有内部 file_id）
+        file_id: 源文件内部 id（public_id 由 api 层换算，本层只认 file_id）
         allow_public: 若为 True 且文件已公开，跳过所有权校验（用于公开文件的 raw_convert）
 
     Returns:
-        (origin, file_record, metadata)——文件名、public_id、default_run_id 均从 file_record 取
+        (origin, filename, metadata, default_run_id)
 
     Raises:
-        file_not_found_exception: 文件不存在或处于删除流程（404）
-        invalid_process_request_exception: 无权限、origin 不存在或未就绪
+        invalid_process_request_exception
     """
-    # 删除流程中的文件不接受新处理请求（按不存在处理）：run 的 out_path 不会
-    # 进入删除快照，登记后创建的 run 输出会成为孤儿对象
-    file_record = await get_file_record_by_public_id(file_public_id, async_session)
-    file_id = file_record.file_id
-    assert file_id is not None
+    file_record = (
+        await async_session.exec(
+            select(FileInDB).where(FileInDB.file_id == file_id)
+        )
+    ).first()
+    if not file_record:
+        logger.warning("file not found file_id=%s user=%s", file_id, current_user.id)
+        raise invalid_process_request_exception
+
+    # 删除流程中的文件不接受新处理请求：run 的 out_path 不会进入删除快照，
+    # 登记后创建的 run 输出会成为孤儿对象
+    if file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        logger.warning("file is being deleted, reject processing file_id=%s user=%s",
+                       file_id, current_user.id)
+        raise invalid_process_request_exception
 
     skip_ownership = allow_public and file_record.is_public
     if not skip_ownership:
@@ -437,7 +436,7 @@ async def get_origin_for_processing(
         "pixel_size_vertical": file_record.pixel_size_vertical or 0.0,      # Zarr: 垂直像素尺寸 (μm)
         "polarity": file_record.polarity or "",                 # Zarr: 极性（positive / negative）
     }
-    return origin, file_record, metadata
+    return origin, file_record.filename, metadata, file_record.default_run_id
 
 
 async def rollback_process_run(
