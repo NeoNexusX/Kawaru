@@ -21,9 +21,14 @@ from api_services.collection_service import (
     list_user_collections,
     remove_members,
     reorder_members,
+    resolve_member_file_ids,
     update_collection,
 )
+from api_services.file_service import get_file_ids_by_public_ids
 from database.db import AsyncSessionDep
+from exceptions.collection_exceptions import (
+    member_order_conflict_exception,
+)
 from models.filter_models import CollectionFilter, ListDataResponse, PaginationMeta
 from models.collection_models import (
     CollectionCreate,
@@ -53,10 +58,11 @@ async def create_collection_api(
     权限:任何登录用户
 
     流程:
-    1. 成员资格校验（存在 → completed → is_public → experiment_type 合法）
+    1. 成员 public_id → file_id 换算（API 层），成员资格校验（存在 → completed → is_public → experiment_type 合法）
     2. 创建集合 + 成员链接行
     """
-    collection = await create_collection(async_session, current_user, data)
+    member_file_ids = await resolve_member_file_ids(async_session, data.file_public_ids)
+    collection = await create_collection(async_session, current_user, data, member_file_ids)
     await async_session.commit()
     await async_session.refresh(collection)
 
@@ -222,7 +228,8 @@ async def add_members_api(
     collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    await add_members(async_session, collection, current_user, operation.file_public_ids)
+    member_file_ids = await resolve_member_file_ids(async_session, operation.file_public_ids)
+    await add_members(async_session, collection, current_user, member_file_ids)
     await async_session.commit()
     await async_session.refresh(collection)
 
@@ -250,7 +257,18 @@ async def remove_members_api(
     collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    removed, skipped = await remove_members(async_session, collection, operation.file_public_ids)
+    # API 层换算 public_id → file_id；查不到的 public_id（文件不存在）与"不在集合内"
+    # 同口径记 skipped。service 以 file_id 集合操作，响应再映射回 public_id
+    unique_public_ids = list(dict.fromkeys(operation.file_public_ids))
+    id_map = await get_file_ids_by_public_ids(async_session, unique_public_ids)
+    public_by_file_id = {file_id: pub for pub, file_id in id_map.items()}
+
+    removed_fids, _ = await remove_members(
+        async_session, collection, [id_map[p] for p in unique_public_ids if p in id_map]
+    )
+    removed = [public_by_file_id[fid] for fid in removed_fids]
+    removed_set = set(removed)
+    skipped = [p for p in unique_public_ids if p not in removed_set]
     await async_session.commit()
     await async_session.refresh(current_user)
 
@@ -280,7 +298,20 @@ async def reorder_members_api(
     collection_id = await get_collection_id_by_public_id(async_session, public_id)
     collection = await get_owned_collection(async_session, collection_id, current_user)
 
-    await reorder_members(async_session, collection, operation.file_public_ids)
+    # API 层换算 public_id → file_id（保留重复：service 对重复 409）；
+    # 查不到的 public_id 使请求集合必然 ≠ 成员全集，同口径 409 不静默跳过
+    id_map = await get_file_ids_by_public_ids(async_session, operation.file_public_ids)
+    missing = [p for p in dict.fromkeys(operation.file_public_ids) if p not in id_map]
+    if missing:
+        logger.warning(
+            "reorder failed, unknown public ids collection_id=%s missing=%s",
+            collection.id, missing,
+        )
+        raise member_order_conflict_exception
+
+    await reorder_members(
+        async_session, collection, [id_map[p] for p in operation.file_public_ids]
+    )
     await async_session.commit()
     await async_session.refresh(collection)
 
