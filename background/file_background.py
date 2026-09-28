@@ -23,7 +23,7 @@ from constants.file_constants import (
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
-from database.redis_client import redis_client
+from database.redis_client import REDIS_DEFAULT_DB, connect_new_redis
 from database.atomic_ops import atomic_decrement
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
@@ -391,11 +391,23 @@ async def delete_objects_task(
     finalize 容忍行已不在（重复投递时直接算成功）。
     """
     # 1. 清理 Redis 状态键（best-effort，键自身有 TTL，失败不影响主流程）
-    for key in redis_keys or []:
+    # Celery 任务每次 asyncio.run() 都是新事件循环，不能复用全局 redis_client：
+    # 池内缓存的连接绑定在已关闭的旧循环上，命令必失败且坏连接会留在池里；
+    # 这里按任务用一次性连接（同 clean_up_stale_packup_data 的做法）
+    if redis_keys:
+        r = None
         try:
-            await redis_client.delete(key)
+            r = connect_new_redis(db_index=REDIS_DEFAULT_DB)
+            for key in redis_keys:
+                await r.delete(key)
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning("delete_objects_task: delete redis key failed key=%s error=%s", key, exc)
+            logger.warning("delete_objects_task: delete redis keys failed keys=%s error=%s", redis_keys, exc)
+        finally:
+            if r is not None:
+                try:
+                    await r.aclose()
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.warning("delete_objects_task: close redis client failed error=%s", exc)
 
     # 2. 删除 OSS 对象（幂等，可无限重试）
     ok = await delete_oss_objects(paths)
