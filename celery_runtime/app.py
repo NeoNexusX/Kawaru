@@ -1,6 +1,7 @@
 import asyncio
 import os
 from logging import Logger
+from urllib.parse import quote
 
 from celery import Celery
 from celery import Task as CeleryTask
@@ -32,7 +33,8 @@ def build_redis_urls(cfg: Config) -> dict:
     redis = cfg.redis
     password = os.getenv("REDIS_PASSWORD")
     username = redis.username or "default"
-    auth = f"{username}:{password}@" if password else ""
+    # 认证段做 URL 转义：密码含 @ : / # 等特殊字符时仍能被正确解析
+    auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if password else ""
     return {
         "broker_url": f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_broker_db_index}",
         "result_backend": f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_backend_db_index}",
