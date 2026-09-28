@@ -84,7 +84,6 @@ class FileBase(SQLModel):
 
 class FileCreate(FileBase):
     """创建文件时的请求模型"""
-    total_parts: int | None = Field(default=None, description="兼容保留的总分片数字段")
 
 
 class FilePatch(SQLModel):
@@ -159,7 +158,6 @@ class FileInDB(FileBase, table=True):
     uploaded_at: datetime = Field(default_factory=utc_time, index=True)  # 上传时间
     last_downloaded_at: datetime = Field(default_factory=utc_time, index=True)  # 最近下载时间
     download_count: int = Field(default=0)  # 下载次数
-    total_parts: int | None = Field(default=1, description="兼容保留的总分片数字段")
     image_path: str | None = Field(default=None, max_length=255, description="预览图片目录在 OSS 上的对象键（尾带 /，如 images/{public_id}/），由 FC 回调写入；具体文件名由消费方按 preview.jpg/preview_2.jpg/preview_3.jpg 约定拼接")
     default_run_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True), description="指向默认展示的 raw_convert/algo run")
     # 压缩率 = 上传 zip 实际大小 / 压缩前大小（size 字段），由 FC 回调写入；

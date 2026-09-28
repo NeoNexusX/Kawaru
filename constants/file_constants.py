@@ -17,9 +17,6 @@ OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
 OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 
 
-# 单次上传最大允许分片数限制
-MAX_PARTS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
-
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
 ALLOWED_FILE_TYPES = set(storage_config.allowed_file_types)

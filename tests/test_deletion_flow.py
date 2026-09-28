@@ -162,7 +162,6 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
             json=build_preflight_payload(
                 size=size,
                 file_verify_code=file_verify_code,
-                total_parts=1,
                 storage_type="oss",
                 filename=DELETION_TEST_FILENAME,
             ),

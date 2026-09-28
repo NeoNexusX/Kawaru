@@ -73,7 +73,6 @@ class TestOss:
             json=build_preflight_payload(
                 size=size,
                 file_verify_code=file_verify_code,
-                total_parts=1,
                 storage_type="oss",
             ),
         )

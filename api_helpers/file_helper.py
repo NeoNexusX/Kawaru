@@ -18,7 +18,6 @@ from models.user_models import UserInDB
 from constants.file_constants import (
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
-    MAX_PARTS_PER_UPLOAD,
 )
 
 from tools.logger import get_logger
@@ -107,16 +106,6 @@ def validate_file_type(file_type: str) -> bool:
         return False
 
     return True
-
-
-def validate_total_parts(total_parts: int) -> bool:
-    """
-    验证分片数量是否合法
-
-    Returns:
-        True 表示分片数量合法,False 表示不合法
-    """
-    return 0 < total_parts <= MAX_PARTS_PER_UPLOAD
 
 
 def validate_file_metadata(filename: str, file_type: str) -> bool:

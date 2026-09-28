@@ -82,7 +82,6 @@ def build_preflight_payload(
     *,
     size: int,
     file_verify_code: str,
-    total_parts: int,
     storage_type: str = "oss",
     filename: str = TEST_FILENAME,
 ) -> dict:
@@ -111,5 +110,4 @@ def build_preflight_payload(
         "pixel_size_vertical": 0,
         "resolving_power": 0,
         "mz": 0,
-        "total_parts": total_parts,
     }

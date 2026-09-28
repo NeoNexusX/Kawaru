@@ -86,7 +86,6 @@ class EmailSettings(BaseModel):
 class StorageSettings(BaseModel):
     """文件存储配置模型"""
     model_config = ConfigDict(extra="forbid")
-    max_chunks_per_upload: int
     allowed_storage_types: list[Literal["oss"]] = Field(min_length=1)
     allowed_file_types: list[str]
     allowed_experiment_types: list[str]

@@ -54,7 +54,6 @@ celery:
   worker_pool: "threads"
 
 storage:
-  max_chunks_per_upload: 40
   allowed_storage_types: ["oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
