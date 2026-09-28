@@ -14,11 +14,10 @@ from alibabacloud_credentials.client import Client as CredentialClient
 from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_sts20150401.client import Client as StsClient
 from alibabacloud_sts20150401.models import AssumeRoleRequest
-from alibabacloud_oss_v2 import (Client as OssSyncClient, HeadObjectRequest,
+from alibabacloud_oss_v2 import (HeadObjectRequest,
                                   DeleteObjectRequest, ListObjectsV2Request, Tag,
                                   PutObjectTaggingRequest, Tagging, TagSet, GetObjectRequest,
-                                  DeleteMultipleObjectsRequest, DeleteObject, credentials)
-from alibabacloud_oss_v2.config import load_default
+                                  DeleteMultipleObjectsRequest, DeleteObject)
 from alibabacloud_tea_openapi import models as open_api_models
 
 from celery_runtime.state import get_celery_app
@@ -419,40 +418,6 @@ def sign_url_task(file_path: str, expires: int) -> str | None: #TODO：这个函
         return sign_url
     except Exception as e: # pylint:disable = broad-exception-caught
         logger.error(f"failed to sign oss file: {e}")
-        return None
-
-@celery_app.task()
-def get_oss_presigned_url_task(file_path: str, expires: int = 300) -> str | None:
-    """
-    生成 OSS 文件预签名下载 URL。
-    """
-    try:
-        access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
-        access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
-        if not access_key_id or not access_key_secret:
-            logger.error("oss credentials not set")
-            return None
-
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            logger.error("oss bucket name not set")
-            return None
-
-        creds_provider = credentials.EnvironmentVariableCredentialsProvider()
-        cfg = load_default()
-        cfg.credentials_provider = creds_provider
-        cfg.region = OSS_REGION_ID # type: ignore
-
-        sync_client = OssSyncClient(cfg)
-
-        req = GetObjectRequest(
-            bucket=bucket_name,
-            key=file_path,
-        )
-        result = sync_client.presign(req, expires=timedelta(seconds=expires)) # type: ignore
-        return result.url
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("failed to generate presigned url: %s", e)
         return None
 
 
