@@ -92,7 +92,6 @@ def create_celery_app(
         "imports": CELERY_MODULE_IMPORTS,
         "beat_scheduler": "redbeat.schedulers.RedBeatScheduler",
         "worker_pool_restarts": False,
-        "task_async_backend": "asyncio",
         "task_default_queue": "default",
         "task_routes": {
         },
