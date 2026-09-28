@@ -4,10 +4,7 @@ import math
 from boot.config import get_config
 
 # 字节单位常量
-BYTES_IN_KB = 1024
-BYTES_IN_MB = 1024**2
 BYTES_IN_GB = 1024**3
-BYTES_IN_TB = 1024**4
 
 # 加载基础存储配置
 config = get_config()
@@ -115,10 +112,7 @@ RELAY_IDLE_TIMEOUT = float(getattr(config.oss, "relay_idle_timeout_seconds", 30)
 
 
 __all__ = [
-    "BYTES_IN_KB",
-    "BYTES_IN_MB",
     "BYTES_IN_GB",
-    "BYTES_IN_TB",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
     "ALLOWED_EXPERIMENT_TYPES",

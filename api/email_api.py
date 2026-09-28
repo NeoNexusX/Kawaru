@@ -27,11 +27,6 @@ email_send_exception = HTTPException(
     detail=format_exception_detail("Send Failed error by server reason")
 )
 
-email_server_exception = HTTPException(
-    status_code=status.HTTP_502_BAD_GATEWAY,
-    detail=format_exception_detail("Upstream service error")
-)
-
 # Using SMTP to send an email verify code message
 async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSessionDep):
     """generate code"""

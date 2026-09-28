@@ -58,7 +58,6 @@ class CelerySettings(BaseModel):
     worker_log_file: str
     worker_disable_rate_limits: bool
     worker_pool: str
-    large_file_poll_time: int
 
 
 class EmailSettings(BaseModel):

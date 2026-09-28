@@ -27,12 +27,6 @@ source_file_not_found_exception = HTTPException(
     detail=format_exception_detail("source file not found")
 )
 
-# ZIP文件格式无效异常
-invalid_zip_file_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("invalid zip file format")
-)
-
 # process_run 不存在异常
 process_run_not_found_exception = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
@@ -43,12 +37,6 @@ process_run_not_found_exception = HTTPException(
 process_run_permission_denied_exception = HTTPException(
     status_code=status.HTTP_403_FORBIDDEN,
     detail=format_exception_detail("permission denied to access this process run")
-)
-
-# algorithms JSON 格式无效异常
-invalid_algorithms_json_exception = HTTPException(
-    status_code=status.HTTP_400_BAD_REQUEST,
-    detail=format_exception_detail("invalid algorithms JSON format")
 )
 
 # 处理请求校验失败异常（文件不存在/无权限/origin未就绪/algorithms无效等）
@@ -74,10 +62,8 @@ __all__ = [
     "origin_not_found_exception",
     "origin_permission_denied_exception",
     "source_file_not_found_exception",
-    "invalid_zip_file_exception",
     "process_run_not_found_exception",
     "process_run_permission_denied_exception",
-    "invalid_algorithms_json_exception",
     "invalid_process_request_exception",
     "origin_type_not_supported_exception",
     "process_run_not_completed_exception",

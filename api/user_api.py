@@ -561,7 +561,6 @@ async def update_user_quota(
 ##########################
 # 以下为依赖注入创建的类型别名
 ##########################
-UserDep = Annotated[UserInDB, Depends(get_activate_user)]  # 获取当前已激活用户
 UserLoginDep = Annotated[Token, Depends(login)]  # 用户登陆
 UserLogoutDep = Annotated[UserPublic, Depends(logout)]  # 用户登出
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用户
