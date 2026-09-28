@@ -25,6 +25,5 @@ class EmailSMTPRequest(EmailConfirmResponseBase):
     text_content: str
     smtp_port: int
     smtp_username: str
-    smtp_passwd: str
     smtp_from_email: str
     smtp_server: str
