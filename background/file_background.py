@@ -8,7 +8,6 @@ from api_services.composite_service import (
     finalize_run_deletion,
     mark_file_for_deletion,
 )
-from api_services.processing_service import refund_processed_quota_for_file
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
@@ -24,7 +23,6 @@ from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CL
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
 from database.redis_client import REDIS_DEFAULT_DB, connect_new_redis
-from database.atomic_ops import atomic_decrement
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -147,6 +145,7 @@ async def cleanup_old_download_zips(
 async def clean_user_all_task(
     file_ids: list[int],
     deleted_user_id: int | None = None,
+    pre_collected_run_paths: list[list[int | str]] | None = None,
 ) -> dict:
     """
     清理指定用户删除后遗留的文件数据。
@@ -156,9 +155,22 @@ async def clean_user_all_task(
     - 文件已无持有者：与用户删除文件走同一条删除状态位流程——行锁内登记 DELETING 并收集路径快照
       （源文件、packup zip、预览图目录、origin、全部 run 输出），提交后投递 delete_objects_task，
       OSS 对象全部删除成功后才删 DB 行
+
+    pre_collected_run_paths：del_user 在删 user 行前预收集的 (source_file_id, out_path) 对
+    （run.user_id 外键 ondelete=CASCADE，user 行删除后 run 行消失、out_path 事后查不到，
+    见 docs/zh/删除状态位改造方案.md §4 场景 3）。按 source_file_id 合入对应文件的删除快照；
+    对应文件已无记录或仍有其他持有者时无处合入，仅告警——这些输出未打 persistent tag，
+    依赖 bucket 生命周期规则回收（方案 §7 已接受的取舍）。
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
+
+        # 预收集的 run 输出按文件分组，待各文件登记成功后合入其删除快照
+        pending_run_paths: dict[int, list[str]] = {}
+        for source_file_id, out_path in pre_collected_run_paths or []:
+            if not out_path:
+                continue
+            pending_run_paths.setdefault(int(source_file_id), []).append(str(out_path).strip())
 
         total_unlinked = 0
         total_deleted = 0
@@ -177,10 +189,12 @@ async def clean_user_all_task(
                     total_unlinked += 1
                     continue
 
+                paths = list(snapshot.paths)
+                paths.extend(pending_run_paths.pop(file_id, []))
                 delete_objects_task.delay(  # type: ignore
                     kind="file",
                     resource_id=file_id,
-                    paths=list(snapshot.paths),
+                    paths=list(dict.fromkeys(paths)),
                     redis_keys=list(snapshot.redis_keys),
                 )
                 total_deleted += 1
@@ -189,6 +203,12 @@ async def clean_user_all_task(
                 total_errors += 1
                 logger.error(
                     "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)
+        if pending_run_paths:
+            logger.warning(
+                "clean_user_all_task: run outputs not dispatched (file gone or shared), "
+                "rely on bucket lifecycle deleted_user_id=%s leftovers=%s",
+                deleted_user_id, pending_run_paths,
+            )
         result = {"deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
                     "files_deleted": total_deleted,"errors": total_errors,}
         logger.info("clean_user_all_task completed %s", result)
@@ -201,107 +221,74 @@ async def cleanup_failed_experiments(
     batch_size: int = 100
 ) -> int:
     """
-    清理过期的失败 origin 记录
+    清理过期的失败 origin 记录（场景 1 的批量版：删除状态位三件套）
 
-    清理流程:
-    1. 查询过期的失败 origin 记录
-    2. 手动更新所有相关用户的 file_count 和 total_file_size
-    3. 按数据库中已有路径尝试删除 OSS 对象
-    4. 删除文件表记录
-    5. 数据库自动级联删除关联的 UserFileLink 和 OriginImzMLInDB 记录
+    清理流程（每个失败 origin 的源文件独立事务，互不拖累）:
+    1. 查询过期的失败 origin 记录（行锁 skip_locked，多 worker 不重复处理）
+    2. mark_file_for_deletion(unlink_all_owners=True)：行锁内解除全部持有者的关联并
+       释放 storage 配额（用户可见语义在登记事务内生效），置 DELETING 并收集路径快照
+       （源文件、packup zip、预览图目录、origin、全部 run 输出）
+    3. 先 commit 再投递 delete_objects_task：worker 幂等删净 OSS 对象后 finalize 删
+       file 行（级联 UserFileLink / OriginImzMLInDB / run），processed 配额由 finalize
+       退还；任一对象删除失败则行置 DELETE_FAILED 保留，重复触发本任务即幂等重投
 
     注意:
-    - 对数据库中已有的 file/imzML/ibd 路径逐个尝试显式删除
+    - include_deleting=True：文件已处于删除流程（如用户已自行删除）时走幂等分支直接重投
     - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
-    - 删除 file 记录时，数据库级联删除会处理 UserFileLink 和 OriginImzMLInDB
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
         now = utc_time()
         threshold = now - timedelta(minutes=ttl_minutes)
         cleaned = 0
+        total_errors = 0
         # 第一步:查询过期的失败 origin 记录
-        try:
-            failed_origins = (await session.exec(select(OriginImzMLInDB).where(
-                        OriginImzMLInDB.status == ExperimentStatus.FAILED,
-                        OriginImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
-        # 第二步:处理每个失败的 origin
-            for exp in failed_origins:
-                # 查询关联的文件记录
-                file_record = (await session.exec(
-                    select(FileInDB).where(FileInDB.file_id == exp.source_file_id))).first()
-                if not file_record:
-                    # 关联文件记录缺失（理论上被级联/手动删过），无法定位 OSS 对象，跳过
-                    logger.warning(
-                        "cleanup_failed_experiments: file record missing for origin exp_id=%s source_file_id=%s, skip",
-                        exp.id, exp.source_file_id,
-                    )
+        failed_origins = (await session.exec(select(OriginImzMLInDB).where(
+                    OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                    OriginImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
+        # 立刻抽出所需字段为纯元组：per-file commit/rollback 会 expire 全部 ORM 实例，
+        # 跨事务再访问 exp.* 会在异步上下文触发隐式 IO 报错
+        failed_pairs = [(exp.id, exp.source_file_id) for exp in failed_origins]
+
+        for exp_id, source_file_id in failed_pairs:
+            if not source_file_id:
+                # 关联源文件缺失（级联一致性防御）：跳过，origin 行保持原样
+                logger.warning(
+                    "cleanup_failed_experiments: origin has no source file, skip exp_id=%s",
+                    exp_id,
+                )
+                continue
+            try:
+                # include_deleting=True：已处于删除流程的文件幂等重投而非 404
+                file_record = await get_file_record_by_id(source_file_id, session, include_deleting=True)
+                snapshot = await mark_file_for_deletion(session, None, file_record, unlink_all_owners=True)
+                # 先 commit 再投递（顺序理由同 file_api.delete_user_file / clean_user_all_task）
+                await session.commit()
+
+                if snapshot is None:  # 防御：unlink_all_owners 模式不会返回 None
                     continue
 
-                # 1. 查询所有关联的用户，使用 atomic_decrement 原子更新统计信息
-                #    与 unlink_user_from_file 的语义一致，避免 skip_locked 或
-                #    read-modify-write 导致的配额漂移。
-                user_ids = (await session.exec(
-                    select(UserFileLink.user_id).where(
-                        UserFileLink.file_id == exp.source_file_id
-                    )
-                )).all()
-
-                for user_id in user_ids:
-                    assert user_id is not None
-                    await atomic_decrement(session, UserInDB, user_id, "file_count")
-                    await atomic_decrement(
-                        session, UserInDB, user_id, "total_file_size", file_record.size or 0
-                    )
-                    logger.debug(
-                        "updated user stats via atomic decrement: user_id=%s file_id=%s",
-                        user_id, file_record.file_id,
-                    )
-
-                # 1.1 退还该文件所有 run 占用的处理配额。run 行随文件记录级联删除，
-                #     必须在级联前按行退（口径同 delete_process_run），否则配额永久虚占；
-                #     退还对象是 run.user_id（执行处理的用户），可能不同于文件 owner。
-                await refund_processed_quota_for_file(session, exp.source_file_id)
-
-                # 2. 收集所有 OSS 路径，一次批量删除，避免逐个 celery round-trip。
-                #    回调失败时 failed_mark_origin_record_clean 已尽量把三个路径落库。
-                #    同时补删该文件所有 run 的输出目录（zarr）：run 行随 file 级联删除，
-                #    不提前收集 out_path 会成为孤儿对象。
-                run_out_paths = (await session.exec(
-                    select(ExperimentProcessRunInDB.out_path).where(
-                        ExperimentProcessRunInDB.source_file_id == exp.source_file_id
-                    )
-                )).all()
-                paths_to_delete = [
-                    p for p in (
-                        (file_record.path or "").strip(),
-                        (exp.imzml_path or "").strip(),
-                        (exp.ibd_path or "").strip(),
-                        *((pp or "").strip() for pp in run_out_paths),
-                    )
-                    if p
-                ]
-                if paths_to_delete:
-                    try:
-                        await OssStorage.delete_file(paths_to_delete)
-                    except Exception as exc:  # pylint: disable=broad-exception-caught
-                        logger.warning(
-                            "cleanup_failed_experiments delete oss objects failed paths=%s error=%s",
-                            paths_to_delete, exc,
-                        )
-
-                # 3. 删除文件表记录。
-                # 数据库级联删除会自动处理: 删除关联的 UserFileLink 记录.删除关联的 OriginImzMLInDB 记录
-                await session.delete(file_record)
+                delete_objects_task.delay(  # type: ignore
+                    kind="file",
+                    resource_id=source_file_id,
+                    paths=list(snapshot.paths),
+                    redis_keys=list(snapshot.redis_keys),
+                )
                 cleaned += 1
-                logger.debug("cleanup failed origin: exp_id=%s", exp.id)
+                logger.info(
+                    "cleanup_failed_experiments registered deletion exp_id=%s file_id=%s paths=%s",
+                    exp_id, source_file_id, snapshot.paths,
+                )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                await session.rollback()
+                total_errors += 1
+                logger.error(
+                    "cleanup_failed_experiments failed exp_id=%s source_file_id=%s error=%s",
+                    exp_id, source_file_id, exc,
+                )
 
-        # 第三步:提交事务
-            await session.commit()
-            logger.info("cleanup_failed_experiments completed %s", cleaned)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error("failed to  cleanup changes error=%s", e)
-
+        if cleaned or total_errors:
+            logger.info("cleanup_failed_experiments completed registered=%s errors=%s", cleaned, total_errors)
     return cleaned
 
 

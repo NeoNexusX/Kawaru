@@ -59,6 +59,7 @@ from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, optional_oauth2_scheme, SECRET_KEY
 from models.email_models import EmailPurpose
+from models.processing_models import ExperimentProcessRunInDB
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
@@ -281,7 +282,7 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     user_data = user.model_dump(exclude={'password'})
     user_data["identity"] = "user"  # 由API设置为普通用户
     user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
-    await add_new_user(async_session, user)  # 并发注册撞上唯一约束时返回 409
+    await add_new_user(async_session, user) # type:ignore # 并发注册撞上唯一约束时返回 409
 
     return user # type:ignore
 
@@ -308,7 +309,7 @@ async def create_admin_user_api(user: UserCreate,
     user_data = user.model_dump(exclude={'password'})
     user_data["identity"] = "admin"  # 由API设置身份为管理员
     user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
-    await add_new_user(async_session, user)  # 并发注册撞上唯一约束时返回 409
+    await add_new_user(async_session, user)  # type:ignore # 并发注册撞上唯一约束时返回 409
     await async_session.refresh(current_admin)
     logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
 
@@ -395,11 +396,20 @@ async def del_user(
     user_id = user.id # type: ignore
 
     file_ids = await get_user_file_ids(async_session, user.id) # type: ignore
+    # 场景 3 快照时机（docs/zh/删除状态位改造方案.md §4）：run.user_id 外键
+    # ondelete=CASCADE，user 行删除后 run 行随之消失、out_path 事后查不到，
+    # 必须在删行前收走并随任务参数传给 clean_user_all_task 合入各文件的删除快照
+    run_path_rows = (await async_session.exec(
+        select(ExperimentProcessRunInDB.source_file_id, ExperimentProcessRunInDB.out_path)
+        .where(ExperimentProcessRunInDB.user_id == user.id)
+    )).all()
+    pre_collected_run_paths = [[source_file_id, out_path]
+                               for source_file_id, out_path in run_path_rows if out_path]
     await async_session.delete(user)
     await async_session.commit()
 
-    if file_ids:
-        task = clean_user_all_task.delay(file_ids, user_id)  # type: ignore
+    if file_ids or pre_collected_run_paths:
+        task = clean_user_all_task.delay(file_ids, user_id, pre_collected_run_paths)  # type: ignore
         await wait_for_result(task, poll_interval=1.0)
 
     return {"user_id": user_id, "status": "deleted"}
