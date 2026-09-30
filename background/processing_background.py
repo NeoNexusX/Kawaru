@@ -10,6 +10,7 @@ FC 函数处理完成后通过回调接口返回结果。
 """
 import os
 
+from api_helpers.admin_notify import notify_fc_trigger_failed
 from celery_runtime.state import get_celery_app
 from constants.file_constants import (
     FC_ALGORITHM_ENDPOINT,
@@ -78,6 +79,7 @@ async def trigger_fc_algorithm_task(
         logger.info("trigger fc algorithm success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc algorithm failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-algorithm", run_id=run_id)
 
 
 @celery_app.task()
@@ -101,6 +103,7 @@ async def trigger_fc_tic_task(
         logger.info("trigger fc tic success file_id=%s request_id=%s", file_id, request_id)
     else:
         logger.error("trigger fc tic failed file_id=%s", file_id)
+        notify_fc_trigger_failed("fc-tic", file_id=file_id)
 
 
 @celery_app.task()
@@ -124,6 +127,7 @@ async def trigger_fc_feature_task(
         logger.info("trigger fc feature success file_id=%s request_id=%s", file_id, request_id)
     else:
         logger.error("trigger fc feature failed file_id=%s", file_id)
+        notify_fc_trigger_failed("fc-feature", file_id=file_id)
 
 
 @celery_app.task()
@@ -150,6 +154,7 @@ async def trigger_fc_raw_convert_task(
         logger.info("trigger fc raw_convert success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc raw_convert failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-raw-convert", run_id=run_id)
 
 
 @celery_app.task()
@@ -170,3 +175,4 @@ async def trigger_fc_clustering_task(
         logger.info("trigger fc clustering success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc clustering failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-clustering", run_id=run_id)

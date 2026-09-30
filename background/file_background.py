@@ -3,6 +3,7 @@ from datetime import timedelta
 from sqlmodel import select, or_
 
 
+from api_helpers.admin_notify import notify_delete_failed
 from api_services.composite_service import (
     finalize_file_deletion,
     finalize_run_deletion,
@@ -437,12 +438,18 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
             return
 
         if record is not None and record.status in deleting_states:
+            # 告警只挂「DELETING → DELETE_FAILED」跃迁一次：重投时行已是
+            # DELETE_FAILED，不重发，跃迁即天然去重（删除架构现状说明 §8）
+            first_failure = record.status == deleting_states[0]
             if kind == "file":
                 record.status = FileStatus.DELETE_FAILED
             else:
                 record.status = ProcessingStatus.DELETE_FAILED
             session.add(record)
             await session.commit()
+            if first_failure:
+                # fire-and-forget 告警，失败不影响状态机
+                notify_delete_failed(kind, resource_id)
             logger.error(
                 "delete_objects_task: oss delete failed, marked DELETE_FAILED kind=%s resource_id=%s",
                 kind, resource_id,
