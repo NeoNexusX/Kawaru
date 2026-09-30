@@ -25,9 +25,7 @@ class EnvSet:
         for env_name in stander_envs:
             env_temp = os.getenv(env_name)
             if env_temp is not None:
-                # 密码类变量只打掩码，避免明文落日志
-                env_display = "***" if "PASSWORD" in env_name else env_temp
-                logger.info(f"{env_name}: {env_display}")
+                logger.info(f"{env_name}: {env_temp}")
             else:
                 logger.error(f"{env_name} is not set")
                 raise ValueError(f"{env_name} environment variable is required")
