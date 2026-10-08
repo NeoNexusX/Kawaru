@@ -6,7 +6,7 @@ from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
                           AdminCreateDep,UserUpdateDep, ResetPasswordDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
                           UpdateUserQuotaDep)
 from api.email_api import EmailConfirmSMTPDep
-from database.visit_stats import fire_and_forget, incr_visit
+from database.visit_stats import incr_visit
 
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
 #########################
@@ -20,7 +20,7 @@ async def login(token: UserLoginDep) -> Token:
     Method:Post
     Params(OAuth2PasswordRequestForm): username, password
     """
-    fire_and_forget(incr_visit())
+    await incr_visit()
     return token
 
 
@@ -51,7 +51,7 @@ async def create_user(user: UserCreateDep):
     Method:Post
     Params(Body):"username", "active", "identity=None", "email", "password", "verify_code"
     """
-    fire_and_forget(incr_visit())
+    await incr_visit()
     return user
 
 

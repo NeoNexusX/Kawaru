@@ -16,6 +16,8 @@ REDIS_USERNAME = redis_config.username or None
 REDIS_DEFAULT_DB = redis_config.default_db_index
 
 # 连接池（db 必须配在池上：传入 connection_pool 后，Redis() 上的其余连接参数会被 redis-py 忽略）
+# 超时必配：默认 None 表示永不超时，Redis 半死不活（TCP 黑洞）时调用方会永久挂起，
+# 而 redis_client 同时服务请求链路（缓存、访问计数），没有超时就没有兜底。
 pool_default = ConnectionPool(
     host=REDIS_HOST,
     port=REDIS_PORT,
@@ -24,6 +26,8 @@ pool_default = ConnectionPool(
     db=REDIS_DEFAULT_DB,
     decode_responses=True,
     max_connections=redis_config.max_connection,
+    socket_timeout=2,
+    socket_connect_timeout=2,
 )
 
 # 建立redis连接
