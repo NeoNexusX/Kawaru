@@ -62,10 +62,10 @@ class _DelayCapture:
         return SimpleNamespace(id="stub-task-id")
 
 
-def _record_notify(calls: list[tuple[str, int]]):
-    """notify_delete_failed 的桩：记录 (kind, resource_id) 后返回 True。"""
-    def fake(kind: str, resource_id: int) -> bool:
-        calls.append((kind, resource_id))
+def _record_notify(calls: list[tuple[str, int, str | None]]):
+    """notify_delete_failed 的桩：记录 (kind, resource_id, public_id) 后返回 True。"""
+    def fake(kind: str, resource_id: int, *, public_id: str | None = None) -> bool:
+        calls.append((kind, resource_id, public_id))
         return True
     return fake
 
@@ -115,6 +115,30 @@ class TestAdminAlertPayload:
         assert payload["smtp_from_email"] == config.email.smtp_from_email
         assert "file#7" in payload["subject"] and "DELETE_FAILED" in payload["subject"]
         assert "file" in payload["text_content"] and "\r\n" in payload["text_content"]
+
+    def test_delete_failed_payload_carries_both_file_ids(self, monkeypatch):
+        """file 类告警必须同时给出 file_id（对库/对日志）与 public_id（对接口）。
+
+        对外删除接口是 DELETE /files/{public_id}，只给内部 file_id 管理员无法照着重投。
+        """
+        stub = _DelayCapture()
+        monkeypatch.setattr(admin_notify, "send_smtp_email_task", stub)
+        assert notify_delete_failed("file", 42, public_id="Ab3xY9kLmN0pQrSt") is True
+        payload = stub.payloads[0]
+        assert "file#42" in payload["subject"]
+        assert "Ab3xY9kLmN0pQrSt" in payload["subject"]
+        body = payload["text_content"]
+        assert "42" in body and "Ab3xY9kLmN0pQrSt" in body
+        # 可直接复制的重投命令
+        assert "DELETE /files/Ab3xY9kLmN0pQrSt" in body
+
+    def test_delete_failed_payload_run_uses_run_id_as_api_path(self, monkeypatch):
+        """run 类：对外标识就是 run_id，不给 public_id 也不影响可操作性"""
+        stub = _DelayCapture()
+        monkeypatch.setattr(admin_notify, "send_smtp_email_task", stub)
+        assert notify_delete_failed("run", 5) is True
+        body = stub.payloads[0]["text_content"]
+        assert "DELETE /processes/5" in body
 
     def test_fc_trigger_payload_contains_fc_name_and_target(self, monkeypatch):
         stub = _DelayCapture()
@@ -217,6 +241,15 @@ class TestDeleteFailedTransition:
             )).first()
         return row.status if row is not None else None
 
+    async def _read_public_id(self, file_id: int) -> str:
+        """告警必须带上的对外标识：断言 _mark_delete_failed 从 file 行取到了它"""
+        async with get_standalone_async_session() as session:
+            row = (await session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id)
+            )).first()
+        assert row is not None
+        return row.public_id
+
     async def _read_run_status(self, run_id: int) -> ProcessingStatus | None:
         async with get_standalone_async_session() as session:
             row = (await session.exec(
@@ -226,29 +259,31 @@ class TestDeleteFailedTransition:
 
     async def test_file_transition_notifies_once_and_flips_status(self, monkeypatch):
         file_id = await self._insert_file(FileStatus.DELETING)
-        calls: list[tuple[str, int]] = []
+        public_id = await self._read_public_id(file_id)
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         await _mark_delete_failed("file", file_id)
-        # 跃迁：告警恰好一次 + 状态翻转为 DELETE_FAILED
-        assert calls == [("file", file_id)]
+        # 跃迁：告警恰好一次（带上对外标识 public_id）+ 状态翻转为 DELETE_FAILED
+        assert calls == [("file", file_id, public_id)]
         assert await self._read_file_status(file_id) == FileStatus.DELETE_FAILED
 
     async def test_redispatch_after_failure_does_not_renotify(self, monkeypatch):
         """§8 核心：重投时行已是 DELETE_FAILED，告警不重发（跃迁即去重）"""
         file_id = await self._insert_file(FileStatus.DELETING)
-        calls: list[tuple[str, int]] = []
+        public_id = await self._read_public_id(file_id)
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         # worker 重试链路：首次失败标记 + 两次重投再失败
         await _mark_delete_failed("file", file_id)
         await _mark_delete_failed("file", file_id)
         await _mark_delete_failed("file", file_id)
-        assert calls == [("file", file_id)]
+        assert calls == [("file", file_id, public_id)]
         assert await self._read_file_status(file_id) == FileStatus.DELETE_FAILED
 
     async def test_pre_failed_row_never_notifies(self, monkeypatch):
         """行直插即为 DELETE_FAILED（非本函数翻转）：幂等重置但不告警"""
         file_id = await self._insert_file(FileStatus.DELETE_FAILED)
-        calls: list[tuple[str, int]] = []
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         await _mark_delete_failed("file", file_id)
         assert calls == []
@@ -256,13 +291,13 @@ class TestDeleteFailedTransition:
 
     async def test_missing_row_is_silent(self, monkeypatch):
         """行已被并发 finalize 删除：静默返回，不抛异常、不告警"""
-        calls: list[tuple[str, int]] = []
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         await _mark_delete_failed("file", 987654321)
         assert calls == []
 
     async def test_unknown_kind_is_silent(self, monkeypatch):
-        calls: list[tuple[str, int]] = []
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         await _mark_delete_failed("bogus", 1)
         assert calls == []
@@ -271,10 +306,11 @@ class TestDeleteFailedTransition:
         """kind=run 分支：查 run 表、按 ProcessingStatus 判定跃迁"""
         file_id = await self._insert_file(FileStatus.COMPLETED)  # 占位文件行，run 挂其上
         run_id = await self._insert_run(file_id, ProcessingStatus.DELETING)
-        calls: list[tuple[str, int]] = []
+        calls: list[tuple[str, int, str | None]] = []
         monkeypatch.setattr(file_background, "notify_delete_failed", _record_notify(calls))
         await _mark_delete_failed("run", run_id)
-        assert calls == [("run", run_id)]
+        # run 的对外标识就是 run_id，无需额外 public_id
+        assert calls == [("run", run_id, None)]
         assert await self._read_run_status(run_id) == ProcessingStatus.DELETE_FAILED
 
 

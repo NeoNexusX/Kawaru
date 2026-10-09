@@ -40,24 +40,52 @@ def _send_admin_alert(subject: str, text_content: str) -> bool:
         return False
 
 
-def notify_delete_failed(kind: str, resource_id: int) -> bool:
+def notify_delete_failed(
+    kind: str,
+    resource_id: int,
+    *,
+    public_id: str | None = None,
+) -> bool:
     """
     Alert admins that an OSS deletion failed and the row was marked DELETE_FAILED.
+
+    file 类必须同时带上 public_id：对外删除接口走 DELETE /files/{public_id}，
+    file_id 只是内部自增标识（可枚举，不对外），只给 file_id 管理员无法照着
+    邮件重投。run 类反过来——DELETE /processes/{run_id} 用的就是 run_id。
 
     调用约束（删除架构现状说明 §8 的通知设计结论）：必须挂在
     「DELETING → DELETE_FAILED」状态跃迁上（见 _mark_delete_failed）——
     重投时行已是 DELETE_FAILED，不再调用本函数，跃迁即天然去重，避免重投轰炸。
     """
     app_name = get_config().server.name
-    subject = f"[{app_name}] Deletion failed alert - {kind}#{resource_id} marked DELETE_FAILED"
+    if kind == "file":
+        identifiers = (
+            f"  file_id   (internal, for DB / worker log lookup): {resource_id}\r\n"
+            f"  public_id (对外标识，删除接口用这个):              {public_id or '<unknown>'}\r\n"
+        )
+        api_hint = f"DELETE /files/{public_id or '<public_id>'}"
+        subject_target = f"file#{resource_id}"
+        if public_id:
+            subject_target += f" public_id={public_id}"
+    elif kind == "run":
+        identifiers = f"  run_id (删除接口用这个): {resource_id}\r\n"
+        api_hint = f"DELETE /processes/{resource_id}"
+        subject_target = f"run#{resource_id}"
+    else:
+        # 兜底：_mark_delete_failed 目前只会传 file / run，未知 kind 不应走到这里
+        identifiers = f"  ID: {resource_id}\r\n"
+        api_hint = "the corresponding delete API"
+        subject_target = f"{kind}#{resource_id}"
+
+    subject = f"[{app_name}] Deletion failed alert - {subject_target} marked DELETE_FAILED"
     text_content = (
         f"{app_name} admin alert\r\n\r\n"
         f"OSS deletion failed. The following resource was marked DELETE_FAILED "
         f"(row kept for retry):\r\n"
         f"  Kind: {kind}\r\n"
-        f"  ID: {resource_id}\r\n\r\n"
-        "How to handle: re-invoke the corresponding delete API to re-dispatch "
-        "(idempotent).\r\n"
+        f"{identifiers}\r\n"
+        "How to handle: re-invoke the delete API to re-dispatch (idempotent):\r\n"
+        f"  {api_hint}\r\n"
         "For persistent failures, check OSS availability and worker logs "
         "(delete_objects_task).\r\n"
     )

@@ -419,6 +419,10 @@ async def delete_objects_task(
 async def _mark_delete_failed(kind: str, resource_id: int) -> None:
     """OSS 删除失败后，把对应资源行置 DELETE_FAILED（按 kind 分表，行保留等重试）。"""
     async with get_standalone_async_session() as session:
+        # 告警用的对外标识（仅 file 类有，run 的对外标识就是 run_id）：
+        # 必须在 commit 之前取出——commit 会 expire 实例，之后再访问属性
+        # 会在异步上下文触发隐式 IO 报错
+        alert_public_id: str | None = None
         if kind == "file":
             record = (await session.exec(
                 select(FileInDB)
@@ -426,6 +430,8 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
                 .with_for_update()
             )).first()
             deleting_states = (FileStatus.DELETING, FileStatus.DELETE_FAILED)
+            if record is not None:
+                alert_public_id = record.public_id
         elif kind == "run":
             record = (await session.exec(
                 select(ExperimentProcessRunInDB)
@@ -449,7 +455,7 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
             await session.commit()
             if first_failure:
                 # fire-and-forget 告警，失败不影响状态机
-                notify_delete_failed(kind, resource_id)
+                notify_delete_failed(kind, resource_id, public_id=alert_public_id)
             logger.error(
                 "delete_objects_task: oss delete failed, marked DELETE_FAILED kind=%s resource_id=%s",
                 kind, resource_id,
