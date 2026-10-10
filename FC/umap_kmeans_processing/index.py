@@ -4,10 +4,12 @@ FC 图像分析函数入口。
 
 根据 imzML 数据的 continuous 属性自动选择分析方式：
 - continuous (profile 模式): 生成三张图（需要 4GB+ 内存）
-    preview.jpg   UMAP + KMeans 特征分析图
+    preview.jpg   UMAP + KMeans 特征分析图（embedding 直接映射 RGB，与 cmap 无关）
     preview_2.jpg TIC 总离子流图
     preview_3.jpg 随机离子图（mz_tolerance=0.1，structure_only 仅采集区域）
-- 非 continuous (centroid 模式): 降级生成 TIC 图像 preview.jpg（三种 cmap 随机）
+  preview_2 与 preview_3 共用同一个 cmap：按 file_id 确定性选取（见 _pick_cmap），
+  同一份数据重跑配色不变，不同数据分布到不同配色。
+- 非 continuous (centroid 模式): 降级生成 TIC 图像 preview.jpg（cmap 同样按 file_id 选取）
 
 回调上报的 image_path 是图片所在目录（如 images/{public_id}/）而非具体图片路径，
 具体文件名由消费方按 preview.jpg / preview_2.jpg / preview_3.jpg 拼接。
@@ -24,6 +26,7 @@ OSS Bucket 通过 OSSFS 挂载到 /home/storage，文件直接本地读写。
     LOCAL_CACHE_THRESHOLD_BYTES（可选）  本地缓存阈值（字节），默认 8GB
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +51,9 @@ LOCAL_CACHE_DIR = Path(os.getenv("LOCAL_CACHE_DIR", "/tmp"))
 # 随机离子图的 m/z 容差窗口（±0.1 Da）
 RANDOM_ION_MZ_TOLERANCE = 0.1
 
+# 预览图配色池：TIC 与随机离子图共用同一个 cmap，按 file_id 确定性选取
+PREVIEW_CMAPS = ("viridis", "inferno", "hot")
+
 
 def handler(event, context):  # pylint: disable=unused-argument
     """
@@ -61,7 +67,8 @@ def handler(event, context):  # pylint: disable=unused-argument
         2. 根据 data_manager.ms.meta.continuous 判断：
            - continuous=True  → preview.jpg (UMAP) + preview_2.jpg (TIC)
                                 + preview_3.jpg (随机离子, tol=0.1)
-           - continuous=False → 降级只生成 preview.jpg (TIC，三种 cmap 随机)
+                                TIC 与离子图共用按 file_id 选取的同一个 cmap
+           - continuous=False → 降级只生成 preview.jpg (TIC，cmap 同样按 file_id 选取)
         3. 三张图任一失败按整体失败处理：清理输出目录并回调 is_success=False
         4. 回调/数据库记录的 image_path 为输出目录本身（如 images/{public_id}/）
     """
@@ -102,14 +109,16 @@ def handler(event, context):  # pylint: disable=unused-argument
 
         if dm.ms.meta.continuous:
             # continuous=True: profile 模式，一次会话内连续生成三张图
-            logger.info("Data is continuous, running UMAP analysis file_id=%s", file_id)
+            # TIC 与随机离子图共用同一个 cmap，按 file_id 选取且只取一次
+            cmap = _pick_cmap(file_id)
+            logger.info("Data is continuous, running UMAP analysis file_id=%s cmap=%s", file_id, cmap)
             plot_umap_image(dm, output_path=str(local_output / "preview.jpg"))
 
             logger.info("Generating TIC image file_id=%s", file_id)
             plot_tic_image(
                 dm,
                 output_path=str(local_output / "preview_2.jpg"),
-                cmap=random.choice(["viridis", "inferno", "hot"]),
+                cmap=cmap,
             )
 
             mz = _pick_random_mz(dm)
@@ -121,13 +130,14 @@ def handler(event, context):  # pylint: disable=unused-argument
                 output_path=str(local_output / "preview_3.jpg"),
                 structure_only=True,
                 show=False,
+                cmap=cmap,
             )
         else:
             logger.info("Data is not continuous, falling back to TIC image file_id=%s", file_id)
             plot_tic_image(
                 dm,
                 output_path=str(local_output / "preview.jpg"),
-                cmap=random.choice(["viridis", "inferno", "hot"]),
+                cmap=_pick_cmap(file_id),
             )
 
         _notify_callback(
@@ -188,6 +198,23 @@ def _pick_random_mz(dm: MSDataManagerImzML) -> float:
         raise ValueError("shared m/z list is empty; cannot pick a random ion")
 
     return float(mz_axis[random.randrange(len(mz_axis))])
+
+
+# ======================================================================
+# 预览图配色
+# ======================================================================
+
+def _pick_cmap(file_id: int) -> str:
+    """
+    按 file_id 确定性选取预览图 cmap。
+
+    同一份数据（同一 file_id）永远取到同一个 cmap，保证 TIC 与随机离子图
+    配色一致、重跑不变；不同数据分布到不同 cmap。
+
+    用 hashlib 而非内置 hash()：后者受 PYTHONHASHSEED 影响，每个进程结果不同。
+    """
+    digest = hashlib.md5(str(file_id).encode("utf-8")).digest()
+    return PREVIEW_CMAPS[digest[0] % len(PREVIEW_CMAPS)]
 
 
 # ======================================================================

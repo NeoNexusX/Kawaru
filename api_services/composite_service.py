@@ -34,6 +34,7 @@ from api_services.processing_service import (
     refund_processed_quota,
     refund_processed_quota_for_file,
 )
+from api_services.user_service import get_user_by_id
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from constants.file_constants import OSS_PACKUP_ZIP_STORAGE_ROOT
 from exceptions.file_exceptions import file_not_found_exception
@@ -153,6 +154,8 @@ async def mark_file_for_deletion(
     session: AsyncSession,
     current_user: UserInDB | None,
     file_record: FileInDB,
+    *,
+    unlink_all_owners: bool = False,
 ) -> FileDeleteSnapshot | None:
     """
     登记文件删除（① 登记事务，调用方 commit）：
@@ -160,16 +163,21 @@ async def mark_file_for_deletion(
 
     current_user 为 None 表示关联已由调用方解除（删除用户时 userfilelink 随用户行级联删除），
     此时不做 unlink，只在行锁内确认文件是否还有其他持有者。
+    unlink_all_owners=True 为批量善后模式（beat 清失败实验）：行锁内解除全部持有者的
+    关联并逐个释放 storage 配额，此时忽略 current_user。
 
     行锁把并发删除串行化：后到者在 FOR UPDATE 上等待，拿到锁后看到 DELETING
     直接幂等返回，顺带修掉「最后两个 owner 并发删除」的 TOCTOU。
+    unlink 的幂等性由 remove_file_link 的 DELETE 行数守卫保证：与并发用户侧删除
+    交错时不会重复扣配额。
 
     Returns:
         FileDeleteSnapshot: 已置 DELETING，调用方必须**先 commit 再投递**
         delete_objects_task（顺序不能反：先投后 commit 的崩溃会留下「对象已删、
         行未标记」的不可自愈形态；先 commit 后投递只留下 DELETING 行，管理员
         重复删除即可手动重投）。
-        None: 文件还有其他 owner，仅解除关联，不进入删除流程。
+        None: 文件还有其他 owner，仅解除关联，不进入删除流程
+        （unlink_all_owners 模式不会返回 None：全部 owner 已在行锁内解除）。
     """
     assert file_record.file_id is not None
 
@@ -190,7 +198,25 @@ async def mark_file_for_deletion(
         logger.info("file already marked for deletion file_id=%s status=%s", locked.file_id, locked.status)
         return await collect_file_delete_snapshot(session, locked)
 
-    if current_user is None:
+    if unlink_all_owners:
+        # 批量善后：逐个解除全部持有者的关联（每个 owner 的配额释放与场景 1 的
+        # unlink 语义一致）。user 行缺失（link 应随用户行级联删除，防御）时跳过
+        # 该 owner，不阻塞登记
+        owner_ids = (await session.exec(
+            select(UserFileLink.user_id).where(UserFileLink.file_id == locked.file_id)
+        )).all()
+        for owner_id in owner_ids:
+            assert owner_id is not None
+            owner = await get_user_by_id(owner_id, session)
+            if owner is None:
+                logger.warning(
+                    "mark_file_for_deletion: owner user missing, skip unlink user_id=%s file_id=%s",
+                    owner_id, locked.file_id,
+                )
+                continue
+            await unlink_user_from_file(session, owner, locked)
+        has_other_owners = False
+    elif current_user is None:
         owner_count = (await session.exec(
             select(func.count()).where(UserFileLink.file_id == locked.file_id)  # pylint: disable=not-callable
         )).one()

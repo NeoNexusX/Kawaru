@@ -5,7 +5,6 @@ from background.file_background_helper import (
     check_oss_file_exist_task,
     delete_oss_file_task,
     get_oss_file_size_task,
-    get_oss_presigned_url_task,
     get_oss_upload_sts_token_task,
     get_zarr_read_sts_token_task,
     sign_url_task,
@@ -182,29 +181,6 @@ class OssStorage:
             )
             return None
         return sign_url
-
-    @staticmethod
-    async def get_presigned_download_url(
-        file_path: str,
-        expires: int = 300,
-    ) -> str | None:
-        """获取 OSS 文件预签名下载 URL。"""
-        res: AsyncResult = get_oss_presigned_url_task.delay(  # type: ignore
-            file_path,
-            expires,
-        )
-        url: str | None = await wait_for_result(
-            res,
-            poll_interval=0.1,
-            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
-        )  # type: ignore
-        if url is None:
-            logger.error(
-                "failed to get presigned url due to server timeout: %s",
-                file_path,
-            )
-            return None
-        return url
 
     @staticmethod
     async def get_zarr_read_sts_token(

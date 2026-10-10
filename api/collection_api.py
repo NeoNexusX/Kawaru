@@ -271,6 +271,7 @@ async def remove_members_api(
     skipped = [p for p in unique_public_ids if p not in removed_set]
     await async_session.commit()
     await async_session.refresh(current_user)
+    await async_session.refresh(collection)
 
     logger.info(
         f"remove collection members user={current_user.id} collection_id={collection.id} "

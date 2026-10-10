@@ -1056,7 +1056,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "greenlet" },
     { name = "httpx", extra = ["http2"] },
-    { name = "m2crypto" },
     { name = "passlib" },
     { name = "pydantic" },
     { name = "pyjwt" },
@@ -1093,7 +1092,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.121.3" },
     { name = "greenlet", specifier = "==3.3.1" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
-    { name = "m2crypto", specifier = "<0.43" },
     { name = "passlib", specifier = ">=1.7.4" },
     { name = "pydantic", specifier = ">=2.12.4" },
     { name = "pyjwt", specifier = ">=2.10.1" },
@@ -1128,16 +1126,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b6/a5/607e533ed6c83ae1a696969b8e1c137dfebd5759a2e9682e26ff1b97740b/kombu-5.6.2.tar.gz", hash = "sha256:8060497058066c6f5aed7c26d7cd0d3b574990b09de842a8c5aaed0b92cc5a55", size = 472594, upload-time = "2025-12-29T20:30:07.779Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/0f/834427d8c03ff1d7e867d3db3d176470c64871753252b21b4f4897d1fa45/kombu-5.6.2-py3-none-any.whl", hash = "sha256:efcfc559da324d41d61ca311b0c64965ea35b4c55cc04ee36e55386145dace93", size = 214219, upload-time = "2025-12-29T20:30:05.74Z" },
-]
-
-[[package]]
-name = "m2crypto"
-version = "0.42.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/85/9f/b8977ce2971cf5f823db3fdb31e7e061b9662da318a17b6bf0c653f84aee/m2crypto-0.42.0.tar.gz", hash = "sha256:42b62df2caf623161b1d643a7235464c2fe2a3105049ebc498a6d47dc08f64b4", size = 240072, upload-time = "2024-08-10T22:14:34.344Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/47/1048b6887f2dd5e20b7a9ea044134bd19fcc3b53ad39e09098cd3a09bff5/M2Crypto-0.42.0-cp312-cp312-win32.whl", hash = "sha256:76b4a53a5a6fc86cb43d9dad533d13ed247f030a8eb65ff308f2981647a7f626", size = 199070, upload-time = "2024-08-10T22:14:30.048Z" },
-    { url = "https://files.pythonhosted.org/packages/00/b9/1ed52ef8cb7988dd04854d85260f88dbbcc8f1d74485d1e61804a5a18a63/M2Crypto-0.42.0-cp312-cp312-win_amd64.whl", hash = "sha256:940072e44f7e9064eed0aa654885e6688f91c441eb4212cc62e61caa252406f6", size = 259517, upload-time = "2024-08-10T22:14:32.317Z" },
 ]
 
 [[package]]

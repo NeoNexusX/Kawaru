@@ -144,7 +144,7 @@ async def preflight_create_file(
 
     logger.info(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
-        f"storage={file_data.storage_type} size={file_data.size} parts={file_data.total_parts} experiment_type={file_data.experiment_type}")
+        f"storage={file_data.storage_type} size={file_data.size} experiment_type={file_data.experiment_type}")
 
     result = FilePublic.model_validate(file_record)
     result.is_reuse = is_reuse

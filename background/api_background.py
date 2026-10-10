@@ -1,3 +1,4 @@
+import os
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -44,7 +45,8 @@ async def send_smtp_email_task(email_payload: dict) -> dict:
         smtp_server = email_payload.get("smtp_server")
         smtp_port = int(email_payload.get("smtp_port", 0))
         smtp_username = email_payload.get("smtp_username")
-        smtp_passwd = email_payload.get("smtp_passwd")
+        # 密码从环境变量读取，不随任务 payload 过 broker/结果存储
+        smtp_passwd = os.getenv("SMTP_PASSWORD")
         smtp_from_email = email_payload.get("smtp_from_email")
         recipient = email_payload.get("email")
         subject = email_payload.get("subject")
@@ -69,12 +71,13 @@ async def send_smtp_email_task(email_payload: dict) -> dict:
                 server.login(smtp_username, smtp_passwd) # type: ignore
                 server.send_message(msg)
 
-        return {"success": True, "data": email_payload}
+        return {"success": True}
 
     except smtplib.SMTPResponseException as exc:
-        if "qq.com" in email_payload.get("from", "") and getattr(exc, "smtp_code", None) == -1:
+        # 判定对象应是 SMTP 服务器主机名而非发件人域名（发件人可配自有域名）
+        if "qq.com" in (email_payload.get("smtp_server") or "") and getattr(exc, "smtp_code", None) == -1:
             logger.warning("SMTP non-standard quit response suppressed: %s", exc)
-            return {"success": True, "data": email_payload}
+            return {"success": True}
         logger.error("SMTP response error: %s", exc)
         return {"success": False, "error": str(exc)}
     except Exception as exc: # pylint: disable=broad-exception-caught

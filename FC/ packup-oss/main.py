@@ -59,7 +59,8 @@ def _main_handler(oss_client, evt):
         packup_callback(filename, "completed", dest_file)
     except Exception as e:
         LOG.error(e)
-        packup_callback(filename, "failed")
+        # 失败时把事件里原始的 dest-file 原样带回：服务端靠它反解 file_id 落 FAILED 状态
+        packup_callback(filename, "failed", dest_file)
         raise e
 
 

@@ -17,28 +17,6 @@ Kawaru 是一个基于 FastAPI 的后端服务器项目，为 SpatialXomics 提�
 - 可连接的 MariaDB 与 Redis 实例（本地安装或 Docker 均可）
 - 阿里云 OSS Bucket、可签发受限 STS 凭证的 RAM 角色，以及配置中对应的函数计算（FC）函数
 
-## macOS 额外依赖
-
-项目依赖 `m2crypto`，它需要在 macOS 上从源码编译 C 扩展，因此需要额外安装以下工具：
-
-```bash
-# 安装 SWIG 和 OpenSSL
-brew install swig openssl@3
-```
-
-安装完成后，编译 `m2crypto` 时需要设置以下环境变量（Apple Silicon 必需）：
-
-```bash
-export LDFLAGS="-L$(brew --prefix openssl@3)/lib"
-export CFLAGS="-I$(brew --prefix openssl@3)/include -D__aarch64__"
-export SWIG_FEATURES="-I$(brew --prefix openssl@3)/include -cpperraswarn"
-```
-
-> **说明：**
-> - `-cpperraswarn` — 让 SWIG 将系统头文件中的 `#error "Unsupported architecture"` 降级为警告。
-> - 以上变量仅需在运行 `uv sync` 时临时设置，无需写入 shell 配置文件。
-> - Intel Mac 用户无需 `-D__aarch64__`。
-
 ## 快速开始开发
 
 ### 1. 克隆项目
