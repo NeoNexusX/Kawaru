@@ -14,13 +14,12 @@ import time
 from sqlmodel import select
 
 from api_services.composite_service import collect_file_delete_snapshot
-from background.file_background_helper import delete_oss_objects
 from database.db import get_standalone_async_session
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
 from models.processing_models import RAW_CONVERT_MARKER, ExperimentProcessRunInDB, ProcessingStatus
 from models.user_models import UserInDB
-from storage.oss.oss_storage import OssStorage
+from storage.oss.oss_storage import OssStorage, delete_oss_objects
 from tools.logger import get_logger
 
 from .oss import put_oss_object
@@ -42,7 +41,7 @@ async def sweep_file_rows_by_prefix(filename_prefix: str) -> int:
         )).all()
         for row in rows:
             try:
-                # 复用删除快照收集逻辑（主文件/packup 推导/预览图/origin/全部 run 输出）
+                # 复用删除快照收集逻辑（主文件/预览图/origin/全部 run 输出）
                 snapshot = await collect_file_delete_snapshot(session, row)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("sweep: collect snapshot failed file_id=%s error=%s", row.file_id, exc)

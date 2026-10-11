@@ -1,7 +1,7 @@
 """
 算法处理运行管理路由
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from api.processing_api import (
     CreateAlgorithmTaskDep,
@@ -14,29 +14,26 @@ from api.processing_api import (
 from models.processing_models import ExperimentProcessRunPublic
 from models.file_models import ZarrFolderAccess
 from models.filter_models import ListDataResponse
-from database.visit_stats import incr_visit
+from database.visit_stats import count_visit
 
 processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 
 
-@processing_router.post("", response_model=ExperimentProcessRunPublic)
+@processing_router.post("", response_model=ExperimentProcessRunPublic, dependencies=[Depends(count_visit)])
 async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
-    await incr_visit()
     return record
 
 
-@processing_router.post("/raw-convert", response_model=ExperimentProcessRunPublic)
+@processing_router.post("/raw-convert", response_model=ExperimentProcessRunPublic, dependencies=[Depends(count_visit)])
 async def create_raw_convert(record: CreateRawConvertTaskDep):
     """创建 imzML 直转 Zarr 任务（无算法处理）"""
-    await incr_visit()
     return record
 
 
-@processing_router.post("/{run_id}/clustering", response_model=ExperimentProcessRunPublic)
+@processing_router.post("/{run_id}/clustering", response_model=ExperimentProcessRunPublic, dependencies=[Depends(count_visit)])
 async def create_clustering(record: CreateClusteringTaskDep):
     """创建聚类分析任务（对已完成算法处理的 run 执行 UMAP/KMeans）"""
-    await incr_visit()
     return record
 
 

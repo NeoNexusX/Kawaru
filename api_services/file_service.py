@@ -9,16 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
 from sqlmodel import select, exists, and_, or_, not_, func, col, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
-from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment, atomic_decrement, atomic_set
 from api_services.user_service import get_user_by_id
 from api_services.experiment_service import get_origin_imzml_by_file_id
-from api_helpers.experiment_helper import validate_experiment_type, packup_oss_file
+from api_helpers.experiment_helper import validate_experiment_type
 from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
@@ -28,23 +26,24 @@ from storage.oss.oss_storage import OssStorage
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     MAX_SINGLE_FILE_SIZE_BYTES,
-    OSS_PACKUP_ZIP_STORAGE_ROOT,
+    OSS_BUCKET_NAME,
+    OSS_REGION_ID,
     SIGNED_URL_EXPIRE_SECONDS,
-    PACKUP_CACHE_TTL_SECONDS,
 )
-from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from exceptions import (
     duplicate_file_exception,
     file_not_found_exception,
     file_content_missing_exception,
+    file_persist_failed_exception,
     invalid_request_parameters_exception,
     invalid_user_for_file_list_sync_exception,
     user_file_limit_exception,
-    origin_type_not_supported_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, FilePatch, FileStatus, PackupStatus, OssDownloadFile
+from models.file_models import (
+    FileCreate, FileInDB, FileOssUploadResponse, FilePatch, FileStatus, OssDownloadFile,
+)
 from models.filter_models import FileFilter
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
@@ -444,97 +443,20 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
-def packup_cache_key(file_id: int) -> str:
-    """打包状态缓存键（Redis Hash）。按 file_id 隔离：文件名只在同一用户内唯一，以文件名为键会让同名文件跨用户串号"""
-    return f"oss_packup-{file_id}"
-
-
-def packup_zip_path(file_id: int) -> str:
-    """打包 zip 的 OSS 对象键：{OSS_PACKUP_ZIP_STORAGE_ROOT}/{file_id}.zip"""
-    return f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_id}.zip"  # type: ignore
-
-
-def parse_packup_zip_file_id(zip_path: str | None) -> int | None:
-    """packup_zip_path 的逆操作：从打包回调带回的 zip 对象键解析 file_id，格式不符返回 None"""
-    if not zip_path:
-        return None
-    stem = Path(zip_path).stem
-    if not (stem.isascii() and stem.isdigit()):
-        return None
-    file_id = int(stem)
-    # 必须与发起打包时下发给 FC 的对象键完全一致，其他目录下的同名 zip 不认
-    return file_id if zip_path.strip("/") == packup_zip_path(file_id) else None
-
-
-async def prepare_download_file_oss(
-    session: AsyncSession,
-    file_record: FileInDB,
-) -> str:
-    """
-    准备下载文件,处理实验文件的ZIP打包
-
-    Returns:
-        文件下载URL，如果正在打包则返回 "<PACKING>"
-
-    Raises:
-        file_content_missing_exception: 文件内容缺失
-    """
-    assert file_record.file_id is not None
-    # 打包状态与触发锁均按 file_id 隔离（见 packup_cache_key）
-    oss_packup_key = packup_cache_key(file_record.file_id)
-    oss_packup_lock_key = f"oss_packup_lock-{file_record.file_id}"
-
-    # path 为空说明上传从未完成（预检记录或上传中断），既无源 zip 可签、
-    # origin 也不存在（无法打包），直接判定内容缺失，避免对空路径走 OSS 签名。
-    if not file_record.path:
-        logger.warning("download requested but file path is empty, filename=%s", file_record.filename)
-        raise file_content_missing_exception
-
-    try:
-        packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
-        # 返回值已无 fc_request_id：FC 日志回捞链路已删除
-        should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
-            file_record, packup, oss_packup_key, oss_packup_lock_key
-        )
-
-        if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
-            zip_download_url = await _prepare_download_url_for_completed_packup(
-                file_record, zip_path, oss_packup_key
-            )
-
-        if should_pack:
-            zip_download_url = await _execute_packup_flow(session, file_record, oss_packup_key)
-
-        if not zip_download_url:
-            logger.error("zip_download_url is None, filename=%s", file_record.filename)
-            raise file_content_missing_exception
-
-        if zip_download_url != "<PACKING>":
-            await redis_client.delete(oss_packup_lock_key)
-
-        return zip_download_url
-
-    except HTTPException as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise internal_server_error_exception from e
-
-
 # 允许签发上传 STS / 允许上传失败回滚清理的文件状态：初始预检记录（""）与上传中断后重试的 UPLOADING
 UPLOADABLE_FILE_STATUSES = ("", FileStatus.UPLOADING)
 
 
-async def validate_simple_upload(
+async def validate_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     filename: str | None,
     pre_record: FileInDB,
-    storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：归属、状态、名字、存储类型
+    验证签发上传凭证前的条件：归属、状态、名字
+
+    存储类型由上传入口按预检记录的 storage_type 分发，此处不再比对
 
     Raises:
         file_not_found_exception: 预检记录不属于当前用户（对外隐藏存在性）
@@ -555,15 +477,65 @@ async def validate_simple_upload(
         )
         raise invalid_request_parameters_exception
 
-    # 存储类型检查
-    if storage_type != pre_record.storage_type:
-        logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
-        raise invalid_request_parameters_exception
-
     # 文件名检查
     if not filename:
         logger.error(f"filename missing user={current_user.id}")
         raise invalid_request_parameters_exception
+
+
+async def upload_oss_file(
+    current_user: UserInDB,
+    async_session: AsyncSession,
+    pre_record: FileInDB,
+    filename: str,
+) -> FileOssUploadResponse:
+    """
+    【OSS 上传实现】
+
+    校验预检记录并返回限定对象路径的 STS 临时凭证，文件内容由前端
+    通过 OSS SDK 直传。自行提交事务，失败时由 rollback_upload 补偿。
+
+    OSS 对象清理策略：
+    - 回调在路径提交后失败时，失败实验定时任务会按已落库路径尝试删除
+      source/imzML/ibd 对象。
+    - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
+      未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
+    """
+    # 预检记录校验放在 try 之外：校验失败直接返回对应错误，不触发回滚。
+    # 回滚会解除关联并删除预检记录，对他人的 pre_public_id 或已完成的文件执行时，
+    # 会造成配额虚减或误删已完成文件
+    logger.info("oss upload start user=%s filename=%s", current_user.id, filename)
+    await validate_upload(async_session, current_user, filename, pre_record)
+
+    try:
+        # OSS 对象键使用唯一标识 data/{file_verify_code}/{file_id}.{file_type}，
+        # 不再使用文件名；verify_code 前置打散 OSS 分区，FC 从文件名解析 file_id 后回调后端
+        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
+        oss_path = OssStorage.prepare_storage_path(
+            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
+        )
+        oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
+        if not oss_sts_token or not oss_path:
+            raise internal_server_error_exception
+
+        await update_file_record(async_session, pre_record, status=FileStatus.UPLOADING)
+        await async_session.commit()
+        await async_session.refresh(pre_record)
+
+    except Exception as exc:
+        logger.error(
+            "oss upload failed user=%s filename=%s error=%s",
+            current_user.id, filename, exc,
+        )
+        await rollback_upload(async_session, current_user, pre_record)
+        raise file_persist_failed_exception from exc
+
+    response = FileOssUploadResponse.model_validate(pre_record)
+    response.oss_path = oss_path
+    response.oss_sts_token = oss_sts_token
+    response.oss_bucket = OSS_BUCKET_NAME
+    response.oss_region_id = OSS_REGION_ID
+    return response
 
 
 #########################
@@ -752,13 +724,13 @@ async def safe_cleanup_preflight_record(
         logger.debug(f"preflight cleanup: deleted file_id={pre_record.file_id} completely")
 
 
-async def rollback_simple_upload(
+async def rollback_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     pre_record: FileInDB | None = None,
 ) -> None:
     """
-    简单上传失败时的统一回滚清理
+    上传失败时的统一回滚清理
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
     if pre_record is None:
@@ -830,7 +802,7 @@ async def prepare_download_raw_oss(
 
     - 复用 OssStorage.sign_download_url（零改动），下载名由 OSS 对象 basename 决定，
       imzML/ibd 同 stem 配对天然保留。
-    - 不触碰 file_record.path —— 避免被 cleanup_old_download_zips 误删 origin 永久文件。
+    - 不触碰 file_record.path —— 避免被 cleanup_source_zips 误删 origin 永久文件。
     """
     origin = await assert_origin_files_ready(session, file_record)
 
@@ -845,167 +817,13 @@ async def prepare_download_raw_oss(
     ]
 
 
-async def get_origin_path_for_packup(
-    session: AsyncSession,
-    file_record: FileInDB,
-) -> str:
-    """
-    获取用于打包的 origin 文件路径
-
-    Raises:
-        file_content_missing_exception: origin 文件不存在或未完成
-        origin_type_not_supported_exception: 不支持的实验类型
-    """
-    if file_record.experiment_type == "imzML":
-        origin = await assert_origin_files_ready(session, file_record)
-        return f"{Path(origin.imzml_path).parent}/"
-    else:
-        logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
-        raise origin_type_not_supported_exception
-
-
-async def _handle_packup_status_check(
-    file_record: FileInDB,
-    packup: dict | None = None,
-    oss_packup_key: str | None = None,
-    oss_packup_lock_key: str | None = None,
-) -> tuple[bool, str | None, str | None]:
-    """
-    检查Redis中的打包状态并处理相应逻辑
-
-    Returns:
-        tuple: (should_pack, zip_download_url, zip_path)
-    """
-    should_pack = False
-    zip_download_url = None
-    zip_path = None
-
-    if not packup:
-        if file_record.path == SOURCE_FILE_PATH_CLEARED:
-            # 源 zip 已被定时清理（删除统一按 path 执行，删后必写哨兵），
-            # origin imzML/ibd 仍在 → 触发重新打包。
-            # 不做 check_file_exist 兜底：秒传链路（preflight_create_file）已保证
-            # zip 被清理后该记录不可复用，不会有新对象写回原 key。
-            # 原子加锁（SET NX EX），防止多个并发请求同时触发打包。
-            # SET key value NX EX seconds 是 Redis 单条原子命令：
-            #   - NX：仅当 key 不存在时才设置成功
-            #   - EX：设置 10 秒过期，防止持锁进程崩溃导致死锁
-            # 替代原来的 GET-then-SET 反模式，彻底消除 check-then-act 竞态窗口。
-            lock_acquired = await redis_client.set(oss_packup_lock_key, "1", nx=True, ex=10)  # type: ignore
-            if not lock_acquired:
-                logger.warning(
-                    "packup is in progress by other user, now wait for it to finish, filename=%s",
-                    file_record.filename,
-                )
-                zip_download_url = "<PACKING>"
-            else:
-                should_pack = True
-        else:
-            zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
-            await redis_client.hset(oss_packup_key, mapping={ # type: ignore
-                "status": PackupStatus.COMPLETED,
-                "file_path": file_record.path,
-                "download_url": zip_download_url})  # type: ignore
-            await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
-
-    elif packup.get("status") == PackupStatus.PACKING:
-        logger.info("packup is in progress, file_id=%s", file_record.file_id)
-        zip_download_url = "<PACKING>"
-
-    elif packup.get("status") == PackupStatus.COMPLETED:
-        zip_path = packup.get("file_path")
-        zip_download_url = packup.get("download_url")
-        if not zip_path:
-            logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
-            should_pack = True
-        elif not await OssStorage.check_file_exist(zip_path):
-            logger.warning(f"packup completed but zip has been cleaned up, now start new packup, filename={file_record.filename}")
-            should_pack = True
-
-    elif packup.get("status") == PackupStatus.FAILED:
-        logger.error("packup failed, filename=%s", file_record.filename)
-        await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
-        raise file_content_missing_exception
-
-    else:
-        logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
-        should_pack = True
-
-    return should_pack, zip_download_url, zip_path
-
-
-async def _prepare_download_url_for_completed_packup(
-    file_record: FileInDB,
-    zip_path: str,
-    oss_packup_key: str | None,
-) -> str | None:
-    """为已完成的打包生成下载URL"""
-    zip_size = await OssStorage.get_file_size(zip_path)
-    if zip_size is None:
-        raise file_content_missing_exception
-
-    zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
-
-    await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
-    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
-
-    # 回写 path 指向 packup zip：cleanup_old_download_zips 靠它定位清理对象。
-    # （path 仅内部使用，FileDownloadMeta 不对外返回：对象键含 file_id 与 file_verify_code）
-    # 注意：此处不 flush/commit，依赖外层 get_download_file_metadata 的事务提交生效。
-    # 绝不回写 size：size 是计费字段，恒为压缩前大小，不能被 packup zip 大小污染。
-    file_record.path = zip_path
-
-    logger.info(
-        "prepared download zip file_id=%s path=%s zip_size=%s",
-        file_record.file_id,
-        zip_path,
-        zip_size,
-    )
-
-    return zip_download_url
-
-
-async def _execute_packup_flow(
-    session: AsyncSession,
-    file_record: FileInDB,
-    oss_packup_key: str,
-) -> str:
-    """
-    执行常规打包流程
-
-    Returns:
-        "<PACKING>" 表示正在打包
-
-    Raises:
-        internal_server_error_exception: 内部服务器错误
-    """
-    origin_path = await get_origin_path_for_packup(session, file_record)
-
-    # packup zip 使用 file_id 命名，与原始文件名解耦（同名文件秒传复用场景不冲突）
-    fc_request_id = await packup_oss_file(
-        filename=file_record.filename,
-        packup_folder=origin_path,  # type: ignore
-        zip_file_path=packup_zip_path(file_record.file_id),  # type: ignore
-    )
-
-    if fc_request_id is None:
-        logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
-        raise internal_server_error_exception
-
-    # 不再把 fc_request_id 写入 Redis：FC 日志回捞链路已删除，此处仅用于判断触发是否成功
-    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING})  # type: ignore
-    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
-
-    return "<PACKING>"
-
-
-async def validate_upload_request(
+async def validate_preflight_request(
     async_session: AsyncSession,
     current_user: UserInDB,
     file_data: FileCreate,
 ) -> bool:
     """
-    统一验证上传请求参数
+    统一验证预检请求参数
 
     Returns:
         True 表示验证通过,False 表示验证失败

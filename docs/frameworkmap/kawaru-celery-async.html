@@ -5602,7 +5602,6 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <li>&bull; fc-raw-convert：imzML 直转 Zarr</li>
           <li>&bull; fc-clustering：UMAP/KMeans 聚类</li>
           <li>&bull; fc-tic / fc-feature：TIC/UMAP 预览图</li>
-          <li>&bull; fc-packup：ZIP 打包下载</li>
         </ul>
       </div>
 
@@ -5614,7 +5613,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>&bull; RedBeat 在 Redis DB3 保存调度元数据并使用分布式锁</li>
           <li>&bull; heartbeat（67s 保活）</li>
-          <li>&bull; cleanup_old_download_zips</li>
+          <li>&bull; cleanup_source_zips（删除过期的上传源 ZIP）</li>
           <li>&bull; cleanup_stale_preflights_all_users</li>
           <li>&bull; cleanup_failed_experiments / cleanup_stale_process_runs</li>
         </ul>
@@ -5623,14 +5622,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot rose"></div>
-          <h3>OSS 辅助任务</h3>
+          <h3>OSS 操作（已移出 Celery）</h3>
         </div>
         <ul>
-          <li>&bull; get_oss_upload_sts_token_task：上传 STS</li>
-          <li>&bull; sign_url_task / get_oss_presigned_url_task：签名</li>
-          <li>&bull; delete_oss_file_task / tag_oss_file_task：删除/标签</li>
-          <li>&bull; check_oss_file_exist_task / get_oss_file_size_task</li>
-          <li>&bull; get_zarr_read_sts_token_task：Zarr 读取 STS</li>
+          <li>&bull; OssStorage 在调用方进程内直接执行，不投递任务、不轮询结果</li>
+          <li>&bull; 上传 / Zarr 只读 STS：assume_role_async</li>
+          <li>&bull; 存在性 / 大小 / 标签 / 删除：OSS 异步客户端</li>
+          <li>&bull; 签名下载 URL：本地 presign，不发网络请求</li>
         </ul>
       </div>
     </div>

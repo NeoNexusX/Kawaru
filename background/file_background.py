@@ -14,8 +14,7 @@ from api_services.file_service import (
     get_file_record_by_id,
     safe_cleanup_preflight_record,
 )
-from storage.oss.oss_storage import OssStorage
-from background.file_background_helper import delete_oss_objects
+from storage.oss.oss_storage import OssStorage, delete_oss_objects
 from constants.file_constants import (
     PREFLIGHT_TTL_MINUTES,
     DOWNLOAD_ZIP_TTL_MINUTES,
@@ -23,7 +22,6 @@ from constants.file_constants import (
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
-from database.redis_client import REDIS_DEFAULT_DB, connect_new_redis
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -96,21 +94,25 @@ async def cleanup_stale_preflights_all_users(
 
 
 @celery_app.task() # type: ignore
-async def cleanup_old_download_zips(
+async def cleanup_source_zips(
     retention_minutes: int = DOWNLOAD_ZIP_TTL_MINUTES,
     batch_size: int = 100,
 ) -> int:
     """
-    定时清理符合条件的下载zip文件：
-      - 走到数据库 file 表 path 不为空，且未被标记为已清理（哨兵 SOURCE_FILE_PATH_CLEARED）
-      - last_downloaded_at 早于 当前时间 - retention_days
-    物理文件删除后回写哨兵 path（非空但不再指向物理文件），保留数据库记录。
+    定时清理源 zip：file.path 指向用户上传的原始 zip（存量数据中也可能指向历史打包 zip）。
+    解压回调成功后下载只走 origin（raw / relay），源 zip 不再有读取方，留存只占存储；
+    它在回调时被打了 persistent tag，生命周期规则不会回收，只能由本任务删除。
+    清理条件：
+      - path 不为空，且未被标记为已清理（哨兵 SOURCE_FILE_PATH_CLEARED）
+      - last_downloaded_at 早于 当前时间 - retention_minutes
+    对象删除成功后才回写哨兵 path（非空但不再指向物理文件），保留数据库记录；
+    删除失败保留原 path，下一轮重试——先写哨兵会让对象再无引用、永久泄漏。
 
     注意：查询条件必须排除哨兵。已清理记录的 last_downloaded_at 不会随之更新，
     若不排除，它们会每轮被重复捞起又整批跳过，导致新文件永远得不到清理（任务"卡住"）。
     """
     async with get_standalone_async_session() as session:
-        logger.info(f"starting cleanup old download zips for all users with TTL {retention_minutes} minutes...")
+        logger.info(f"starting cleanup source zips for all users with TTL {retention_minutes} minutes...")
 
         now = utc_time()
         cutoff_time = now - timedelta(minutes=retention_minutes)
@@ -128,17 +130,21 @@ async def cleanup_old_download_zips(
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
                 continue
             try:
-                await OssStorage.delete_file(file_path)
-                rec.path = SOURCE_FILE_PATH_CLEARED
-                session.add(rec)
-                cleaned += 1
+                ok = await OssStorage.delete_file(file_path)
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to delete old download zip for file_id=%s path=%s error=%s",rec.file_id,file_path,exc)
+                logger.warning("Failed to delete source zip for file_id=%s path=%s error=%s",rec.file_id,file_path,exc)
+                continue
+            if not ok:
+                logger.warning("Failed to delete source zip, keep path for retry file_id=%s path=%s", rec.file_id, file_path)
+                continue
+            rec.path = SOURCE_FILE_PATH_CLEARED
+            session.add(rec)
+            cleaned += 1
 
         if cleaned:
             await session.commit()
 
-        logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
+        logger.info("cleanup_source_zips removed %d source zip(s)", cleaned)
     return cleaned
 
 
@@ -154,7 +160,7 @@ async def clean_user_all_task(
     用户行删除时 userfilelink 已随之级联删除，这里逐个处理传入的全部 file_id（每个文件独立事务）:
     - 文件仍有其他持有者：不做处理（关联已随用户删除解除）
     - 文件已无持有者：与用户删除文件走同一条删除状态位流程——行锁内登记 DELETING 并收集路径快照
-      （源文件、packup zip、预览图目录、origin、全部 run 输出），提交后投递 delete_objects_task，
+      （源文件、预览图目录、origin、全部 run 输出），提交后投递 delete_objects_task，
       OSS 对象全部删除成功后才删 DB 行
 
     pre_collected_run_paths：del_user 在删 user 行前预收集的 (source_file_id, out_path) 对
@@ -196,7 +202,6 @@ async def clean_user_all_task(
                     kind="file",
                     resource_id=file_id,
                     paths=list(dict.fromkeys(paths)),
-                    redis_keys=list(snapshot.redis_keys),
                 )
                 total_deleted += 1
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -228,7 +233,7 @@ async def cleanup_failed_experiments(
     1. 查询过期的失败 origin 记录（行锁 skip_locked，多 worker 不重复处理）
     2. mark_file_for_deletion(unlink_all_owners=True)：行锁内解除全部持有者的关联并
        释放 storage 配额（用户可见语义在登记事务内生效），置 DELETING 并收集路径快照
-       （源文件、packup zip、预览图目录、origin、全部 run 输出）
+       （源文件、预览图目录、origin、全部 run 输出）
     3. 先 commit 再投递 delete_objects_task：worker 幂等删净 OSS 对象后 finalize 删
        file 行（级联 UserFileLink / OriginImzMLInDB / run），processed 配额由 finalize
        退还；任一对象删除失败则行置 DELETE_FAILED 保留，重复触发本任务即幂等重投
@@ -273,7 +278,6 @@ async def cleanup_failed_experiments(
                     kind="file",
                     resource_id=source_file_id,
                     paths=list(snapshot.paths),
-                    redis_keys=list(snapshot.redis_keys),
                 )
                 cleaned += 1
                 logger.info(
@@ -366,7 +370,6 @@ async def delete_objects_task(
     kind: str,
     resource_id: int,
     paths: list[str],
-    redis_keys: list[str] | None = None,
 ) -> bool:
     """
     统一的 OSS 删除执行任务（② 执行，全系统删除主流程只此一处碰 OSS 删除）。
@@ -378,32 +381,13 @@ async def delete_objects_task(
     - 全部成功 → finalize[kind] 在同一 DB 事务内删行（「要么都删除」）
     finalize 容忍行已不在（重复投递时直接算成功）。
     """
-    # 1. 清理 Redis 状态键（best-effort，键自身有 TTL，失败不影响主流程）
-    # Celery 任务每次 asyncio.run() 都是新事件循环，不能复用全局 redis_client：
-    # 池内缓存的连接绑定在已关闭的旧循环上，命令必失败且坏连接会留在池里；
-    # 这里按任务用一次性连接（同 clean_up_stale_packup_data 的做法）
-    if redis_keys:
-        r = None
-        try:
-            r = connect_new_redis(db_index=REDIS_DEFAULT_DB)
-            for key in redis_keys:
-                await r.delete(key)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning("delete_objects_task: delete redis keys failed keys=%s error=%s", redis_keys, exc)
-        finally:
-            if r is not None:
-                try:
-                    await r.aclose()
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    logger.warning("delete_objects_task: close redis client failed error=%s", exc)
-
-    # 2. 删除 OSS 对象（幂等，可无限重试）
+    # 1. 删除 OSS 对象（幂等，可无限重试）
     ok = await delete_oss_objects(paths)
     if not ok:
         await _mark_delete_failed(kind, resource_id)
         return False
 
-    # 3. finalize：同一 DB 事务内收尾
+    # 2. finalize：同一 DB 事务内收尾
     async with get_standalone_async_session() as session:
         if kind == "file":
             await finalize_file_deletion(session, resource_id)

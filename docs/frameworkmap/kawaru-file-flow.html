@@ -5568,7 +5568,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>&bull; 预检仅返回 file_id / 秒传结果，不返回 STS</li>
-          <li>&bull; /files/upload 与 /files/upload_simple 共用同一底层 STS 逻辑</li>
+          <li>&bull; /files/upload 按预检记录的 storage_type 分发，当前仅 OSS（签发 STS）</li>
           <li>&bull; 客户端凭 STS 直传 OSS，OSS 事件触发 FC 解压</li>
           <li>&bull; FC 回调校验路径、哈希与大小后创建 Origin</li>
         </ul>

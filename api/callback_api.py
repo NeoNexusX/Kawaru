@@ -8,32 +8,26 @@ from sqlmodel import select
 
 from api_services.composite_service import failed_mark_origin_record_clean
 from database.db import AsyncSessionDep
-from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment
-from storage.oss.oss_storage import OssStorage
+from storage.oss.oss_storage import OssStorage, cleanup_oss_objects_best_effort
 
 from api_services.file_service import (
     get_file_record_by_id,
-    packup_cache_key,
-    parse_packup_zip_file_id,
     update_file_record,
 )
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
-from background.file_background_helper import cleanup_oss_objects_best_effort
 from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
-from constants.file_constants import PACKUP_CACHE_TTL_SECONDS
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, UmapCallback, ClusteringCallback
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
-from models.file_models import FileInDB, FilePublic, FileStatus, PackupStatus
+from models.file_models import FileInDB, FilePublic, FileStatus
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunCallbackResponse, RAW_CONVERT_MARKER
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
     storage_type_not_allowed_exception,
     hash_size_validation_failed_exception,
-    invalid_request_parameters_exception,
 )
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
@@ -443,41 +437,6 @@ async def tic_callback(
     )
 
 
-async def oss_packup_callback(
-    status: PackupStatus,
-    zip_path: str | None = None,
-    filename: str | None = None,
-) -> None:
-    """
-    处理OSS文件打包回调
-
-    打包状态按 file_id 存储（同名文件跨用户不串号）。file_id 由 zip_path 反解：
-    发起打包时按 {OSS_PACKUP_ZIP_STORAGE_ROOT}/{file_id}.zip 生成对象键下发给 FC，
-    回调原样带回，FC 侧无需改动。filename 仅用于日志。
-    """
-    file_id = parse_packup_zip_file_id(zip_path)
-    if file_id is None:
-        logger.error("oss packup callback rejected, invalid zip_path=%s, filename=%s, status=%s",
-                     zip_path, filename, status)
-        raise invalid_request_parameters_exception
-
-    oss_packup_key = packup_cache_key(file_id)
-    r = redis_client
-    try:
-        # 打包成功，存储URL，更新状态为COMPLETED
-        if status == PackupStatus.COMPLETED:
-            await r.hset(oss_packup_key, mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
-        # 打包失败，更新状态为FAILED
-        if status == PackupStatus.FAILED:
-            await r.hset(oss_packup_key, mapping={"status": status.value, "file_path": zip_path}) # type:ignore
-            await r.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)  # 缓存 TTL 比签名 URL 早 5 分钟过期
-
-    except Exception as e:
-        logger.error("oss packup callback error, file_id=%s, filename=%s, error=%s", file_id, filename, e)
-        raise internal_server_error_exception from e
-
-
 async def umap_callback(
     callback_info: UmapCallback,
     async_session: AsyncSessionDep,
@@ -576,4 +535,3 @@ AlgorithmCallbackDep = Annotated[ExperimentProcessRunCallbackResponse, Depends(a
 TicCallbackDep = Annotated[FileInDB, Depends(tic_callback)]
 UmapCallbackDep = Annotated[FileInDB, Depends(umap_callback)]
 ClusteringCallbackDep = Annotated[ExperimentProcessRunCallbackResponse, Depends(clustering_callback)]
-OssPackupCallbackDep = Annotated[None, Depends(oss_packup_callback)]

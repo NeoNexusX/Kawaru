@@ -1,10 +1,10 @@
 # FC 回调历史改造方案（鉴权 + 幂等 + 对象存在性）
 
-> **文档性质：历史设计方案，不代表当前代码已经实现以下全部保证。** 当前行为请以 [异步任务与回调架构](异步任务与回调架构.md) 和 `api/callback_api.py` 为准；尤其是 algorithm 与 clustering 回调仍存在并发重复处理窗口，preview 对象缺失时仅记录日志后正常返回，packup 的保护也不等同于本方案描述的通用条件更新。
+> **文档性质：历史设计方案，不代表当前代码已经实现以下全部保证。** 当前行为请以 [异步任务与回调架构](异步任务与回调架构.md) 和 `api/callback_api.py` 为准；尤其是 algorithm 与 clustering 回调仍存在并发重复处理窗口，preview 对象缺失时仅记录日志后正常返回。
 
 > 起草日期：2026-08-25（2026-08-26 修订：每个回调各自直白实现三项保证）
 > 范围：algorithm_callback、tic_callback、feature_callback(umap)、
-> clustering_callback、oss_packup_callback。
+> clustering_callback。
 > 相关背景见 [异步任务与回调架构](异步任务与回调架构.md)，oss_upload_callback 本身的可重入改造另行处理。
 
 ## 1. 原方案目标
@@ -22,7 +22,6 @@
 | algorithm 回调无状态检查，重复成功回调重复累加配额 | `callback_api.py` atomic_increment | 用户 processed_file_size 双计，实际资损 |
 | tic/umap 失败分支吞掉：仅打日志即返回 200 | `callback_api.py` | 预览失败不可见、无状态、无重派，image_path 永远为 NULL |
 | 落库前不验证 OSS 对象存在 | 全部回调 | COMPLETED 但下载 404（信 FC 说什么是什么） |
-| packup 旧回调可覆盖新一轮打包状态 | Redis hash | 状态指向已被 TTL 清理的 zip（死链） |
 
 ## 3. 原方案拟采用的实现方式
 
@@ -79,7 +78,6 @@
 | algorithm_callback（历史记录称已完成，当前未完整实现） | 计划先查状态幂等跳过重复回调；成功迁移条件 UPDATE（判断并入 WHERE，rowcount 门控配额副作用，修配额双计）；落库前 check_file_exist(out_path)；失败仅 PROCESSING 在途时落 FAILED |
 | clustering_callback（历史记录称已完成，当前未完整实现） | 计划先查 clustering_status：成功非 COMPLETED 才写（迟到成功可从 FAILED 翻转）、失败仅 PROCESSING 在途时才写；无路径不做存在性检查 |
 | tic_callback / umap_callback | 合并为参数化 handler；幂等靠先查 image_path 是否已有值（**不加状态列**）；成功落库前 check_file_exist(image_path)；失败维持日志记录 |
-| oss_packup_callback | 待定（方案 A 纯后端 / 方案 B packup_id 需 FC 配合，分析后定） |
 
 表结构变更：无（tic/umap 不加状态列，幂等靠 image_path 已有值判断）。
 `experiment_process_run` 的 error_code 列为可选，暂不做。
@@ -89,7 +87,6 @@
 1. algorithm_callback（已完成，配额双计是资损，最优先）
 2. clustering_callback（已完成，最简单）
 3. tic/umap 合并（无 DDL，幂等靠 image_path 已有值）
-4. oss_packup（方案待定；若用 packup_id 需 FC 侧配合透传）
 
 ## 7. 历史改动记录（2026-08-26，不能作为当前实现依据）
 
@@ -124,48 +121,7 @@
 | out_path 在 OSS 不存在 | 照样标 COMPLETED | 500 -> FC 重试 -> 超时兜底判死 |
 | run 不存在 | 400 | 404（FC 停止重试） |
 
-### 7.2 oss_packup_callback 分析（未改代码，方案待定）
-
-三方协作现状：
-
-```
-发起侧 _execute_packup_flow          FC 打包函数                 回调 oss_packup_callback
-─────────────────────────          ──────────────              ──────────────────────
-invoke_fc({source-dir,             打包 -> dest-file           hset {status, file_path}
-  dest-file: {file_id}.zip})                                   + TTL（无任何校验）
-hset {status: PACKING} + TTL
-                                   读侧 _handle_packup_status_check 轮询：
-                                   COMPLETED -> 验 zip 存在，缺失自动重新打包（已有自愈）
-```
-
-问题（按真实严重程度排序）：
-
-1. **无轮次标识**：新一轮打包进行中，旧一轮的迟到回调直接覆盖。最有害
-   组合是「旧轮迟到 FAILED 覆盖新轮 COMPLETED」-> 用户看到失败，读侧
-   还会删 key 报错，触发一次无谓的重打包
-2. **COMPLETED 不验 zip 存在**：会写入死链；但读侧已有自愈
-   （`_handle_packup_status_check` 的 COMPLETED 分支会 check_file_exist，
-   缺失则重新打包），属加固项而非漏洞
-3. 顺带发现的两个小问题：成功/失败两个分支代码完全相同（都是裸 hset）；
-   Redis key 用 **filename** 而 zip 路径用 **file_id**，filename 无唯一
-   约束，同名文件会共享打包状态（已修复：状态键与触发锁改为按 file_id，
-   回调从 zip_path 反解 file_id，FC 无需改动）
-
-关键观察：zip 路径是确定性的（`{file_id}.zip`，每轮相同），所以「旧轮
-回调写旧 zip 造成死链」不成立；真正残留的坏场景只有「旧轮迟到 FAILED
-污染新轮状态」，且读侧自愈能兜住。严重性远低于 algorithm 的配额双计。
-
-两个候选方案：
-
-| | 方案 A：状态前置检查（纯后端） | 方案 B：packup_id 轮次标识 |
-| --- | --- | --- |
-| 做法 | 回调侧仅接受在途状态：key 不存在（TTL 已过）或 status != PACKING 的回调一律丢弃；COMPLETED 写入前 check_file_exist(zip_path)，缺失改写 FAILED | 发起侧生成 uuid 存 Redis hash 并随 FC 事件下发，回调比对，不匹配丢弃 |
-| 挡住 | 迟到 FAILED 覆盖终态、key 过期后回调凭空重建 hash、重复 COMPLETED | 全部，含两轮 PACKING 窗口交错的场景 |
-| 挡不住 | 两轮都在 PACKING 窗口内交错（无法区分轮次；路径相同 + 读侧自愈，基本无害） | 无 |
-| 依赖 | 无（约 15 行，顺手合并现有重复分支） | FC 侧配合透传 packup_id（回调目前是 query 参数，需 FC 事件带回） |
-
-倾向：先做方案 A（零外部依赖，覆盖绝大部分风险），方案 B 等下次
-动 FC 代码时再叠加。
+### 7.2 后续可选（当前不做）
 
 后续可选（当前不做）：回调路径前缀白名单（防错误路径进入删除链路）、
 鉴权改 compare_digest。

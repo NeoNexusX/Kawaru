@@ -22,7 +22,6 @@ from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.file_service import (
-    packup_cache_key,
     unlink_user_from_file,
     update_file_record,
 )
@@ -36,7 +35,6 @@ from api_services.processing_service import (
 )
 from api_services.user_service import get_user_by_id
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
-from constants.file_constants import OSS_PACKUP_ZIP_STORAGE_ROOT
 from exceptions.file_exceptions import file_not_found_exception
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus, RAW_CONVERT_MARKER
@@ -89,7 +87,6 @@ class FileDeleteSnapshot(NamedTuple):
     """文件删除快照：登记时收集、随任务参数传递；兜底重投时重新收集"""
     file_id: int
     paths: list[str]        # 待删除的 OSS 对象/目录前缀
-    redis_keys: list[str]   # 待清理的 Redis 状态键（packup 状态）
 
 
 async def collect_file_delete_snapshot(
@@ -100,9 +97,8 @@ async def collect_file_delete_snapshot(
     收集删除一个文件所需的全部路径快照。
 
     登记与兜底重投共用；调用方必须持有 file 行锁后调用，保证快照与状态位一致。
-    覆盖：主文件（path）、packup zip（按 file_id 推导，兜住「已打包完成但路径只在
-    Redis、尚未回写 DB」的漏删窗口）、预览图、origin（imzML/ibd + 目录）、
-    全部 run 的输出目录（run 行随 file 级联删除，不提前收集会成为孤儿对象）。
+    覆盖：主文件（path）、预览图、origin（imzML/ibd + 目录）、全部 run 的输出目录
+    （run 行随 file 级联删除，不提前收集会成为孤儿对象）。
     """
     file_id = file_record.file_id
     assert file_id is not None
@@ -112,9 +108,6 @@ async def collect_file_delete_snapshot(
     main_path = (file_record.path or "").strip()
     if main_path and main_path != SOURCE_FILE_PATH_CLEARED:
         paths.append(main_path)
-
-    # packup zip 按约定命名推导：对象不存在时 OSS 按 204 幂等跳过
-    paths.append(f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_id}.zip") # type: ignore
 
     if file_record.image_path:
         paths.append(file_record.image_path)
@@ -142,11 +135,10 @@ async def collect_file_delete_snapshot(
         if run.out_path:
             paths.append(run.out_path)
 
-    # 保序去重（path 已回写为 packup zip 时与推导路径重复）
+    # 保序去重（image_path 与推导的预览图目录可能重复）
     return FileDeleteSnapshot(
         file_id=file_id,
         paths=list(dict.fromkeys(paths)),
-        redis_keys=[packup_cache_key(file_id)],
     )
 
 
