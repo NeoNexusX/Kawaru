@@ -5463,7 +5463,6 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <li>&bull; algorithm_callback：算法 / 直转 → Run + 配额</li>
           <li>&bull; tic_callback / umap_callback：预览图 → image_path</li>
           <li>&bull; clustering_callback：聚类完成 → clustering_status</li>
-          <li>&bull; oss_packup_callback：打包完成 → Redis 缓存</li>
         </ul>
       </div>
 
@@ -5487,7 +5486,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <li>&bull; X-FC-Token 验证（FC_CALLBACK_TOKEN）</li>
           <li>&bull; 对象缺失：upload/algorithm/clustering 返回错误；preview 仅日志后返回成功</li>
           <li>&bull; algorithm 先查后改，存在并发重复计费窗口；clustering 无终态保护</li>
-          <li>&bull; 删除流程中的 upload/algorithm 回调丢弃；packup 依赖 Redis 当前任务状态</li>
+          <li>&bull; 删除流程中的 upload/algorithm 回调丢弃</li>
           <li>&bull; 仓库仅定义 HTTP 响应，不能保证仓库外 FC 的重试策略</li>
         </ul>
       </div>

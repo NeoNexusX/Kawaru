@@ -62,9 +62,6 @@ class CelerySettings(BaseModel):
     worker_log_file: str
     worker_disable_rate_limits: bool
     worker_pool: str
-    # 已废弃：服务端已删除该配置项，不再随 /callback/config 下发。
-    # 保留为可选仅为兼容尚未升级的服务端；FC 代码内无任何使用，可择机删除。
-    large_file_poll_time: int | None = Field(default=None, description="已废弃，服务端不再下发")
 
 
 class EmailSettings(BaseModel):
@@ -74,9 +71,6 @@ class EmailSettings(BaseModel):
     smtp_username: str
     smtp_from_email: str
     smtp_server: str
-    # 服务端该字段为可选：config.yaml 未配置时下发 null。这里必须同样可空，
-    # 否则全新部署（照 config_example.yaml，不含该项）会让 FC 校验失败。
-    totp_window: int | None = Field(default=None, description="已废弃，仅兼容旧配置")
     reset_password_max_attempts: int = Field(default=5, ge=1, description="单轮密码重置中，验证码允许的最大校验失败次数")
     email_send_cooldown_seconds: int = Field(default=60, ge=1, description="同一邮箱两次发送验证码的最小间隔（秒）")
 
@@ -84,9 +78,6 @@ class EmailSettings(BaseModel):
 
 class StorageSettings(BaseModel):
     """文件存储配置模型"""
-    # 已废弃：服务端已删除该配置项，不再随 /callback/config 下发。
-    # 保留为可选仅为兼容尚未升级的服务端；FC 代码内无任何使用，可择机删除。
-    max_chunks_per_upload: int | None = Field(default=None, description="已废弃，服务端不再下发")
     allowed_storage_types: list[str]
     allowed_file_types: list[str]
     allowed_experiment_types: list[str]
@@ -118,7 +109,6 @@ class OSSSettings(BaseModel):
     oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=480)
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
-    oss_packup_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
@@ -127,8 +117,6 @@ class OSSSettings(BaseModel):
     fc_logstore_name: str | None = Field(default=None, description="函数计算SLS日志存储名称")
     fc_log_project_name: str | None = Field(default=None, description="函数计算SLS日志项目名称")
     fc_unzip_timeout_seconds: int | None = Field(default=20, description="函数调用超时时间，单位秒")
-    fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包公网地址")
-    fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
     fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
     fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")

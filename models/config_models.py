@@ -68,9 +68,6 @@ class EmailSettings(BaseModel):
     smtp_username: str
     smtp_from_email: str
     smtp_server: str
-    # 已废弃：邮箱验证码改为按用途 + 邮箱存 Redis（见 api_services/user_service.py），该项不再生效；
-    # 仅为兼容仍包含此项的旧配置文件而保留（extra="forbid" 下直接删除字段会让旧配置校验失败）
-    totp_window: int | None = None
     reset_password_max_attempts: int = Field(
         default=5,
         ge=1,
@@ -121,14 +118,11 @@ class OSSSettings(BaseModel):
     # 下载（zarr 只读）：240 分钟 = 4 小时
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
-    oss_packup_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间，单位秒")
     oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间，单位秒")
-    fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包HTTP触发地址")
-    fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
     fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
     fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")

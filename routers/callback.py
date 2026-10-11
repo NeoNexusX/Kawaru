@@ -1,11 +1,10 @@
 from fastapi import APIRouter, Depends
-from fastapi import status
 
 from api.callback_api import (GetExpectHashDep, GetConfigDep,
                               OssUploadCallbackDep, AlgorithmCallbackDep,
                               TicCallbackDep, UmapCallbackDep,
                               ClusteringCallbackDep,
-                              OssPackupCallbackDep, verify_fc_callback_token)
+                              verify_fc_callback_token)
 
 callback_router = APIRouter(
     prefix="/callback",
@@ -61,9 +60,3 @@ async def umap_callback(file_record: UmapCallbackDep):
 async def clustering_callback(run_record: ClusteringCallbackDep):
     """FC 聚类分析完成回调"""
     return run_record
-
-
-@callback_router.post("/oss_packup_callback", status_code=status.HTTP_204_NO_CONTENT)
-async def oss_packup_callback(packup_status: OssPackupCallbackDep): # pylint: disable=unused-argument
-    """OSS打包完成回调"""
-    return

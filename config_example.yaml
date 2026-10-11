@@ -89,14 +89,11 @@ oss:
   # 下载（zarr 只读）STS Token 有效期（分钟），上限同上
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
-  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou-vpc.fcapp.run
-  fc_packup_timeout_seconds: 200
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
   fc_algorithm_timeout_seconds: 60
   fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou-vpc.fcapp.run
