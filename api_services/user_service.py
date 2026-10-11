@@ -11,7 +11,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_helpers.user_helper import validate_url
-from api_helpers.auth_helper import verify_password, hashed_password
+from api_helpers.auth_helper import verify_password_async, hashed_password_async
 from models.email_models import EmailPurpose
 from models.user_models import UserInDB
 from constants.user_constants import ALLOWED_POSITION_TYPES, ALLOWED_REGIONS, EMAIL_CODE_TTL_SECONDS
@@ -154,7 +154,7 @@ async def authenticate_user(username: str, password: str, async_session: AsyncSe
         return None
 
     # 3. 检查密码
-    if not verify_password(password, user.hashed_password):
+    if not await verify_password_async(password, user.hashed_password):
         return None
 
     return user
@@ -296,7 +296,7 @@ async def validate_update_user_data(user_data: dict, user_past: UserInDB, async_
 
     # 处理密码更新
     if "password" in user_data and user_data["password"] is not None:
-        user_past.hashed_password = hashed_password(user_data["password"])
+        user_past.hashed_password = await hashed_password_async(user_data["password"])
         user_data.pop("password")
 
     return user_data

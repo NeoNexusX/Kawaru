@@ -1,5 +1,5 @@
 import os
-from redis.asyncio.connection import ConnectionPool
+from redis.asyncio.connection import BlockingConnectionPool
 from redis.asyncio import Redis
 from boot.config import get_config
 from tools.logger import get_logger
@@ -16,9 +16,12 @@ REDIS_USERNAME = redis_config.username or None
 REDIS_DEFAULT_DB = redis_config.default_db_index
 
 # 连接池（db 必须配在池上：传入 connection_pool 后，Redis() 上的其余连接参数会被 redis-py 忽略）
+# 用 BlockingConnectionPool：打满时协程排队等待空闲连接（默认 timeout=20s）而不是抛
+# "Too many connections"——高并发登录/注册风暴下事件循环被阻塞时池曾被挤爆，
+# 单请求因此拿到 500（2026-10 CI 事故）。
 # 超时必配：默认 None 表示永不超时，Redis 半死不活（TCP 黑洞）时调用方会永久挂起，
 # 而 redis_client 同时服务请求链路（缓存、访问计数），没有超时就没有兜底。
-pool_default = ConnectionPool(
+pool_default = BlockingConnectionPool(
     host=REDIS_HOST,
     port=REDIS_PORT,
     username=REDIS_USERNAME,
