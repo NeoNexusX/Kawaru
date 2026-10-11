@@ -4,10 +4,7 @@ import math
 from boot.config import get_config
 
 # 字节单位常量
-BYTES_IN_KB = 1024
-BYTES_IN_MB = 1024**2
 BYTES_IN_GB = 1024**3
-BYTES_IN_TB = 1024**4
 
 # 加载基础存储配置
 config = get_config()
@@ -19,9 +16,6 @@ OSS_ZIP_STORAGE_ROOT = config.oss.oss_zip_storage_root
 OSS_PACKUP_ZIP_STORAGE_ROOT = config.oss.oss_packup_zip_storage_root
 OSS_ORIGIN_STORAGE_ROOT = config.oss.oss_origin_storage_root
 
-
-# 单次上传最大允许分片数限制
-MAX_PARTS_PER_UPLOAD = int(storage_config.max_chunks_per_upload)
 
 # 存储类型和文件类型配置
 ALLOWED_STORAGE_TYPES = set(storage_config.allowed_storage_types)
@@ -115,10 +109,7 @@ RELAY_IDLE_TIMEOUT = float(getattr(config.oss, "relay_idle_timeout_seconds", 30)
 
 
 __all__ = [
-    "BYTES_IN_KB",
-    "BYTES_IN_MB",
     "BYTES_IN_GB",
-    "BYTES_IN_TB",
     "ALLOWED_STORAGE_TYPES",
     "ALLOWED_FILE_TYPES",
     "ALLOWED_EXPERIMENT_TYPES",

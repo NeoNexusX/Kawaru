@@ -7,12 +7,14 @@ OSS 直传共用工具
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path, PurePosixPath
 
 import alibabacloud_oss_v2 as oss
 from alibabacloud_oss_v2 import PutObjectRequest
 
 from boot.config import get_config
+from constants.file_constants import OSS_BUCKET_NAME
 
 
 async def upload_file_to_oss(
@@ -57,3 +59,38 @@ def parse_file_id_from_oss_path(oss_path: str) -> int:
     与真实 FC 一样从对象键解析（file_id 在文件名中）。
     """
     return int(PurePosixPath(oss_path).stem)
+
+
+async def put_oss_object(*, oss_path: str, data: bytes) -> None:
+    """以服务端同源的环境变量凭证（长期 AK/SK）向任意对象键直传真实对象。
+
+    上传接口发放的 STS 只能写预检路径；删除流程测试需要往 origin/、processed/
+    等任意前缀放真实对象供 worker 真实清理，走 create_oss_client 同源的环境
+    变量凭证（CI 由 compose 注入、本地从 .env 读取，见 conftest）。
+    OSS SDK 是同步阻塞的，放入线程池执行以不阻塞事件循环。
+    """
+    access_key_id = os.environ.get("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.environ.get("OSS_ACCESS_KEY_SECRET")
+    assert access_key_id and access_key_secret, (
+        "OSS_ACCESS_KEY_ID/OSS_ACCESS_KEY_SECRET not set; "
+        "put_oss_object needs server-identical credentials"
+    )
+
+    def _put() -> None:
+        credentials_provider = oss.credentials.StaticCredentialsProvider(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret,
+        )
+        cfg = oss.config.load_default()
+        cfg.credentials_provider = credentials_provider
+        cfg.region = get_config().oss.region_id or ""  # 与服务端同源：均取自 config
+        client = oss.Client(cfg)
+        result = client.put_object(
+            PutObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path, body=data)
+        )
+        assert result.status_code == 200, (
+            f"oss put failed: key={oss_path} status={result.status_code}"
+        )
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _put)

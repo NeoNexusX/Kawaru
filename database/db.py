@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends
+from sqlalchemy import URL
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -29,6 +30,19 @@ def _check_database_env():
     return db_password
 
 
+def _build_database_url(config, db_password: str) -> URL:
+    """用 URL.create 构造连接 URL：密码含 @ : / # 等特殊字符时由 SQLAlchemy 转义，与迁移侧（migration_config）口径一致"""
+    return URL.create(
+        drivername=f"{config.database.db_type}+asyncmy",
+        username=config.database.db_username,
+        password=db_password,
+        host=config.database.host,
+        port=config.database.port,
+        database=config.database.db_name,
+        query={"charset": "utf8mb4"},
+    )
+
+
 def get_async_engine(standalone: bool = False): #TODO celery可以和主进程分开
     """
     加载异步引擎
@@ -42,9 +56,7 @@ def get_async_engine(standalone: bool = False): #TODO celery可以和主进程�
         db_password = _check_database_env()
 
         _async_engine = create_async_engine(
-            f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
-            f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
-            f"?charset=utf8mb4",
+            _build_database_url(config, db_password),
             pool_pre_ping=True,
             pool_size=config.database.pool_size,# 连接池大小
             max_overflow=config.database.max_overflow, # 最大溢出连接数
@@ -61,9 +73,7 @@ def get_async_engine(standalone: bool = False): #TODO celery可以和主进程�
         db_password = _check_database_env()
 
         _ASYNC_ENGINE = create_async_engine(
-            f"{config.database.db_type}+asyncmy://{config.database.db_username}:{db_password}"
-            f"@{config.database.host}:{config.database.port}/{config.database.db_name}"
-            f"?charset=utf8mb4",
+            _build_database_url(config, db_password),
             pool_pre_ping=True,
             pool_size=config.database.pool_size,# 连接池大小
             max_overflow=config.database.max_overflow, # 最大溢出连接数

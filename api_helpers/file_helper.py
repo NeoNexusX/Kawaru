@@ -1,31 +1,20 @@
 #########################
 # File Helper - 底层工具函数
 # 职责：纯工具函数/存储IO,无业务逻辑,无数据库会话依赖
-# 包含：文件校验、OSS 回调签名校验
+# 包含：文件校验
 # 注意：OSS 删除统一走 OssStorage.delete_file（单 key / 多 key / 目录前缀均可），
 #      本层不再提供删除包装函数
 #########################
 from __future__ import annotations
 
-import base64
-import hashlib
-from urllib.parse import unquote
-
-from M2Crypto import RSA, BIO
-from httpx import AsyncClient
-
 from models.user_models import UserInDB
 from constants.file_constants import (
     MAX_FILENAME_LENGTH,
     ALLOWED_FILE_TYPES,
-    MAX_PARTS_PER_UPLOAD,
 )
 
 from tools.logger import get_logger
 logger = get_logger("api_helpers.file_helper")
-
-# OSS回调公钥常量
-OSS_CALLBACK_PUBLIC_KEY = None
 
 
 ########
@@ -109,16 +98,6 @@ def validate_file_type(file_type: str) -> bool:
     return True
 
 
-def validate_total_parts(total_parts: int) -> bool:
-    """
-    验证分片数量是否合法
-
-    Returns:
-        True 表示分片数量合法,False 表示不合法
-    """
-    return 0 < total_parts <= MAX_PARTS_PER_UPLOAD
-
-
 def validate_file_metadata(filename: str, file_type: str) -> bool:
     """
     验证文件元数据(文件名和类型)
@@ -131,63 +110,3 @@ def validate_file_metadata(filename: str, file_type: str) -> bool:
         True 表示验证通过,False 表示验证失败
     """
     return validate_filename(filename) and validate_file_type(file_type)
-
-
-async def check_oss_callback_signature(
-        authorization: str,
-        oss_pub_key_url: str,
-        raw_body: str,
-        callback_path: str,
-        query: str = "",
-    ) -> bool:
-    """
-    检查OSS回调签名是否有效
-
-    Args:
-        authorization: OSS回调签名
-        oss_pub_key_url: OSS公钥URL
-        raw_body: OSS回调原始体
-        callback_path: OSS回调路径
-        query: OSS回调查询参数
-
-    Returns:
-        True 表示签名有效,False 表示无效
-    """
-
-    global OSS_CALLBACK_PUBLIC_KEY # pylint: disable=W0603
-    if not OSS_CALLBACK_PUBLIC_KEY:
-        pub_key_url = base64.b64decode(oss_pub_key_url).decode()
-        if (not pub_key_url.startswith("http://gosspublic.alicdn.com/")
-            and not pub_key_url.startswith("https://gosspublic.alicdn.com/")):
-            logger.error("oss_pub_key_url not valid")
-            return False
-        async with AsyncClient() as client:
-            res = await client.get(pub_key_url, timeout=5)
-            res.raise_for_status()
-            OSS_CALLBACK_PUBLIC_KEY = res.read()
-
-    authorization_bytes = base64.b64decode(authorization)
-    sign_str = unquote(callback_path) + (f"?{query}" if query else "") + '\n' + raw_body
-    sign_str_md5 = hashlib.md5(sign_str.encode()).digest()
-
-    bio = BIO.MemoryBuffer(OSS_CALLBACK_PUBLIC_KEY)
-    rsa_pub = RSA.load_pub_key_bio(bio)
-    try:
-        result = rsa_pub.verify(sign_str_md5, authorization_bytes, 'md5')
-    except Exception as e: # pylint: disable=W0718
-        logger.error(
-            "oss_callback_signature verify failed,\nerror: %s," \
-            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
-            e, sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
-        )
-        return False
-
-    if not result:
-        logger.error(
-            "oss_callback_signature verify failed,\n" \
-            "sign_str: %s, pub_key: %s, authorization: %s, raw_body: %s",
-            sign_str, OSS_CALLBACK_PUBLIC_KEY, authorization, raw_body
-        )
-        return False
-
-    return True

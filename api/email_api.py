@@ -1,4 +1,3 @@
-import os
 from typing import Annotated, Any
 
 from fastapi import HTTPException, Depends
@@ -26,11 +25,6 @@ email_config = config.email
 email_send_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
     detail=format_exception_detail("Send Failed error by server reason")
-)
-
-email_server_exception = HTTPException(
-    status_code=status.HTTP_502_BAD_GATEWAY,
-    detail=format_exception_detail("Upstream service error")
 )
 
 # Using SMTP to send an email verify code message
@@ -68,7 +62,6 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
     request_data = EmailSMTPRequest.model_validate({
         **email_info.model_dump(),
         "smtp_username": email_config.smtp_username,
-        "smtp_passwd": os.getenv('SMTP_PASSWORD'),
         "smtp_from_email": email_config.smtp_from_email,
         "smtp_server": email_config.smtp_server,
         "smtp_port": int(email_config.smtp_port),
@@ -80,6 +73,7 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
     response: dict[str, Any] | None = await wait_for_result(task_result, poll_interval=1, timeout=10)
     if not response or not response.get("success"):
         raise email_send_exception
-    return EmailConfirmResponseBase.model_validate(response["data"])
+    # 任务只返回发送状态；响应直接用请求参数（含 email/send_time/purpose），不再经任务回传
+    return email_info
 
 EmailConfirmSMTPDep = Annotated[EmailConfirmResponseBase, Depends(send_smtp_email)]

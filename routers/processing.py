@@ -1,8 +1,6 @@
 """
 算法处理运行管理路由
 """
-import asyncio
-
 from fastapi import APIRouter
 
 from api.processing_api import (
@@ -24,21 +22,21 @@ processing_router = APIRouter(prefix="/processes", tags=["process manager"])
 @processing_router.post("", response_model=ExperimentProcessRunPublic)
 async def create_process(record: CreateAlgorithmTaskDep):
     """创建算法处理任务"""
-    asyncio.create_task(incr_visit())
+    await incr_visit()
     return record
 
 
 @processing_router.post("/raw-convert", response_model=ExperimentProcessRunPublic)
 async def create_raw_convert(record: CreateRawConvertTaskDep):
     """创建 imzML 直转 Zarr 任务（无算法处理）"""
-    asyncio.create_task(incr_visit())
+    await incr_visit()
     return record
 
 
 @processing_router.post("/{run_id}/clustering", response_model=ExperimentProcessRunPublic)
 async def create_clustering(record: CreateClusteringTaskDep):
     """创建聚类分析任务（对已完成算法处理的 run 执行 UMAP/KMeans）"""
-    asyncio.create_task(incr_visit())
+    await incr_visit()
     return record
 
 

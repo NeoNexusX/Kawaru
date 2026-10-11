@@ -17,28 +17,6 @@ Kawaru is a FastAPI-based backend server project that provides backend support f
 - Reachable MariaDB and Redis instances (local install or Docker)
 - An Aliyun OSS bucket, a RAM role that can issue scoped STS credentials, and the configured Function Compute (FC) functions
 
-## macOS Additional Dependencies
-
-The project depends on `m2crypto`, which requires compiling C extensions from source on macOS. Additional tools are needed:
-
-```bash
-# Install SWIG and OpenSSL
-brew install swig openssl@3
-```
-
-After installation, set the following environment variables when compiling `m2crypto` (required for Apple Silicon):
-
-```bash
-export LDFLAGS="-L$(brew --prefix openssl@3)/lib"
-export CFLAGS="-I$(brew --prefix openssl@3)/include -D__aarch64__"
-export SWIG_FEATURES="-I$(brew --prefix openssl@3)/include -cpperraswarn"
-```
-
-> **Notes:**
-> - `-cpperraswarn` — Allows SWIG to downgrade `#error "Unsupported architecture"` in system headers to a warning.
-> - These variables only need to be set temporarily when running `uv sync`; no need to add them to shell config files.
-> - Intel Mac users do not need `-D__aarch64__`.
-
 ## Quick Start
 
 ### 1. Clone the Project
