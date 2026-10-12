@@ -146,13 +146,26 @@ async def refund_processed_quota_for_file(
     user_id / output_size 随行消失，processed_file_size 将永久虚占。
     必须在 session.delete(file_record) 之前调用。
 
+    加锁读不可省：run 行还有另一条删除路径 finalize_run_deletion（只锁 run 行），
+    普通 SELECT 会读到「对方已退配额但尚未提交」的行 → 同一 run 的配额退两次。
+    锁走主键（两段式）：按 source_file_id 加锁是二级索引范围扫描，锁序与按主键
+    DELETE 相反，实测死锁（MariaDB 1213）。
+
     Returns:
         实际退还配额的 run 数量
     """
-    runs = (await async_session.exec(
-        select(ExperimentProcessRunInDB.user_id, ExperimentProcessRunInDB.output_size).where(
+    run_ids = (await async_session.exec(
+        select(ExperimentProcessRunInDB.id).where(
             ExperimentProcessRunInDB.source_file_id == file_id
         )
+    )).all()
+    if not run_ids:
+        return 0
+
+    runs = (await async_session.exec(
+        select(ExperimentProcessRunInDB.user_id, ExperimentProcessRunInDB.output_size)
+        .where(ExperimentProcessRunInDB.id.in_(run_ids))  # type: ignore # pylint: disable=no-member
+        .with_for_update()
     )).all()
 
     refunded = 0

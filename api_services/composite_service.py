@@ -242,6 +242,10 @@ async def finalize_file_deletion(
 
     容忍行已不在（重复投递 / 兜底与 worker 并发时直接算成功，配额不会重复退：
     退配额与删行在同一事务，行不在则整个收尾跳过）。
+
+    注意本函数的 file 行锁只管住「本文件的收尾」彼此串行：配额的载体是 run 行，
+    它还有一条不锁 file 行的删除路径（finalize_run_deletion），防双退靠的是
+    refund_processed_quota_for_file 里对 run 行的加锁读。
     """
     file_record = (await session.exec(
         select(FileInDB)
@@ -347,6 +351,9 @@ async def finalize_run_deletion(
 
     容忍行已不在（重复投递 / 兜底与 worker 并发时直接算成功：退配额与删行
     同事务，行不在则整个收尾跳过，配额不会重复退）。
+
+    与文件级 finalize 并发时（两条链路同时收尾同一个 run），靠 run 行锁判定
+    「谁退这个 run 的配额」——见 refund_processed_quota_for_file。
     """
     run_record = (await session.exec(
         select(ExperimentProcessRunInDB)
