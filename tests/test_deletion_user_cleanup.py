@@ -17,7 +17,9 @@ test_admin_delete_user_shared_file  [deletion]  同上但文件与 admin 共有 
      只能来自 del_user 在删行前的预收集（api/user_api.del_user）合入文件删除快照。
      这条断言失败即预收集链路断裂。
   ★4 共有文件分支：文件仍有其他持有者 → 不进入删除流程（files_unlinked），
-     文件行/对象全部保留，run 输出依赖 bucket 生命周期回收（方案 §4/§7 已接受的取舍）
+     文件行/对象全部保留；该用户 run 的输出无处合入快照（run 行随 user 级联删除，
+     文件快照又因不投递而不生效），测试**显式断言这批对象残留**，把「依赖 bucket
+     生命周期回收」这条取舍（方案 §7.2）钉成已知泄漏，而不是当作预期结果忽略
 
 与真实链路的取舍同场景 ②：文件走真实上传链（helpers/uploads.upload_completed_file），
 run 直插（真实算法无法对随机数据产出 run）；被删用户经 /user_signup 真实注册
@@ -203,9 +205,8 @@ async def test_admin_delete_user_shared_file(
     rs = await admin_client.get(f"/files/{up['public_id']}/metadata", headers=admin_auth)
     assert rs.status_code == 200, f"admin must still access shared file: {rs.text}"
 
-    # 对象全部保留：主 zip / origin（文件存活），run 输出（快照未投递，
-    # 方案 §4/§7 明确接受由 bucket 生命周期回收的取舍）
-    for key in (up["oss_path"], up["imzml_path"], up["ibd_path"], *run_info["keys"]):
+    # 文件存活 → 主 zip / origin 对象必须保留（run 输出的最终处置见收尾断言）
+    for key in (up["oss_path"], up["imzml_path"], up["ibd_path"]):
         assert await OssStorage.check_file_exist(key), f"object must survive: {key}"
 
     # 收尾：admin 作为持有者走正常删除（成功路径自清；中断残留由下次运行开头 sweep 兜底）
@@ -217,4 +218,15 @@ async def test_admin_delete_user_shared_file(
     )
     for key in (up["oss_path"], up["imzml_path"], up["ibd_path"]):
         assert not await OssStorage.check_file_exist(key), f"cleanup object still exists: {key}"
+
+    # ★4b 已知泄漏（显式断言，而非把泄漏写成"预期结果"混过去）：该 run 行随 user 行
+    # 级联删除，其 out_path 因文件仍有其他持有者而没进任何删除快照，OSS 对象只能等
+    # bucket 生命周期回收（方案 §7.2 接受的取舍）。这条断言把残留钉死——将来若改成
+    # 投递 run 路径删除（修掉泄漏），它会立刻变红提醒同步更新。
+    for key in run_info["keys"]:
+        assert await OssStorage.check_file_exist(key), (
+            f"run output unexpectedly deleted (this test asserts the known leak): {key}"
+        )
+    logger.info("★4b known leak asserted: %d run output object(s) left to bucket lifecycle",
+                len(run_info["keys"]))
     logger.info("test_admin_delete_user_shared_file passed: file_id=%s cleaned up", up["file_id"])

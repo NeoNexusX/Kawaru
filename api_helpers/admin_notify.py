@@ -51,7 +51,9 @@ def notify_delete_failed(
 
     file 类必须同时带上 public_id：对外删除接口走 DELETE /files/{public_id}，
     file_id 只是内部自增标识（可枚举，不对外），只给 file_id 管理员无法照着
-    邮件重投。run 类反过来——DELETE /processes/{run_id} 用的就是 run_id。
+    邮件重投。run 类反过来——DELETE /processes/{run_id} 用的就是 run_id；但该接口
+    无 admin 旁路（assert_run_ownership 只认 owner），管理员实际无法重投 run 类失败，
+    邮件正文已按此写明（不要给出管理员照做会被拒的指令）。
 
     调用约束（删除架构现状说明 §8 的通知设计结论）：必须挂在
     「DELETING → DELETE_FAILED」状态跃迁上（见 _mark_delete_failed）——
@@ -67,15 +69,32 @@ def notify_delete_failed(
         subject_target = f"file#{resource_id}"
         if public_id:
             subject_target += f" public_id={public_id}"
+        # file 类有 admin 旁路（assert_file_owner 放行 admin），管理员照 api_hint 重投即可
+        handling = (
+            "How to handle: re-invoke the delete API to re-dispatch (idempotent):\r\n"
+            f"  {api_hint}\r\n"
+        )
     elif kind == "run":
         identifiers = f"  run_id (删除接口用这个): {resource_id}\r\n"
         api_hint = f"DELETE /processes/{resource_id}"
         subject_target = f"run#{resource_id}"
+        # run 类删除无 admin 旁路（assert_run_ownership 只认 owner）：管理员执行
+        # api_hint 会被拒，只能请 owner 重投，别给出管理员照做无效的指令
+        handling = (
+            f"How to handle: {api_hint} is owner-only — run deletion has no admin "
+            "bypass, so an admin cannot re-dispatch it. Ask the run's owner to "
+            "re-invoke it, or wait for the fallback task (retry_failed_deletions, "
+            "not implemented yet) to converge it.\r\n"
+        )
     else:
         # 兜底：_mark_delete_failed 目前只会传 file / run，未知 kind 不应走到这里
         identifiers = f"  ID: {resource_id}\r\n"
         api_hint = "the corresponding delete API"
         subject_target = f"{kind}#{resource_id}"
+        handling = (
+            "How to handle: re-invoke the delete API to re-dispatch (idempotent):\r\n"
+            f"  {api_hint}\r\n"
+        )
 
     subject = f"[{app_name}] Deletion failed alert - {subject_target} marked DELETE_FAILED"
     text_content = (
@@ -84,8 +103,7 @@ def notify_delete_failed(
         f"(row kept for retry):\r\n"
         f"  Kind: {kind}\r\n"
         f"{identifiers}\r\n"
-        "How to handle: re-invoke the delete API to re-dispatch (idempotent):\r\n"
-        f"  {api_hint}\r\n"
+        f"{handling}"
         "For persistent failures, check OSS availability and worker logs "
         "(delete_objects_task).\r\n"
     )

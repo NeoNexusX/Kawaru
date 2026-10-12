@@ -302,6 +302,10 @@ async def mark_run_for_deletion(
         RunDeleteSnapshot: 已置 DELETING（含 DELETING/DELETE_FAILED 的幂等重入，
         直接重收集快照供重新投递——重复删除即手动重试入口），调用方必须
         **先 commit 再投递** delete_objects_task（顺序理由同场景 1）。
+
+    重投入口的限制：DELETE /processes/{run_id} 无 admin 旁路（assert_run_ownership
+    只认 owner），所以 run 类失败的重投仅限该 run 的 owner 本人——管理员删不动，
+    只能等 owner 操作，或等兜底任务上线（见删除架构现状说明 §6）。
     """
     assert run_record.id is not None
 

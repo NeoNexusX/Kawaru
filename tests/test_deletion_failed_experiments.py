@@ -16,8 +16,11 @@ test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file +
 
 数据构造取舍（与场景 ②③ 一致）：被测对象是 beat 任务本身，文件不需要 COMPLETED
 （任务扫的是 origin.status=FAILED），故 file/origin/link/run 全部直插、对象直传，
-不依赖上传链路。ttl_minutes=0 会扫到环境中全部过期 FAILED origin——开发库无
-需保全数据（已确认）、CI 每次全新建库；断言只锚定本测试造的行，不碰全局计数。
+不依赖上传链路。ttl_minutes=0 的扫描条件是「全部过期 FAILED origin」，所以触发前有
+护栏：库里若还有**非测试文件**（文件名不以 test_ 开头）的过期 FAILED origin 就 skip
+——那些真实数据会被本任务连带删掉（连带其 OSS 对象），只能在全新/可弃库上跑。
+CI 每次全新建库，测试自身残留都是 test_* 文件名，不会触发 skip。
+断言只锚定本测试造的行，不碰全局计数。
 
 注意：origin.created_at 显式回拨 1 分钟——部分 DB DATETIME 秒级精度会把
 「刚刚」四舍五入到未来，导致 created_at < now 的扫描条件漏掉本行。
@@ -186,6 +189,27 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     for key in (main_key, imzml_path, ibd_path, *run_keys):
         await put_oss_object(oss_path=key, data=os.urandom(2048))
     logger.info("fixture ready: file_id=%s origin_id=%s run_id=%s", file_id, origin_id, run_id)
+
+    # 3.5 护栏：ttl=0 会把库中其它过期 FAILED origin 一并删掉（连带其 OSS 对象）。
+    #     测试自造的行都是 test_* 文件名（被删无妨），一旦扫到非测试文件的失败实验，
+    #     说明这是共享/生产库，直接 skip——不让测试静默删真实数据。
+    async with get_standalone_async_session() as session:
+        foreign = (await session.exec(
+            select(OriginImzMLInDB.id, FileInDB.filename)
+            .join(FileInDB, FileInDB.file_id == OriginImzMLInDB.source_file_id)  # type: ignore[arg-type]
+            .where(
+                OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                OriginImzMLInDB.created_at < utc_time(),
+                OriginImzMLInDB.id != origin_id,
+            )
+        )).all()
+    real_data = [(oid, name) for oid, name in foreign if not name.startswith("test_")]
+    if real_data:
+        pytest.skip(
+            f"DB holds {len(real_data)} stale FAILED origin(s) of non-test files "
+            f"{real_data[:3]}; cleanup_failed_experiments(ttl_minutes=0) would delete "
+            "them and their OSS objects — run this test against a fresh/disposable DB"
+        )
 
     # 4. 触发 beat 任务（ttl=0 扫全部过期 FAILED origin，与 beat 触发同一 worker 执行路径；
     #    cleaned 可能包含环境中其他过期 FAILED origin，断言只锚定本测试的行）

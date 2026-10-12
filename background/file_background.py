@@ -230,7 +230,7 @@ async def cleanup_failed_experiments(
     清理过期的失败 origin 记录（场景 1 的批量版：删除状态位三件套）
 
     清理流程（每个失败 origin 的源文件独立事务，互不拖累）:
-    1. 查询过期的失败 origin 记录（行锁 skip_locked，多 worker 不重复处理）
+    1. 查询过期的失败 origin 记录（行锁 skip_locked，只护住本次查询事务）
     2. mark_file_for_deletion(unlink_all_owners=True)：行锁内解除全部持有者的关联并
        释放 storage 配额（用户可见语义在登记事务内生效），置 DELETING 并收集路径快照
        （源文件、预览图目录、origin、全部 run 输出）
@@ -239,6 +239,10 @@ async def cleanup_failed_experiments(
        退还；任一对象删除失败则行置 DELETE_FAILED 保留，重复触发本任务即幂等重投
 
     注意:
+    - 行锁只在本次查询事务内有效：本任务刻意逐文件 commit（互不拖累），首个文件提交后
+      同一批 origin 仍满足扫描条件，多 worker 并发会重复捞取同一批（重复处理由
+      mark_file_for_deletion 的行锁 + DELETING 守卫幂等吸收：不重复 unlink / 扣配额，
+      代价仅是多余的 OSS 调用与日志）
     - include_deleting=True：文件已处于删除流程（如用户已自行删除）时走幂等分支直接重投
     - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
     """
