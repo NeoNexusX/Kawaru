@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-from sqlmodel import select, func
+from sqlmodel import select, func, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.file_service import (
@@ -34,8 +34,10 @@ from api_services.processing_service import (
     refund_processed_quota_for_file,
 )
 from api_services.user_service import get_user_by_id
+from api_helpers.deletion_helper import file_is_deleting, run_is_deleting
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from exceptions.file_exceptions import file_not_found_exception
+from models.collection_models import CollectionMember
 from models.experiment_models import OriginImzMLInDB, ExperimentStatus
 from models.processing_models import ExperimentProcessRunInDB, ProcessingStatus, RAW_CONVERT_MARKER
 from models.file_models import FileInDB, FileStatus
@@ -184,7 +186,7 @@ async def mark_file_for_deletion(
         logger.info("file row gone before marking deletion file_id=%s", file_record.file_id)
         raise file_not_found_exception
 
-    if locked.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    if file_is_deleting(locked.status):
         # 已在删除流程中：不重复 unlink / 扣配额，直接返回快照供重新投递
         # （DELETE_FAILED 也走此分支：管理员重复删除即为手动重试入口）
         logger.info("file already marked for deletion file_id=%s status=%s", locked.file_id, locked.status)
@@ -222,6 +224,13 @@ async def mark_file_for_deletion(
     locked.status = FileStatus.DELETING
     locked.delete_marked_at = utc_time()
     session.add(locked)
+
+    # 集合成员也是用户可见引用：与 unlink + 扣配额同在登记事务内摘掉，否则删除中的
+    # 文件会一直挂在集合里（详情/计数/公开页/调序都要额外加口径）。成员行原本由
+    # finalize 的 file 行级联删除，这里只是把生效时机提前到登记（与文件可见性一致）
+    await session.exec(
+        delete(CollectionMember).where(CollectionMember.file_id == locked.file_id)  # type: ignore # pylint: disable=no-member
+    )
 
     snapshot = await collect_file_delete_snapshot(session, locked)
     logger.info(
@@ -323,7 +332,7 @@ async def mark_run_for_deletion(
         logger.info("run row gone before marking deletion run_id=%s", run_record.id)
         raise file_not_found_exception
 
-    if locked.status in (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED):
+    if run_is_deleting(locked.status):
         # 已在删除流程中：幂等重入，直接返回快照供重新投递
         logger.info("run already marked for deletion run_id=%s status=%s", locked.id, locked.status)
         return await collect_run_delete_snapshot(locked)

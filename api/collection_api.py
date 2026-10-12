@@ -335,13 +335,13 @@ async def get_public_collection_api(
 
     安全:
     - 非公开集合即使 public_id 正确也返回 404（不暴露存在性）
-    - 成员仅返回 status == completed 的文件
+    - 成员仅返回 status == completed 的文件（与 owner 视角同一口径）
     - 响应不包含集合数字 id：禁止暴露自增 id，对外标识一律用 public_id
       （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿 public_id，
       非 owner 拿到 public_id 也无权调用管理端，故无暴露必要）
     """
     collection = await get_public_collection_by_public_id(async_session, public_id)
-    detail = await build_collection_detail(async_session, collection, only_completed=True)
+    detail = await build_collection_detail(async_session, collection)
     logger.info(f"get public collection public_id={public_id}")
     return detail
 

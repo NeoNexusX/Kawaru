@@ -17,6 +17,7 @@ from database.atomic_ops import atomic_increment, atomic_decrement, atomic_set
 from api_services.user_service import get_user_by_id
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api_helpers.experiment_helper import validate_experiment_type
+from api_helpers.deletion_helper import file_is_deleting
 from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
@@ -144,7 +145,7 @@ async def get_file_record_by_id(
         logger.warning("file record not found file_id=%s", file_id)
         raise file_not_found_exception
 
-    if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    if not include_deleting and file_is_deleting(file_record.status):
         logger.warning(
             "file is being deleted, treat as not found file_id=%s status=%s",
             file_id, file_record.status,
@@ -180,7 +181,7 @@ async def get_file_record_by_public_id(
         logger.warning("file record not found public_id=%s", public_id)
         raise file_not_found_exception
 
-    if not include_deleting and file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    if not include_deleting and file_is_deleting(file_record.status):
         logger.warning(
             "file is being deleted, treat as not found public_id=%s file_id=%s status=%s",
             public_id, file_record.file_id, file_record.status,

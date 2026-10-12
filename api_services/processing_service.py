@@ -19,10 +19,16 @@ from models.processing_models import (
 )
 from models.experiment_models import OriginImzMLInDB
 from models.filter_models import RunFilter
-from models.file_models import FileInDB, FileStatus
+from models.file_models import FileInDB
 from models.user_models import UserInDB
 from api_services.file_service import assert_file_owner
 from api_services.experiment_service import get_origin_imzml_by_file_id
+from api_helpers.deletion_helper import (
+    file_is_deleting,
+    run_is_deleting,
+    visible_files_clause,
+    visible_runs_clause,
+)
 from api_helpers.processing_helper import (
     assert_origin_ready,
     check_processing_quota,
@@ -246,7 +252,7 @@ async def get_process_run_by_id(
 
     if (not include_deleting
             and record is not None
-            and record.status in (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)):
+            and run_is_deleting(record.status)):
         logger.warning(
             "run is being deleted, treat as not found run_id=%s status=%s",
             run_id, record.status,
@@ -283,14 +289,16 @@ async def get_user_runs(
 
     删除流程中的 run（DELETING / DELETE_FAILED）不展示：删除登记后立即从
     列表消失，接口语义与文件删除一致（前端零改动）。
+    源文件处于删除流程时同样不展示——文件删除只置 file 行状态，run 行要等
+    finalize 才级联消失，不按文件状态过滤会让「已 404 的文件」的 run 长期可见
+    （OSS 删除失败落 DELETE_FAILED 时是永久可见），且 run 详情还能给出 zarr 路径。
     """
     base_query = (
         select(ExperimentProcessRunInDB, FileInDB.filename)
         .join(FileInDB, ExperimentProcessRunInDB.source_file_id == FileInDB.file_id)  # type:ignore
         .where(ExperimentProcessRunInDB.user_id == user_id)
-        .where(ExperimentProcessRunInDB.status.notin_(( # pylint: disable=no-member # type: ignore
-            ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED,
-        )))
+        .where(visible_runs_clause())
+        .where(visible_files_clause())
     )
     # 模糊过滤（file_api 惯例：传了才匹配，没传恒真不过滤；同字段多值 OR）；
     # 直转 run 的 params_json 为 __RAW_CONVERT__ 标记，天然参与 LIKE 匹配
@@ -367,7 +375,7 @@ async def validate_clustering_request(
     file_status = (await async_session.exec(
         select(FileInDB.status).where(FileInDB.file_id == run_record.source_file_id)
     )).first()
-    if file_status is None or file_status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    if file_status is None or file_is_deleting(file_status):
         logger.warning("file is being deleted, reject clustering run_id=%s file_id=%s",
                        run_id, run_record.source_file_id)
         raise invalid_process_request_exception
@@ -421,7 +429,7 @@ async def get_origin_for_processing(
 
     # 删除流程中的文件不接受新处理请求：run 的 out_path 不会进入删除快照，
     # 登记后创建的 run 输出会成为孤儿对象
-    if file_record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+    if file_is_deleting(file_record.status):
         logger.warning("file is being deleted, reject processing file_id=%s user=%s",
                        file_id, current_user.id)
         raise invalid_process_request_exception
@@ -519,13 +527,15 @@ async def assert_zarr_folder_access(
     # 2. 权限校验：管理员 / 记录所有者 / 公开文件的 raw_convert run
     is_authorized = current_user.identity == "admin" or run_record.user_id == current_user.id
     if not is_authorized and run_record.params_json == RAW_CONVERT_MARKER:
-        # 公开文件的 raw_convert run 允许任何登录用户查看
+        # 公开文件的 raw_convert run 允许任何登录用户查看；
+        # 源文件处于删除流程时一律拒绝：文件删除只置 file 行状态，run 行要等 finalize
+        # 才级联消失，不拦会让「已 404 的文件」的输出在删除窗口内仍可被任意登录用户取走
         file_record = (
             await async_session.exec(
                 select(FileInDB).where(FileInDB.file_id == run_record.source_file_id)
             )
         ).first()
-        if file_record and file_record.is_public:
+        if file_record and file_record.is_public and not file_is_deleting(file_record.status):
             is_authorized = True
 
     if not is_authorized:

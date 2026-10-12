@@ -4,6 +4,7 @@ from sqlmodel import select, or_
 
 
 from api_helpers.admin_notify import notify_delete_failed
+from api_helpers.deletion_helper import file_is_deleting, run_is_deleting
 from api_services.composite_service import (
     finalize_file_deletion,
     finalize_run_deletion,
@@ -417,24 +418,25 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
                 .where(FileInDB.file_id == resource_id)
                 .with_for_update()
             )).first()
-            deleting_states = (FileStatus.DELETING, FileStatus.DELETE_FAILED)
             if record is not None:
                 alert_public_id = record.public_id
+            deleting_status = FileStatus.DELETING
         elif kind == "run":
             record = (await session.exec(
                 select(ExperimentProcessRunInDB)
                 .where(ExperimentProcessRunInDB.id == resource_id)
                 .with_for_update()
             )).first()
-            deleting_states = (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)
+            deleting_status = ProcessingStatus.DELETING
         else:
             logger.error("_mark_delete_failed: unknown kind=%s resource_id=%s", kind, resource_id)
             return
 
-        if record is not None and record.status in deleting_states:
+        is_deleting = (file_is_deleting if kind == "file" else run_is_deleting)
+        if record is not None and is_deleting(record.status):
             # 告警只挂「DELETING → DELETE_FAILED」跃迁一次：重投时行已是
             # DELETE_FAILED，不重发，跃迁即天然去重（删除架构现状说明 §8）
-            first_failure = record.status == deleting_states[0]
+            first_failure = record.status == deleting_status
             if kind == "file":
                 record.status = FileStatus.DELETE_FAILED
             else:
