@@ -13,7 +13,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api_helpers.auth_helper import create_access_token, hashed_password, hashed_password_async
 from api_helpers.user_helper import validate_url
-from api_services.file_service import get_user_file_ids
 from api_services.user_service import (
     add_new_user,
     authenticate_user,
@@ -54,12 +53,10 @@ from exceptions.common_exceptions import (
 )
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
 from models.auth import Token, RedisLoginData, oauth2_scheme, optional_oauth2_scheme, SECRET_KEY
 from models.email_models import EmailPurpose
-from models.processing_models import ExperimentProcessRunInDB
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
@@ -379,9 +376,9 @@ async def del_user(
 ) -> dict[str, int | str]:
     """删除指定用户（仅管理员可操作）
 
-    不返回 UserPublic：用户行删除并 commit 后 ORM 对象属性已过期，
-    在异步会话外序列化会触发懒加载导致 500，且对已删除行 refresh 也会失败。
-    与其他删除端点保持一致，返回被删资源标识与状态。
+    软删除：只置 active=False 并投递清理任务，user 行保留（等名下资源清完由
+    cleanup_deleted_users 物理删行）。这样 run 行不随 user 级联消失，快照可反查
+    out_path，投递失败也还有重扫的机会。
     """
 
     if current_admin.identity != "admin":
@@ -393,24 +390,19 @@ async def del_user(
     user = await get_user_by_id(user_id, async_session)
     if user is None:
         raise user_not_found_exception
+    if not user.active:
+        # 幂等重入：不重复投递（清理任务自身可重入）
+        logger.info("user already marked deleted user_id=%s", user_id)
+        return {"user_id": user_id, "status": "deleted"}
     user_id = user.id # type: ignore
 
-    file_ids = await get_user_file_ids(async_session, user.id) # type: ignore
-    # 场景 3 快照时机（docs/zh/删除状态位改造方案.md §4）：run.user_id 外键
-    # ondelete=CASCADE，user 行删除后 run 行随之消失、out_path 事后查不到，
-    # 必须在删行前收走并随任务参数传给 clean_user_all_task 合入各文件的删除快照
-    run_path_rows = (await async_session.exec(
-        select(ExperimentProcessRunInDB.source_file_id, ExperimentProcessRunInDB.out_path)
-        .where(ExperimentProcessRunInDB.user_id == user.id)
-    )).all()
-    pre_collected_run_paths = [[source_file_id, out_path]
-                               for source_file_id, out_path in run_path_rows if out_path]
-    await async_session.delete(user)
+    user.active = False
+    async_session.add(user)
     await async_session.commit()
 
-    if file_ids or pre_collected_run_paths:
-        task = clean_user_all_task.delay(file_ids, user_id, pre_collected_run_paths)  # type: ignore
-        await wait_for_result(task, poll_interval=1.0)
+    # 不等登记完成即返回（同 delete_user_file）：标记已 commit，等也回滚不了。
+    # 投递失败也不致命——cleanup_deleted_users 每轮会重跑同一套登记逻辑兜底
+    clean_user_all_task.delay(user_id)  # type: ignore
 
     return {"user_id": user_id, "status": "deleted"}
 

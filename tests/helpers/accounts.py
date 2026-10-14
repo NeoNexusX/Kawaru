@@ -74,9 +74,18 @@ async def sweep_users_by_prefix(username_prefix: str) -> int:
 
 
 async def get_user_id_by_username(username: str) -> int | None:
-    """按用户名查内部 user id（对外接口不暴露 id，测试从 DB 反查）。"""
+    """按用户名查内部 user id（原始查询，不按 active 过滤）。"""
     async with get_standalone_async_session() as session:
         row = (await session.exec(
             select(UserInDB).where(UserInDB.username == username)
         )).first()
     return row.id if row else None
+
+
+async def get_user_active(username: str) -> bool | None:
+    """按用户名取 active：None = 行不存在；False = 已被管理员标记删除（见 api/user_api.del_user）。"""
+    async with get_standalone_async_session() as session:
+        row = (await session.exec(
+            select(UserInDB).where(UserInDB.username == username)
+        )).first()
+    return row.active if row else None

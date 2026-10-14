@@ -704,6 +704,35 @@ async def unlink_user_from_file(
     return bool(owner_counts)
 
 
+async def refund_storage_quota_for_file(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+) -> int:
+    """退还该文件全部持有者的 storage 配额（file_count / total_file_size）。
+
+    文件级删除专用。必须在 session.delete(file_record) 之前调用——删完就读不到
+    持有者了。调用方须已持有 file 行锁。
+
+    Returns: 实际退还配额的持有者数量
+    """
+    assert file_record.file_id is not None
+    owner_ids = (await async_session.exec(
+        select(UserFileLink.user_id).where(UserFileLink.file_id == file_record.file_id)
+    )).all()
+
+    refunded = 0
+    for owner_id in owner_ids:
+        if owner_id is None:
+            continue
+        await atomic_decrement(async_session, UserInDB, owner_id, "file_count")
+        await atomic_decrement(async_session, UserInDB, owner_id, "total_file_size", file_record.size)
+        refunded += 1
+
+    if refunded:
+        logger.info("refunded storage quota for file_id=%s owners=%s", file_record.file_id, refunded)
+    return refunded
+
+
 async def safe_cleanup_preflight_record(
     async_session: AsyncSession, current_user: UserInDB, pre_record: FileInDB
 ) -> None:

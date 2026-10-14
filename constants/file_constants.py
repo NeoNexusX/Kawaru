@@ -61,6 +61,13 @@ CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES = int(getattr(storage_config, "clean
 # 僵尸聚类 run 清理策略：UMAP/KMeans 较算法处理更重，默认超时更宽
 STALE_CLUSTERING_RUN_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_clustering_run_timeout_minutes", 120))
 
+# 删除兜底：行停留在 DELETING / DELETE_FAILED 超过它才算「卡住」，才允许重投
+# （加超时是为了不和正在跑的 worker 抢：刚登记几秒的行不该被重投）
+STALE_DELETION_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_deletion_timeout_minutes", 30))
+# 两个重投任务的扫描间隔（拆成两个任务：file / run 各自独立周期与监控）
+RETRY_FILE_DELETIONS_INTERVAL_MINUTES = int(getattr(storage_config, "retry_file_deletions_interval_minutes", 15))
+RETRY_RUN_DELETIONS_INTERVAL_MINUTES = int(getattr(storage_config, "retry_run_deletions_interval_minutes", 15))
+
 # 签名URL过期时间 & Redis缓存过期时间
 # 要求 SIGNED_URL_EXPIRE_SECONDS >= 360（由 storage.signed_url_ttl_minutes >= 6 保证），
 # 这样 DOWNLOAD_CACHE_TTL_SECONDS 才能稳定比签名 URL 早 5 分钟过期，
@@ -119,6 +126,9 @@ __all__ = [
     "STALE_PROCESS_RUN_TIMEOUT_MINUTES",
     "CLEANUP_STALE_PROCESS_RUNS_INTERVAL_MINUTES",
     "STALE_CLUSTERING_RUN_TIMEOUT_MINUTES",
+    "STALE_DELETION_TIMEOUT_MINUTES",
+    "RETRY_FILE_DELETIONS_INTERVAL_MINUTES",
+    "RETRY_RUN_DELETIONS_INTERVAL_MINUTES",
     "SIGNED_URL_EXPIRE_SECONDS",
     "DOWNLOAD_CACHE_TTL_SECONDS",
     "OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS",

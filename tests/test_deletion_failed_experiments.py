@@ -7,10 +7,9 @@ test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file +
                                                   断言登记/收尾两段配额语义与全链路收敛
 
 验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 4，场景 1 的批量版）的核心承诺：
-  ★1 unlink_all_owners：全部持有者的 storage 配额在登记事务内释放（用户可见语义
-     登记时生效——beat 任务返回即已提交，无需等 worker）
+  ★1 force=True：失败产物整份删除；登记阶段不动配额
   ★2 文件行由 worker 收敛删除（级联 origin / run / link）
-  ★3 processed 配额由 finalize 退还（登记时不动，行删时退）
+  ★3 全部持有者的 storage 配额 + 全部 run 的 processed 配额都由 finalize 退还
   ★4 OSS 全部对象删净（主文件 + origin + run 输出）
   ★5 幂等重投语义由任务自身的 include_deleting=True 分支保证，重复触发即重投
 
@@ -91,7 +90,7 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     await sweep_file_rows_by_prefix(DELETION_EXP_FILENAME)
     await sweep_users_by_prefix(DELETION_EXP_USER_PREFIX)
 
-    # 1. 两个真实用户作持有者（unlink_all_owners 逐个退配额的断言对象）
+    # 1. 两个真实用户作持有者（finalize 逐个退 storage 配额的断言对象）
     suffix = secrets.token_hex(3)
     name_a = f"{DELETION_EXP_USER_PREFIX}_a_{suffix}"
     name_b = f"{DELETION_EXP_USER_PREFIX}_b_{suffix}"
@@ -220,12 +219,19 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     )
     logger.info("beat task completed, cleaned=%d (registration committed)", cleaned)
 
-    # 5. ★1 任务返回即登记已提交：两持有者 storage 配额已释放（unlink_all_owners）
-    for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
-        file_count, total_size, _ = await _read_user_quota(user_id)
-        assert file_count == 0, f"{name}: file_count not refunded at registration: {file_count}"
-        assert total_size == 0, f"{name}: total_file_size not refunded at registration: {total_size}"
-    logger.info("★1 storage quota refunded for both owners at registration time")
+    # 5. ★1 登记阶段不动配额：任务返回时两持有者的 storage 配额应原封不动。
+    #    worker 若已抢先 finalize，行与配额必然一起消失（同事务），此时跳过
+    async with get_standalone_async_session() as session:
+        row = (await session.exec(
+            select(FileInDB).where(FileInDB.file_id == file_id))).first()
+    if row is not None:
+        for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
+            file_count, total_size, _ = await _read_user_quota(user_id)
+            assert file_count == 1, f"{name}: file_count changed at registration: {file_count}"
+            assert total_size == FILE_SIZE, f"{name}: total_file_size changed at registration: {total_size}"
+        logger.info("★1 storage quota untouched at registration (refund happens at finalize)")
+    else:
+        logger.info("★1 row already finalized before quota probe; skipping the 'untouched' check")
 
     # 6. ★2 等 worker 删净 OSS 并 finalize 删文件行
     await wait_db_row_gone(
@@ -234,12 +240,16 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     )
     logger.info("★2 file row finalized")
 
-    # 7. ★3 processed 配额由 finalize 退还（登记时不动）
+    # 7. ★3 两持有者的 storage 配额与 processed 配额都由 finalize 退还
+    for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
+        file_count, total_size, _ = await _read_user_quota(user_id)
+        assert file_count == 0, f"{name}: file_count not refunded at finalize: {file_count}"
+        assert total_size == 0, f"{name}: total_file_size not refunded at finalize: {total_size}"
     _, _, processed_a = await _read_user_quota(user_a_id)
     _, _, processed_b = await _read_user_quota(user_b_id)
     assert processed_a == 0, f"processed quota not refunded via finalize: {processed_a}"
     assert processed_b == 0, f"user_b processed quota changed unexpectedly: {processed_b}"
-    logger.info("★3 processed quota refunded via finalize")
+    logger.info("★3 storage + processed quota both refunded via finalize")
 
     # 8. 行级联：origin / run 都没了；用户仍在（只 unlink 不删用户）
     async with get_standalone_async_session() as session:

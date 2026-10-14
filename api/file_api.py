@@ -9,7 +9,7 @@ from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
 from api_helpers.file_helper import check_user_quota
-from api_services.composite_service import mark_file_for_deletion
+from api_services.composite_service import begin_file_deletion
 from api_services.relay_service import (
     prepare_download_relay_oss,
     resolve_relay_base_url,
@@ -24,6 +24,7 @@ from api_services.file_service import (
     prepare_download_raw_oss,
     get_reuse_file_by_hash,
     set_file_public_service,
+    unlink_user_from_file,
     update_download_stats,
     update_file_metadata,
     validate_preflight_request,
@@ -288,11 +289,11 @@ async def delete_user_file(
     - 移除当前用户后,如果 owners 为空,则执行完全删除
 
     删除状态位流程（OSS 先删、DB 后删、失败标记）:
-    - 完全删除不再同步等待 OSS 删除完成，而是登记 DELETING 后立即返回
-    - unlink + 扣配额（用户可见语义）在登记事务内完成并提交
-    - worker 删完全部 OSS 对象后才删 DB 行（「要么都删除」）；任一失败则
-      行置 DELETE_FAILED 保留（「要么都保留」），等重试（兜底任务待全部
-      删除场景改造完成后统一上线，期间管理员重复删除即为手动重试）
+    - 完全删除不等 OSS 删完，登记 DELETING 后立即返回
+    - 登记只做「置 DELETING + 摘集合成员 + 收快照」，**不动配额**；link 随 finalize
+      删行级联，storage 与 processed 配额都在那时退还——即配额要等 OSS 删完才降
+    - worker 删完全部 OSS 对象后才删 DB 行；任一失败则置 DELETE_FAILED 保留，
+      等重试（兜底任务未实现，期间管理员重复删除即为手动重试）
     - 重复请求幂等:已处于 DELETING 的文件直接再次投递删除任务
     """
     # include_deleting=True: 对已处于 DELETING 的文件重复发起删除时走幂等分支而非 404
@@ -301,21 +302,19 @@ async def delete_user_file(
         raise permission_denied_exception
     file_id = file_record.file_id
 
-    # 登记删除:行锁抢占 → 置 DELETING → unlink + 扣配额 → 收集路径快照（同一事务）
-    snapshot = await mark_file_for_deletion(session, current_user, file_record)
+    snapshot = await begin_file_deletion(session, file_record, current_user=current_user)
 
     if snapshot is None:
-        # 还有其他用户持有,只解除关联
+        # 还有其他用户持有 → 退化为「退出共享」：只解除当前用户的关联，文件保留。
+        # 行锁由 begin_file_deletion 持有到本事务结束，解除仍在锁保护下
+        await unlink_user_from_file(session, current_user, file_record)
         await session.commit()
         await session.refresh(current_user)
         await session.refresh(file_record)
         logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
         return {"public_id": public_id, "status": "unlinked"}
 
-    # 先 commit（配额已扣、关联已解除，用户可见语义立即生效），再投递删除任务。
-    # 投递失败只留下 DELETING 行（管理员重复删除即可手动重投，兜底任务统一
-    # 上线后自动收敛）;
-    # 顺序不能反:先投后 commit 的崩溃会留下「对象已删、行未标记」的不可自愈形态
+    # 先 commit 再投递：顺序不能反，先投后 commit 的崩溃会留下「对象已删、行未标记」
     await session.commit()
     delete_objects_task.delay( # type: ignore
         kind="file",

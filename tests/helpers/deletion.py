@@ -14,6 +14,7 @@ import time
 from sqlmodel import select
 
 from api_services.composite_service import collect_file_delete_snapshot
+from api_services.file_service import refund_storage_quota_for_file
 from database.db import get_standalone_async_session
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
@@ -30,9 +31,8 @@ logger = get_logger("test.helpers.deletion")
 async def sweep_file_rows_by_prefix(filename_prefix: str) -> int:
     """硬删文件名以 prefix 开头的全部 file 行（任意状态），并按删除快照口径删净其 OSS 对象。
 
-    供各删除场景测试开头清扫上次运行残留；行删按 FK 级联 origin / run / UserFileLink。
-    残留对象在模拟回调后已被打 persistent tag，bucket 生命周期规则不回收，
-    必须按快照路径显式删除。
+    供各删除场景测试开头清扫残留。硬删前按持有者退还 storage 配额——配额只在
+    finalize 结算，卡在 DELETING 的残留行尚未退，不补会跨轮次漂移。
     """
     paths: list[str] = []
     async with get_standalone_async_session() as session:
@@ -48,6 +48,7 @@ async def sweep_file_rows_by_prefix(filename_prefix: str) -> int:
                 snapshot = None
             if snapshot is not None:
                 paths.extend(snapshot.paths)
+            await refund_storage_quota_for_file(session, row)
             await session.delete(row)
         await session.commit()
     if paths:

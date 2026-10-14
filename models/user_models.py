@@ -14,6 +14,7 @@ config = get_config()
 user_config = config.user
 admin_info = config.admin_info
 
+
 class UserBase(SQLModel):
     """
     基本用户信息模型
@@ -26,6 +27,9 @@ class UserBase(SQLModel):
     region: str | None = Field(max_length=user_config.max_region_length)
     orcid: str | None = Field(default=None, max_length=user_config.max_orcid_length)
     homepage: str | None = Field(max_length=user_config.max_homepage_length)
+    # active=False 在本系统里**就是已删除**（管理员 del_user 置位），不是"停用"：
+    # 登录取用户、鉴权、软删除收敛任务（cleanup_deleted_users）都按它判定。
+    # 若将来要做"停用用户"，必须另加字段——复用本字段会让收敛任务删光那些用户的数据。
     active: bool = Field(default=True)
     identity: str = Field(default="user", max_length=user_config.max_identity_length)
     email: str = Field(sa_column=Column(String(user_config.max_useremail_length), unique=True), description="用户邮箱")

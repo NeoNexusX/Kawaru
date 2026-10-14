@@ -20,10 +20,14 @@ LOGIN_EXPIRE_SECONDS = config.token.login_expire_minutes * 60
 # 邮箱验证码有效期（秒），注册/改邮箱/重置密码共用；与邮件正文提示的 5 分钟保持一致（见 api_helpers/email_template.py）
 EMAIL_CODE_TTL_SECONDS = 300
 
+# 软删除用户收敛任务的扫描间隔（分钟）：名下资源清完后由它物理删 user 行
+CLEANUP_DELETED_USERS_INTERVAL_MINUTES = int(getattr(user_config, "cleanup_deleted_users_interval_minutes", 10))
+
 
 __all__ = [ # noqa: F401, F403 # pylint: disable=W0401, W0614
     "ALLOWED_POSITION_TYPES",
     "ALLOWED_REGIONS",
+    "CLEANUP_DELETED_USERS_INTERVAL_MINUTES",
     "EMAIL_CODE_TTL_SECONDS",
     "LOGIN_EXPIRE_SECONDS",
 ]

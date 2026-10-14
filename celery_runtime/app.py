@@ -71,6 +71,24 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "args": (),
             "kwargs": {},
         },
+        "cleanup_deleted_users": {
+            "task": "background.file_background.cleanup_deleted_users",
+            "schedule": const_kwargs["cleanup_deleted_users_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_file_deletions": {
+            "task": "background.file_background.retry_stale_file_deletions",
+            "schedule": const_kwargs["retry_file_deletions_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_run_deletions": {
+            "task": "background.file_background.retry_stale_run_deletions",
+            "schedule": const_kwargs["retry_run_deletions_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
     }
 
 

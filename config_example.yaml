@@ -78,6 +78,10 @@ storage:
   stale_process_run_timeout_minutes: 60
   stale_clustering_run_timeout_minutes: 120
   cleanup_stale_process_runs_interval_minutes: 30
+  # 删除兜底（DELETING / DELETE_FAILED 行的自动重投）：
+  stale_deletion_timeout_minutes: 30         # 删除行停留超过该时长（分钟）才算「卡住」，才允许重投（避免和正在跑的 worker 抢）
+  retry_file_deletions_interval_minutes: 15  # 文件删除重投任务 retry_stale_file_deletions 的扫描间隔（分钟）
+  retry_run_deletions_interval_minutes: 15   # run 删除重投任务 retry_stale_run_deletions 的扫描间隔（分钟）
 
 oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）
@@ -147,6 +151,7 @@ user:
   max_region_length: 128
   max_orcid_length: 128
   max_homepage_length: 128
+  cleanup_deleted_users_interval_minutes: 10   # 已删除用户收敛任务 cleanup_deleted_users 的扫描间隔（分钟）：名下资源清完后物理删 user 行
 
 sample_info:
   max_experiment_name_length: 128

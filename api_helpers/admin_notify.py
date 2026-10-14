@@ -79,12 +79,13 @@ def notify_delete_failed(
         api_hint = f"DELETE /processes/{resource_id}"
         subject_target = f"run#{resource_id}"
         # run 类删除无 admin 旁路（assert_run_ownership 只认 owner）：管理员执行
-        # api_hint 会被拒，只能请 owner 重投，别给出管理员照做无效的指令
+        # api_hint 会被拒，只能请 owner 重投——但兜底任务 retry_stale_run_deletions
+        # 会在超时后自动重投，通常无需人工介入
         handling = (
             f"How to handle: {api_hint} is owner-only — run deletion has no admin "
-            "bypass, so an admin cannot re-dispatch it. Ask the run's owner to "
-            "re-invoke it, or wait for the fallback task (retry_failed_deletions, "
-            "not implemented yet) to converge it.\r\n"
+            "bypass, so an admin cannot re-dispatch it. Normally no action is needed: "
+            "the fallback task retry_stale_run_deletions re-dispatches stale deletions "
+            "automatically. Otherwise ask the run's owner to re-invoke it.\r\n"
         )
     else:
         # 兜底：_mark_delete_failed 目前只会传 file / run，未知 kind 不应走到这里

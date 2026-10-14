@@ -105,6 +105,10 @@ class StorageSettings(BaseModel):
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
     stale_clustering_run_timeout_minutes: int = Field(default=120, description="聚类 run 超过此时间无回调则标记失败")
     cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")
+    # 删除兜底：DELETING / DELETE_FAILED 行停留超过该时长才算「卡住」，才允许重投
+    stale_deletion_timeout_minutes: int = Field(default=30, ge=1, description="删除行停留超时阈值（分钟）：超过才允许兜底任务重投，避免和正在跑的 worker 抢")
+    retry_file_deletions_interval_minutes: int = Field(default=15, ge=1, description="文件删除兜底重投任务（retry_stale_file_deletions）的扫描间隔（分钟）")
+    retry_run_deletions_interval_minutes: int = Field(default=15, ge=1, description="run 删除兜底重投任务（retry_stale_run_deletions）的扫描间隔（分钟）")
 
 
 class OSSSettings(BaseModel):
@@ -154,6 +158,10 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
+    cleanup_deleted_users_interval_minutes: int = Field(
+        default=10, ge=1,
+        description="已删除用户收敛任务（cleanup_deleted_users）的扫描间隔（分钟）：名下资源清完后物理删 user 行",
+    )
 
 
 class SampleInfoSettings(BaseModel):
