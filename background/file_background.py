@@ -175,9 +175,7 @@ async def dispatch_user_file_deletions(session, deleted_user: UserInDB) -> dict:
     """
     assert deleted_user.id is not None
     user_id = deleted_user.id
-    file_ids = (await session.exec(
-        select(UserFileLink.file_id).where(UserFileLink.user_id == user_id)
-    )).all()
+    file_ids = (await session.exec(select(UserFileLink.file_id).where(UserFileLink.user_id == user_id))).all()
 
     total_unlinked = 0
     total_deleted = 0
@@ -187,11 +185,16 @@ async def dispatch_user_file_deletions(session, deleted_user: UserInDB) -> dict:
         if file_id is None:
             continue
         try:
+            # 回血：上一轮的 commit / rollback 都会把 deleted_user expire
+            # 触发隐式懒加载，直接抛 MissingGreenlet
+            await session.refresh(deleted_user)
             # include_deleting=True：已处于删除流程的文件走幂等分支而非 404
             file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
             snapshot = await begin_file_deletion(session, file_record, current_user=deleted_user)
             # 先 commit 再投递（顺序理由见 file_api.delete_user_file）
             await session.commit()
+            await session.refresh(file_record)
+            await session.refresh(deleted_user)
 
             if snapshot is None:
                 # 还有其他持有者：只解除被删用户的关联（文件留给其他人）
@@ -289,7 +292,7 @@ async def cleanup_deleted_users(batch_size: int = 100) -> int:
                     select(ExperimentProcessRunInDB.id).where(ExperimentProcessRunInDB.user_id == user_id))).all()
                 if run_ids:
                     for run_id in run_ids:
-                        run_record = await get_process_run_by_id(session, run_id, include_deleting=True)
+                        run_record = await get_process_run_by_id(session, run_id, include_deleting=True) # type: ignore
                         if run_record is None or run_is_deleting(run_record.status):
                             continue
                         snapshot = await mark_run_for_deletion(session, run_record)
@@ -327,7 +330,7 @@ async def retry_stale_file_deletions(
         rows = (await session.exec(
             select(FileInDB)
             .where(FileInDB.status.in_(DELETING_FILE_STATUSES),  # type: ignore # pylint: disable=no-member
-                   FileInDB.delete_marked_at < cutoff)
+                   FileInDB.delete_marked_at < cutoff) # type: ignore # pylint: disable=no-member
             .limit(batch_size)
         )).all()
 
@@ -367,7 +370,7 @@ async def retry_stale_run_deletions(
         rows = (await session.exec(
             select(ExperimentProcessRunInDB)
             .where(ExperimentProcessRunInDB.status.in_(DELETING_RUN_STATUSES),  # type: ignore # pylint: disable=no-member
-                   ExperimentProcessRunInDB.delete_marked_at < cutoff)
+                   ExperimentProcessRunInDB.delete_marked_at < cutoff) # type: ignore # pylint: disable=no-member
             .limit(batch_size)
         )).all()
 
