@@ -211,8 +211,12 @@ async def begin_file_deletion(
         return await collect_file_delete_snapshot(session, locked)
 
     if not force:
+        # 加锁读（当前读）：普通 SELECT 读的是请求起始快照，会把并发中已解除的持有者
+        # 误判为仍在——最后两个 owner 并发删除会双双「退出共享」，留下 0 持有者孤儿
         owner_ids = (await session.exec(
-            select(UserFileLink.user_id).where(UserFileLink.file_id == locked.file_id)
+            select(UserFileLink.user_id)
+            .where(UserFileLink.file_id == locked.file_id)
+            .with_for_update()
         )).all()
         current_id = current_user.id if current_user is not None else None
         if any(uid is not None and uid != current_id for uid in owner_ids):

@@ -694,9 +694,8 @@ async def unlink_user_from_file(
     await session.flush()
     await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
-    #    注意：此处的 owner_counts 检查与 remove_file_link 之间仍然存在 TOCTOU 竞态
-    #    （并发删除最后两个 owner 时可能都判定 count=0 而触发双重物理删除），
-    #    该问题超出原子计数器范畴，需要后续通过分布式锁或 SELECT FOR UPDATE 解决。
+    #    快照读：并发已解除的关联会被多算（偏「有人持有」的保守侧）。
+    #    删除入口的持有者判定见 begin_file_deletion（加锁读），不看此返回值。
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
     )).one()
