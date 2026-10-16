@@ -5,7 +5,9 @@ from email.message import EmailMessage
 
 import httpx
 
+from api_helpers.alert_budget import alert_budget_available
 from celery_runtime.state import get_celery_app
+from constants.user_constants import EMAIL_CATEGORY_ALERT, ORCID_HTTP_TIMEOUT_SECONDS
 from tools.logger import get_logger
 
 logger = get_logger("background.api_background")
@@ -21,7 +23,7 @@ async def validate_orcid_task(orcid: str) -> bool:
     url = f"https://pub.orcid.org/v3.0/{orcid}/person"
     headers = {'Accept': 'application/json'}
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=ORCID_HTTP_TIMEOUT_SECONDS) as client:
         try:
             response = await client.head(url, headers=headers)
             if response.status_code == 200:
@@ -39,7 +41,12 @@ async def send_smtp_email_task(email_payload: dict) -> dict:
     """
     发送 SMTP 邮件的 Celery 任务。
     任务只负责发送邮件，不包含业务验证。
+    告警类（payload["category"] == "alert"）先过额度闸（api_helpers.alert_budget），
+    超限直接丢弃。
     """
+    if email_payload.get("category") == EMAIL_CATEGORY_ALERT and not await alert_budget_available():
+        # 有意丢弃：返回 success 表示这是终态、不要重试（告警本身是 fire-and-forget）
+        return {"success": True, "suppressed": True}
 
     try:
         smtp_server = email_payload.get("smtp_server")

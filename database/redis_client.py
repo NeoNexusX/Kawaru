@@ -34,7 +34,13 @@ pool_default = BlockingConnectionPool(
 redis_client = Redis(connection_pool=pool_default) # 默认redis数据库，用于一般用户数据存储
 
 def connect_new_redis(db_index: int) -> Redis:
-    """用于创建指定数据库的独立Redis连接，适用于需要独立连接的场景(如Celery任务队列)"""
+    """用于创建指定数据库的独立Redis连接，适用于需要独立连接的场景(如Celery任务队列、
+    worker 内的短连接：worker 每个任务由 asyncio.run() 新建事件循环，模块级连接池不能复用)
+
+    超时必配（与 pool_default 一致）：默认 None 表示永不超时，Redis 半死不活（TCP 黑洞）时
+    调用方会永久挂起——本函数的调用方包含 API 启动/关闭路径（clean_up_stale_task）
+    与 worker 任务链路，没有超时就没有兜底。
+    """
     return Redis(
         host=REDIS_HOST,
         port=REDIS_PORT,
@@ -42,4 +48,6 @@ def connect_new_redis(db_index: int) -> Redis:
         password=REDIS_PASSWORD,
         db=db_index,
         decode_responses=True,
+        socket_timeout=2,
+        socket_connect_timeout=2,
     )

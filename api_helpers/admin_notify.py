@@ -5,10 +5,14 @@
 # background 任务均可复用。
 # 投递只把任务送进 broker，不等待 SMTP 发送结果；收件人取 admin_info.email；
 # 复用 send_smtp_email_task（SMTP 密码仍从环境变量 SMTP_PASSWORD 读取）。
+# payload 带 category=alert：共享发件任务据此过「告警额度闸」（api_helpers.alert_budget，
+# 额度见 email.alert_max_per_window / alert_budget_window_seconds），超限丢弃——告警洪峰
+# 不得挤掉用户验证码邮件。
 # 告警是旁路能力：任何失败只记日志，绝不影响调用方主流程。
 #########################
 from boot.config import get_config
 from background.api_background import send_smtp_email_task
+from constants.user_constants import EMAIL_CATEGORY_ALERT
 from tools.logger import get_logger
 
 logger = get_logger("api_helpers.admin_notify")
@@ -24,6 +28,8 @@ def _send_admin_alert(subject: str, text_content: str) -> bool:
     email_config = config.email
     payload = {
         "email": recipient,
+        # 类别标记：共享发件任务据此走告警额度闸（验证码不带此键，走默认 code）
+        "category": EMAIL_CATEGORY_ALERT,
         "subject": subject,
         "text_content": text_content,
         "smtp_username": email_config.smtp_username,

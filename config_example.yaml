@@ -28,6 +28,8 @@ email:
   smtp_server: smtp.qq.com
   reset_password_max_attempts: 5   # 单个邮箱验证码（注册/改邮箱/重置密码）最大校验失败次数，超过则作废该验证码
   email_send_cooldown_seconds: 60   # 同一邮箱两次发送验证码邮件的最小间隔（秒），不区分用途，防邮件轰炸
+  alert_max_per_window: 100   # 管理员告警邮件在额度窗口内最多发送封数，超出丢弃（告警与验证码共用 SMTP 账号，防告警洪峰挤掉验证码）
+  alert_budget_window_seconds: 3600   # 管理员告警邮件的额度窗口（秒）
 
 database:
   host: 127.0.0.1

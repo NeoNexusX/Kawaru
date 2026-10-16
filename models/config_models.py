@@ -78,6 +78,19 @@ class EmailSettings(BaseModel):
         ge=1,
         description="同一邮箱两次发送验证码邮件之间的最小间隔（秒），不区分用途，防邮件轰炸",
     )
+    # 管理员告警邮件额度闸（background/api_background.send_smtp_email_task 内生效，只作用于
+    # category=alert 的邮件）：告警与验证码共用同一 SMTP 账号，服务商按账号限流，告警洪峰
+    # （FC 端点挂掉、OSS 批量删除失败等）会把验证码邮件挤掉，所以告警要有全局上限。
+    alert_max_per_window: int = Field(
+        default=10,
+        ge=1,
+        description="管理员告警邮件在额度窗口内最多发送的封数，超出直接丢弃（只记 WARN 日志）",
+    )
+    alert_budget_window_seconds: int = Field(
+        default=3600,
+        ge=1,
+        description="管理员告警邮件的额度窗口（秒）",
+    )
 
 
 class StorageSettings(BaseModel):
