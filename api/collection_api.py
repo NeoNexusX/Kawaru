@@ -269,12 +269,13 @@ async def remove_members_api(
     removed = [public_by_file_id[fid] for fid in removed_fids]
     removed_set = set(removed)
     skipped = [p for p in unique_public_ids if p not in removed_set]
+    # commit 会 expire 全部 ORM 实例，异步会话下 commit 后不能再惰性加载：
+    # 日志字段在 commit 前取出，省掉回读 current_user / collection 的两次 refresh
+    user_id = current_user.id
     await async_session.commit()
-    await async_session.refresh(current_user)
-    await async_session.refresh(collection)
 
     logger.info(
-        f"remove collection members user={current_user.id} collection_id={collection.id} "
+        f"remove collection members user={user_id} collection_id={collection_id} "
         f"removed={len(removed)} skipped={len(skipped)}"
     )
     return {"public_id": public_id, "removed": removed, "skipped": skipped}
