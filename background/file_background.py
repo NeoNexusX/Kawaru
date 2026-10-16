@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from sqlmodel import select, or_, func
+from sqlmodel import select, func
 
 
 from api_helpers.admin_notify import notify_delete_failed
@@ -9,6 +9,7 @@ from api_helpers.deletion_helper import (
     DELETING_RUN_STATUSES,
     file_is_deleting,
     run_is_deleting,
+    visible_files_clause,
 )
 from api_services.composite_service import (
     begin_file_deletion,
@@ -55,12 +56,16 @@ async def cleanup_stale_preflights_all_users(
     """
     清理所有用户过期且未完成的预检记录(celery定时任务版本)
 
-    清理条件(uploaded_at 超过 TTL, 且满足以下任一):
-    1. 文件物理路径为空（""）(说明为预检记录,未完成上传)
-    2. status == FAILED (回调失败留下的脏记录, include_failed=True 时生效)
+    清理条件(uploaded_at 超过 TTL, 且 path 为空——预检后回调从未把路径落库)。
 
-    失败记录的 path 可能为空(回调未回传路径)或有值(哈希校验/打 tag 失败等)，
-    两种情况都仅清理数据库记录与用户额度，不主动删除 OSS 对象——未打persistent tag 的孤儿对象由 bucket 生命周期规则自动回收。
+    刻意不看 status：回调失败留下的记录里，path 已有值的那条路（先 commit 落库再打
+    persistent tag，tag 失败才回滚）必然是 file + origin 同事务双置 FAILED，由
+    cleanup_failed_experiments 整份删除——它会连 OSS 对象一起删，把这条路径正好兜住
+    （只删 DB 行会让**已打上 persistent tag 的部分对象永久泄漏**）；其余失败都回滚在
+    回调首次 commit 之前，path 仍为空，上面的条件已覆盖。
+
+    本任务只清数据库记录与用户额度，**不主动删除 OSS 对象**——未打 persistent tag 的
+    孤儿对象由 bucket 生命周期规则回收。
 
     Returns:
         清理的记录数量
@@ -73,15 +78,12 @@ async def cleanup_stale_preflights_all_users(
         cutoff_time = now - timedelta(minutes=ttl_minutes)
         total_cleaned = 0
 
-        # 查询所有过期预检记录:
-        #   path 为空(未完成上传) 或 status 为 FAILED(回调失败脏记录) 通过 UserFileLink 关联获取用户
-        conditions = [or_(FileInDB.path == "", FileInDB.status == FileStatus.FAILED),
-                          FileInDB.uploaded_at < cutoff_time]
+        # 查询所有过期预检记录：path 为空（回调从未落库）通过 UserFileLink 关联获取用户
         records = (await session.exec(
             select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
-            .where(*conditions)
+            .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
             .limit(batch_size)
             .with_for_update(skip_locked=True)
         )).all()
@@ -324,6 +326,12 @@ async def retry_stale_file_deletions(
     条件是 status ∈ {DELETING, DELETE_FAILED} 且 delete_marked_at 早于 timeout——
     加超时是为了不和正在跑的 worker 抢：刚登记几秒的行不该被重投。
     重投直接走 begin_file_deletion 的幂等分支（它负责重收集快照）。
+
+    A4（cleanup_failed_experiments 清失败实验）登记之后的重试同样归这里：那边只负责
+    发起（扫描已排除删除流程中的文件），不再自己重投。
+    前提契约：进入删除流程的行必有 delete_marked_at（置位点唯一，
+    composite_service.mark_file_for_deletion 同事务写 status 与时间戳）——
+    本任务靠它判定「卡住」，NULL 的行会两个任务都捞不到。
     """
     async with get_standalone_async_session() as session:
         cutoff = utc_time() - timedelta(minutes=timeout_minutes)
@@ -400,24 +408,19 @@ async def cleanup_failed_experiments(
     """
     清理过期的失败 origin 记录（场景 1 的批量版：删除状态位三件套）
 
-    清理流程（每个失败 origin 的源文件独立事务，互不拖累）:
-    1. 查询过期的失败 origin 记录（行锁 skip_locked，只护住本次查询事务）
-    2. begin_file_deletion(force=True)：失败产物整份删除，不保留共享者的引用；
-       配额都在 finalize 结算（登记阶段不动）。
-       **force 不能省**：不加则多持有者时返回 None → 文件不删但 origin 仍是 FAILED →
-       每轮重扫且永不清理（扫描带 limit 且无 ORDER BY，还会占满批次）。
-       失败文件几乎必然单持有者（origin=FAILED 的唯一来源同时把 file 置 FAILED，
-       而秒传要求 file 是 COMPLETED），但打 persistent tag 失败那条路径存在
-       "file 已 COMPLETED 且已提交"的窄窗口，秒传可在其中建出第二条 link
-    3. 先 commit 再投递 delete_objects_task：worker 删净 OSS 后 finalize 退配额、
-       删 file 行；任一对象失败则行置 DELETE_FAILED 保留，重复触发本任务即幂等重投
+    每个失败 origin 的源文件独立事务，互不拖累：begin_file_deletion(force=True) 登记
+    （失败产物整份删除，不保留共享者引用；配额在 finalize 结算）→ 先 commit 再投递
+    delete_objects_task。对象删失败则行置 DELETE_FAILED 等重投——重投归
+    retry_stale_file_deletions，本任务只负责发起，不再扫已进入删除流程的文件。
 
-    注意:
-    - 行锁只在本次查询事务内有效：本任务刻意逐文件 commit（互不拖累），多 worker
-      并发会重复捞取同一批（重复处理由 begin_file_deletion 的行锁 + DELETING 守卫
-      幂等吸收，代价仅是多余的 OSS 调用与日志）
-    - include_deleting=True：文件已处于删除流程时走幂等分支直接重投
-    - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
+    扫描条件：origin=FAILED 且早于 TTL，**且源文件未进入删除流程**，按 id 排序（FIFO）。
+    force 不能省：不加则多持有者时返回 None → 文件不删但 origin 仍是 FAILED →
+    每轮重扫且永不清理。失败文件几乎必然单持有者，唯"打 persistent tag 失败"那条路径
+    存在 file 已 COMPLETED 且已提交的窄窗口，秒传可在其中建出第二条 link。
+
+    另：行锁只护住本次查询事务（多 worker 会重复捞同一批，由 begin_file_deletion 的
+    行锁 + DELETING 守卫幂等吸收）；include_deleting=True 只兜「扫描到处理之间被并发
+    删除」的窗口；FC 未回调、路径未落库的孤儿对象由 OSS 生命周期回收。
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
@@ -425,10 +428,21 @@ async def cleanup_failed_experiments(
         threshold = now - timedelta(minutes=ttl_minutes)
         cleaned = 0
         total_errors = 0
-        # 第一步:查询过期的失败 origin 记录
-        failed_origins = (await session.exec(select(OriginImzMLInDB).where(
-                    OriginImzMLInDB.status == ExperimentStatus.FAILED,
-                    OriginImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
+        # 已进入删除流程的文件不在此列：登记完即移交 retry_stale_file_deletions，
+        # 再捞回来只会永久占满批次（它们的 origin 恒满足 FAILED + 早于 TTL，见 docstring）
+        # JOIN 会连带锁 file 行（MariaDB 无 FOR UPDATE OF），SKIP LOCKED 不等待、首个 commit 即释放
+        failed_origins = (await session.exec(
+            select(OriginImzMLInDB)
+            .join(FileInDB, FileInDB.file_id == OriginImzMLInDB.source_file_id)  # type: ignore[arg-type]
+            .where(
+                OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                OriginImzMLInDB.created_at < threshold,
+                visible_files_clause(),
+            )
+            .order_by(OriginImzMLInDB.id)  # type: ignore[call-overload]  # FIFO，堵住老行长期占位
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )).all()
         # 立刻抽出所需字段为纯元组：per-file commit/rollback 会 expire 全部 ORM 实例，
         # 跨事务再访问 exp.* 会在异步上下文触发隐式 IO 报错
         failed_pairs = [(exp.id, exp.source_file_id) for exp in failed_origins]

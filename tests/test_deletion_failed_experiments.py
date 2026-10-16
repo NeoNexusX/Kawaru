@@ -2,7 +2,8 @@
 删除状态位场景 ④：beat 清失败实验（直插失败 origin → 触发 beat 任务 → 断言收敛）
 
 test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file + FAILED origin +
-                                                  双持有者 link + run（全部真实对象）→
+                                                  双持有者 link + run（全部真实对象）+
+                                                  一条在途 DELETING 失败文件（★6）→
                                                   cleanup_failed_experiments(ttl=0) →
                                                   断言登记/收尾两段配额语义与全链路收敛
 
@@ -11,7 +12,9 @@ test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file +
   ★2 文件行由 worker 收敛删除（级联 origin / run / link）
   ★3 全部持有者的 storage 配额 + 全部 run 的 processed 配额都由 finalize 退还
   ★4 OSS 全部对象删净（主文件 + origin + run 输出）
-  ★5 幂等重投语义由任务自身的 include_deleting=True 分支保证，重复触发即重投
+  ★5 分工：本任务只负责**发起**——已进入删除流程（DELETING/DELETE_FAILED）的失败 origin
+     不再被扫到，登记后的重投归 retry_stale_file_deletions（见 ★6）
+  ★6 已在删除流程的失败 origin 不被本任务重复捞取（否则 origin 恒为 FAILED，永久占满批次）
 
 数据构造取舍（与场景 ②③ 一致）：被测对象是 beat 任务本身，文件不需要 COMPLETED
 （任务扫的是 origin.status=FAILED），故 file/origin/link/run 全部直插、对象直传，
@@ -181,6 +184,38 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
         session.add(user_b)
         await session.commit()
 
+        # 2.5 ★6 用：一条**已在删除流程**的失败文件（DELETING + 新鲜 delete_marked_at）。
+        #     本任务扫描必须排除它——不排除就会因 origin 恒为 FAILED 而被反复登记 + 投递，
+        #     worker 很快 finalize 掉行，步骤 4.5 的断言即可抓到。
+        #     不建 link / 不传对象：断言只锚定扫描行为（任务若误投递，快照里的预览图
+        #     前缀也足以走完删除链路并把行删掉）
+        inflight_code = secrets.token_hex(16)
+        inflight_file = FileInDB(
+            filename=f"{DELETION_EXP_FILENAME}_inflight_{suffix}",
+            path=f"data/{inflight_code}/inflight_{suffix}.zip",
+            status=FileStatus.DELETING,
+            storage_type="oss",
+            size=0,
+            file_verify_code=inflight_code,
+            file_type="zip",
+            experiment_type="imzML",
+            delete_marked_at=utc_time(),  # 新鲜时间戳：兜底任务（阈值 30 分钟）本轮不会碰它
+        )
+        session.add(inflight_file)
+        await session.commit()
+        await session.refresh(inflight_file)
+        inflight_file_id = inflight_file.file_id
+        inflight_filename = inflight_file.filename
+        assert inflight_file_id is not None
+        session.add(OriginImzMLInDB(
+            experiment_name=inflight_filename,
+            source_file_id=inflight_file_id,
+            status=ExperimentStatus.FAILED,
+            error_message="deletion-test fixture (in-flight)",
+            created_at=utc_time() - timedelta(minutes=1),
+        ))
+        await session.commit()
+
     assert run_out is not None
     run_keys = [f"{run_out}chunk_{i}" for i in range(RUN_OBJECT_COUNT)]
 
@@ -218,6 +253,17 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
         f"cleanup task reported {cleaned!r} cleaned — our FAILED origin was not scanned?"
     )
     logger.info("beat task completed, cleaned=%d (registration committed)", cleaned)
+
+    # 4.5 ★6 分工：已在删除流程的失败 origin 不再被本任务捞取（捞回去只会永久占满批次）
+    async with get_standalone_async_session() as session:
+        inflight = (await session.exec(
+            select(FileInDB).where(FileInDB.file_id == inflight_file_id))).first()
+        inflight_status = inflight.status if inflight is not None else None
+    assert inflight_status == FileStatus.DELETING, (
+        "已在删除流程（DELETING）的失败文件被本任务重复捞取并删掉："
+        f"row={'已消失' if inflight is None else inflight_status}"
+    )
+    logger.info("★6 in-flight deleting file not re-picked (handover to retry task holds)")
 
     # 5. ★1 登记阶段不动配额：任务返回时两持有者的 storage 配额应原封不动。
     #    worker 若已抢先 finalize，行与配额必然一起消失（同事务），此时跳过
