@@ -299,7 +299,8 @@ async def mark_run_for_deletion(
 
     重投入口的限制：DELETE /processes/{run_id} 无 admin 旁路（assert_run_ownership
     只认 owner），所以 run 类失败的重投仅限该 run 的 owner 本人——管理员删不动，
-    只能等 owner 操作，或等兜底任务上线（见删除架构现状说明 §6）。
+    只能等 owner 操作；兜底任务 retry_stale_run_deletions 超时后会自动重投
+    （见删除架构现状说明 §3 兜底行 / §5 缺口 1）。
     """
     assert run_record.id is not None
 

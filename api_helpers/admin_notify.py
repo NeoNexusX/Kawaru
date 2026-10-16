@@ -61,7 +61,7 @@ def notify_delete_failed(
     无 admin 旁路（assert_run_ownership 只认 owner），管理员实际无法重投 run 类失败，
     邮件正文已按此写明（不要给出管理员照做会被拒的指令）。
 
-    调用约束（删除架构现状说明 §8 的通知设计结论）：必须挂在
+    调用约束（删除架构现状说明 §3 代码地图 · §5 缺口 4）：必须挂在
     「DELETING → DELETE_FAILED」状态跃迁上（见 _mark_delete_failed）——
     重投时行已是 DELETE_FAILED，不再调用本函数，跃迁即天然去重，避免重投轰炸。
     """

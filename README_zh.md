@@ -161,11 +161,11 @@ Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传�
 1. 调用 `POST /files/preflight` 提交文件元数据、MD5、`storage_type=oss`、`spectrum_mode` 与 `storage_mode`。响应返回文件的 `public_id`（16 位 base62 随机串，不返回内部 `file_id`）；`is_reuse=true` 表示同哈希的已有记录已关联给当前用户，不需要再次上传。
 2. 新对象调用 `POST /files/upload`，传入 `pre_public_id`（即预检返回的 `public_id`）与 `filename`。后端会检查预检记录归属和上传状态，再返回限定对象路径的 STS 凭证。ZIP 对象键为 `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`（哈希前置可将并发写入打散到 OSS 不同分区），因此 `oss_path` 中仍含内部 `file_id`。
 3. 客户端将 ZIP 直传 OSS。解包 FC 从对象键解析 `file_id`，把 imZML/ibd 写到 `{oss_origin_storage_root}/{file_verify_code}/{file_id}/` 下，并携带 `X-FC-Token` 和 `file_id` 回调 `POST /callback/oss_upload_callback`。
-4. 成功回调后，后端先保存三个对象键并提交事务，再给 ZIP、imZML 和 ibd 添加 `persistent=true` 标签。`storage_mode=continuous` 分发 feature FC 任务并由 `/callback/umap_callback` 接收结果，其他模式分发 TIC 并回调 `/callback/tic_callback`；两者都保存以 `/` 结尾的预览图目录键，通常为 `images/{file_id%1000:03d}/file_{file_id}/`；客户端在文件响应返回的 `image_path` 后拼接 `preview.jpg`。
+4. 成功回调后，后端先保存三个对象键并提交事务，再给 ZIP、imZML 和 ibd 添加 `persistent=true` 标签。`storage_mode=continuous` 分发 feature FC 任务并由 `/callback/umap_callback` 接收结果，其他模式分发 TIC 并回调 `/callback/tic_callback`；两者都保存以 `/` 结尾的预览图目录键，通常为 `images/{public_id}/`；客户端在文件响应返回的 `image_path` 后拼接 `preview.jpg`。
 5. 算法处理（`POST /processes`）和 RAW 直转（`POST /processes/raw-convert`）以 `file_public_id` 指定源文件、以 `source_file_public_id` 返回源文件，输出 `{oss_processed_storage_root}/run_{run_id}.zarr/`。聚类（`POST /processes/{run_id}/clustering`）直接更新同一个 Zarr，不再创建独立聚类输出路径；基础 run 完成后，`GET /processes/{run_id}/zarr` 返回只读 STS 凭证。
 6. `GET /files/{public_id}/download_raw` 返回 imZML 与 ibd 的签名 URL；`GET /files/{public_id}/download_relay` 返回经服务器中转、流式透传这两个对象的后端 URL。不提供 ZIP 下载：上传的源 ZIP 在保留期后由 `cleanup_source_zips` 删除。
 
-配置中的对象根目录为 `oss_zip_storage_root`、`oss_origin_storage_root` 和 `oss_processed_storage_root`。Celery beat 会调度过期预检清理、源 ZIP 清理、失败实验清理、超时处理 run 标记和心跳任务；完全未进入回调、因而从未获得 `persistent=true` 标签的对象仍由 OSS 生命周期规则回收。
+配置中的对象根目录为 `oss_zip_storage_root`、`oss_origin_storage_root` 和 `oss_processed_storage_root`。Celery beat 会调度过期预检清理、源 ZIP 清理、失败实验清理、超时处理 run 标记、已删用户善后、卡住的删除重投和心跳任务；完全未进入回调、因而从未获得 `persistent=true` 标签的对象仍由 OSS 生命周期规则回收。
 
 ## 主要 API 范围
 
@@ -221,7 +221,7 @@ Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传�
 | [贡献指南](docs/zh/贡献指南.md) | 协作流程与规范 |
 | [部署指南](docs/zh/部署指南.md) | dev/prod 部署指南 |
 | [核心业务 API 架构：文件上传与 OSS 生命周期](docs/zh/核心业务API架构-文件上传.md) | 文件上传分层、API 契约、Mermaid 交互流程、状态机与 OSS 生命周期 |
-| [OSS 上传回调流程](docs/zh/上传回调流程.md) | 上传回调事务与失败回收说明 |
+| [异步任务与回调架构](docs/zh/异步任务与回调架构.md) | Celery 任务链路、FC 回调事务与失败回收说明 |
 
 ## 许可证
 

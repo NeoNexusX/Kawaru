@@ -4,7 +4,7 @@
 test_delete_file_flow  [deletion]  清扫残留 → preflight → STS 直传 → 等 FC 解压
                                     → 模拟回调 → 删除 → 关键断言 → finally 清理
 
-验证删除状态位改造（docs/zh/删除状态位改造方案.md 场景 1）的核心承诺：
+验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 1）的核心承诺：
   ★1 删除接口秒回（不等 OSS 删除完成）
   ★2 读侧拦截生效（DELETING 行按 404 处理）
   ★3 配额在 finalize 才退（登记阶段不动配额）

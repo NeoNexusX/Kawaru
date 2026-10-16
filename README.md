@@ -161,11 +161,11 @@ Kawaru now supports **OSS storage only**. The former local-storage and backend c
 1. Call `POST /files/preflight` with file metadata, MD5, `storage_type=oss`, `spectrum_mode`, and `storage_mode`. The response reserves a file identified by its `public_id` (a random 16-character base62 string; the internal `file_id` is never returned); `is_reuse=true` means an existing record with the same hash was linked to the current user and no new upload is required.
 2. For a new object, call `POST /files/upload` with `pre_public_id` (the preflight `public_id`) and `filename`. The backend verifies that the preflight record belongs to the current user and is still uploadable, then returns path-scoped STS credentials. The ZIP key is `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip` (the hash prefix spreads concurrent writes across OSS partitions), so `oss_path` still contains the internal `file_id`.
 3. Upload the ZIP directly to OSS. The extraction FC function parses `file_id` from the key, writes the imZML/ibd pair below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and calls `POST /callback/oss_upload_callback` with `X-FC-Token` and `file_id`.
-4. On a successful callback, the backend stores all three object keys, commits them, and then tags the ZIP, imZML, and ibd objects with `persistent=true`. `storage_mode=continuous` dispatches the feature FC task and receives its result at `/callback/umap_callback`; other modes dispatch TIC and use `/callback/tic_callback`. Both callbacks store the preview directory key ending with `/`, normally `images/{file_id%1000:03d}/file_{file_id}/`; clients append `preview.jpg` to the `image_path` returned in file responses.
+4. On a successful callback, the backend stores all three object keys, commits them, and then tags the ZIP, imZML, and ibd objects with `persistent=true`. `storage_mode=continuous` dispatches the feature FC task and receives its result at `/callback/umap_callback`; other modes dispatch TIC and use `/callback/tic_callback`. Both callbacks store the preview directory key ending with `/`, normally `images/{public_id}/`; clients append `preview.jpg` to the `image_path` returned in file responses.
 5. Algorithm processing (`POST /processes`) and raw conversion (`POST /processes/raw-convert`) take the source file as `file_public_id`, return runs with `source_file_public_id`, and write `{oss_processed_storage_root}/run_{run_id}.zarr/`. Clustering (`POST /processes/{run_id}/clustering`) updates that same Zarr rather than creating a second output path. `GET /processes/{run_id}/zarr` returns scoped read-only STS access after the base run completes.
 6. `GET /files/{public_id}/download_raw` returns signed imZML and ibd URLs; `GET /files/{public_id}/download_relay` returns backend URLs that stream the same two objects through the server. There is no ZIP download: the uploaded source ZIP is deleted by `cleanup_source_zips` after its retention period.
 
-The configured object roots are `oss_zip_storage_root`, `oss_origin_storage_root`, and `oss_processed_storage_root`. Celery beat schedules stale-preflight cleanup, source-ZIP cleanup, failed-experiment cleanup, stale-processing-run marking, and a heartbeat. Objects that never reach a callback and therefore never receive `persistent=true` still rely on the OSS lifecycle rule.
+The configured object roots are `oss_zip_storage_root`, `oss_origin_storage_root`, and `oss_processed_storage_root`. Celery beat schedules stale-preflight cleanup, source-ZIP cleanup, failed-experiment cleanup, stale-processing-run marking, deleted-user cleanup, stale file/run deletion retries, and a heartbeat. Objects that never reach a callback and therefore never receive `persistent=true` still rely on the OSS lifecycle rule.
 
 ## Main API Areas
 
@@ -225,7 +225,7 @@ For detailed documentation, refer to the `docs/` directory:
 | [Contributing](docs/en/CONTRIBUTING.md) | Collaboration workflow and quality gates |
 | [Deployment](docs/en/DEPLOYMENT.md) | dev/prod deployment guide and container orchestration |
 | [Database Migration Guide (Chinese)](docs/zh/数据库迁移指南.md) | Alembic setup, migration workflows, and zero-downtime deployment |
-| [OSS upload callback flow (Chinese)](docs/zh/上传回调流程.md) | Upload callback transaction and cleanup behavior |
+| [Async tasks and callbacks (Chinese)](docs/zh/异步任务与回调架构.md) | Celery task flow, FC callbacks, and callback failure cleanup |
 
 ## License
 
