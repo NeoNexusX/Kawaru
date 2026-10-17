@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: prod-cd
@@ -19,18 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Log in to GHCR
+      - name: Log in to ACR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/kawaru   # metadata-action 自动转小写
+          images: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-,format=long
@@ -41,6 +40,9 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: true
+          # ACR 个人版拒绝 OCI attestation manifest，必须关闭 provenance/sbom
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -69,13 +71,14 @@ jobs:
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           port: 22
-          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN,APP_IMAGE,DEPLOY_SHA
+          envs: ACR_PULL_USERNAME,ACR_PULL_PASSWORD,APP_IMAGE,DEPLOY_SHA
           script: |
             set -e
             set -o pipefail
-            export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
+            export APP_IMAGE="${APP_IMAGE,,}"   # 统一转小写（ACR 仓库名要求小写）
             cd /opt/kawaru-prod
-            echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
+            # 香港服务器与 ACR 同地域，走 -vpc 内网域名拉取（dev 在杭州只能走公网域名）
+            echo "$ACR_PULL_PASSWORD" | docker login crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com -u "$ACR_PULL_USERNAME" --password-stdin
             COMPOSE="docker compose -f docker-compose.prod.yml -p kawaru-prod"
             $COMPOSE pull migrate app worker beat
             $COMPOSE up -d --wait --wait-timeout 180 mariadb redis
@@ -91,15 +94,15 @@ jobs:
               --abort-on-container-exit --exit-code-from migrate migrate
             $COMPOSE up -d --no-deps --wait --wait-timeout 300 app worker beat
             find ./data/backups -type f -name '*.sql.gz' -mtime +30 -delete
-            # 部署成功后才执行：本地 latest 标签指向本次部署的镜像（与 GHCR 的 latest 同 digest）
+            # 部署成功后才执行：本地 latest 标签指向本次部署的镜像（与 ACR 的 latest 同 digest）
             docker tag "$APP_IMAGE" "${APP_IMAGE%:*}:latest"
-            # 清理无容器引用且超过 7 天的旧镜像（历史 sha-<sha> / dangling）；GHCR 仍保留全部 tag，可随时回拉
+            # 清理无容器引用且超过 7 天的旧镜像（历史 sha-<sha> / dangling）；ACR 仍保留全部 tag，可随时回拉
             docker image prune -af --filter "until=168h"
-            docker logout ghcr.io
+            docker logout crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com
         env:
-          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:sha-${{ github.sha }}
+          ACR_PULL_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PULL_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          APP_IMAGE: crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:sha-${{ github.sha }}
           DEPLOY_SHA: ${{ github.sha }}
 
       # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
@@ -136,4 +139,4 @@ jobs:
             done
             exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
         env:
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:sha-${{ github.sha }}
+          APP_IMAGE: crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:sha-${{ github.sha }}
