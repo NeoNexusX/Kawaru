@@ -97,6 +97,8 @@ oss:
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
+  # SI 注释库 CSV 的完整 OSS key（人工上传后填写；未配置时浏览可用、下载端点报未就绪）
+  oss_si_db_key: static/SI_DB.csv
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
@@ -114,7 +116,7 @@ oss:
   # 本地开发机上内网域名不可达：改用 CONFIG_PATH 指向覆盖配置，把它临时设为公网
   # endpoint（https://oss-cn-hangzhou.aliyuncs.com）即可完整验证中转链路。
   oss_internal_endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com
-  relay_max_concurrency: 5          # 中转下载最大并发数（保护服务器带宽）
+  relay_max_concurrency: 10         # 中转下载最大并发数（保护服务器带宽）
   relay_acquire_timeout_seconds: 10 # 排队等待上限，超时返回 429
   relay_idle_timeout_seconds: 30    # 空闲超时：客户端 30s 不消费数据则中断
 

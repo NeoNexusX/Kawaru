@@ -1,14 +1,22 @@
 from fastapi import APIRouter, Depends
-from models.file_models import FilePublic, FileOssUploadResponse
-from models.filter_models import ListDataResponse
+
 from api.file_api import (
-    DeleteFileDep, ListFilesDep,
-    RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
+    DeleteFileDep,
+    FileMetadataDep,
+    ListFilesDep,
     ListPublicFilesDep,
-    UploadFileDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
-    RelayDownloadDep, relay_download_file
+    PatchFileMetadataDep,
+    PreflightDep,
+    RawDownloadDep,
+    RawDownloadNoauthDep,
+    RelayDownloadDep,
+    SetFilePublicDep,
+    UploadFileDep,
+    relay_download_file,
 )
 from database.visit_stats import count_visit
+from models.file_models import FileOssUploadResponse, FilePublic
+from models.filter_models import ListDataResponse
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -48,11 +56,19 @@ async def download_file_relay(file_meta: RelayDownloadDep):
 
 # 中转下载流式透传：返回文件字节流（StreamingResponse），FastAPI 不允许对 Response 子类
 # 使用 Depends 注入，故直接用 add_api_route 注册带完整签名的处理函数。
-# HEAD 需显式声明：FastAPI 的 APIRoute 不会像 Starlette 那样在有 GET 时自动补 HEAD。
+# GET/HEAD 拆成两条路由注册：共用一条（methods=["GET","HEAD"]）会让两个 operation 共享
+# 同一个 operationId（FastAPI 的 unique_id 只取 methods[0]），触发 Duplicate Operation ID 警告；
+# HEAD 仅供下载工具探测用，不进 OpenAPI 文档（include_in_schema=False）。
 file_router.add_api_route(
     "/{public_id}/relay/download",
     relay_download_file,
-    methods=["GET", "HEAD"],
+    methods=["GET"],
+)
+file_router.add_api_route(
+    "/{public_id}/relay/download",
+    relay_download_file,
+    methods=["HEAD"],
+    include_in_schema=False,
 )
 
 

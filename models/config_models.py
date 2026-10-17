@@ -137,6 +137,10 @@ class OSSSettings(BaseModel):
     oss_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
+    oss_si_db_key: str | None = Field(
+        default=None,
+        description="SI 注释库 CSV 的完整 OSS key（如 static/si_db/2026-10/SI_DB.csv）；未配置时浏览可用、下载端点报未就绪",
+    )
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间，单位秒")
     oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间，单位秒")

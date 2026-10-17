@@ -685,7 +685,7 @@ async def relay_download_file(
     注意：
     - 返回的是文件字节流，不是 JSON
     - Range 头原样透传给 OSS，支持断点续传与多线程下载器
-    - HEAD 只返回头部信息（不拉正文），见 relay_service._relay_head_response
+    - HEAD 只返回头部信息（不拉正文），见 relay_service.stream_oss_object 的 HEAD 分支
     - token 由 download_relay* 接口签发，绑定 public_id + part
     """
     return await stream_relay_file(
