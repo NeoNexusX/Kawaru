@@ -145,7 +145,6 @@ async def prepare_download_relay_oss(
 async def stream_oss_object(
     *,
     oss_path: str,
-    download_name: str,
     range_header: str | None,
     method: str,
     log_ctx: str,
@@ -153,6 +152,7 @@ async def stream_oss_object(
     """流式透传共享内核：把一个 OSS 对象的字节流交给客户端（文件中转与 SI 注释库共用）。
 
     调用方负责 token 校验与 OSS key 解析，本函数只做传输：
+    - 下载文件名取 key 的 basename（Content-Disposition 用），调用方不再单独推导
     - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429），
       release 在 generator 的 finally（含客户端断开 CancelledError），不漏放
     - get_object 在构造响应前发起：响应状态码（200/206/416）依赖 res.status_code
@@ -161,6 +161,7 @@ async def stream_oss_object(
       StreamingResponse 的生成器仍会被完整消费，等于每次 HEAD 拉一遍整文件）
     - log_ctx 标记来源（如 "file_id=1 part=ibd" / "si_db"），供日志区分与统计
     """
+    download_name = Path(oss_path).name
     # 有界等待并发槽：在构造响应前获取，超时可干净返回 429
     try:
         await asyncio.wait_for(RELAY_SEMAPHORE.acquire(), timeout=RELAY_ACQUIRE_TIMEOUT)
@@ -293,7 +294,6 @@ async def stream_relay_file(
 
     return await stream_oss_object(
         oss_path=oss_path,
-        download_name=Path(oss_path).name,
         range_header=range_header,
         method=method,
         log_ctx=f"file_id={file_id} part={part}",
@@ -373,7 +373,6 @@ async def stream_si_db_csv(token: str, range_header: str | None, method: str = "
 
     return await stream_oss_object(
         oss_path=oss_key,
-        download_name=Path(oss_key).name,
         range_header=range_header,
         method=method,
         log_ctx="si_db",
