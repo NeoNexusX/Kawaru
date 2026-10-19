@@ -22,14 +22,17 @@ from pathlib import Path
 
 from sqlalchemy import delete, func, insert, select
 
-from boot.bootstrap import init_config, init_env, init_logging
+from database.migration_config import initialize_migration_runtime
 from models.annotation_models import AnnotationEntryInDB
 
 EXPECTED_HEADER = ("ID", "Name", "Formula", "InChI", "Mass", "Origin")
 ID_PATTERN = re.compile(r"^HMDB\d{7}$")
 KNOWN_ORIGINS = frozenset({"endogenous", "exogenous", "expected", "unknown"})
-# 与表模型保持一致：超长在入库前就报错，避免 MySQL 严格模式下的半截失败
-MAX_LENGTHS = {"entry_key": 16, "name": 255, "formula": 16, "origin": 16}
+# 列宽直接取自表模型：超长在入库前就报错，避免 MySQL 严格模式下的半截失败
+MAX_LENGTHS = {
+    field_name: AnnotationEntryInDB.__table__.c[field_name].type.length
+    for field_name in ("name", "formula", "origin")
+}
 DEFAULT_BATCH_SIZE = 5000
 PROGRESS_EVERY = 20000
 HASH_CHUNK_SIZE = 1024 * 1024
@@ -82,8 +85,10 @@ def iter_rows(path: Path, unknown_origins: set[str]) -> Iterator[dict[str, objec
         for line_no, row in enumerate(reader, start=2):
             if not row:
                 continue  # 容忍空行
-            if len(row) != 6:
-                raise ValueError(f"第 {line_no} 行：期望 6 列，实际 {len(row)} 列")
+            if len(row) != len(EXPECTED_HEADER):
+                raise ValueError(
+                    f"第 {line_no} 行：期望 {len(EXPECTED_HEADER)} 列，实际 {len(row)} 列"
+                )
 
             entry_key, name, formula, inchi, mass_text, origin = row
             if not all(value.strip() for value in row):
@@ -94,12 +99,7 @@ def iter_rows(path: Path, unknown_origins: set[str]) -> Iterator[dict[str, objec
                 raise ValueError(f"第 {line_no} 行：ID 重复 {entry_key}")
             seen.add(entry_key)
 
-            for field_name, value in (
-                ("entry_key", entry_key),
-                ("name", name),
-                ("formula", formula),
-                ("origin", origin),
-            ):
+            for field_name, value in (("name", name), ("formula", formula), ("origin", origin)):
                 if len(value) > MAX_LENGTHS[field_name]:
                     raise ValueError(
                         f"第 {line_no} 行：{field_name} 超长（{len(value)} > {MAX_LENGTHS[field_name]}）"
@@ -130,17 +130,6 @@ def validate_file(path: Path) -> tuple[int, set[str]]:
     for _ in iter_rows(path, unknown_origins):
         count += 1
     return count, unknown_origins
-
-
-def initialize_runtime() -> None:
-    """与环境初始化顺序对齐（database/migration.py 同款）：env → logging → config。
-
-    注意：database.db 在 import 时会调用 get_logger，所以它只能在 init_logging 之后
-    延迟导入（见 count_existing / replace_all）。
-    """
-    init_env()
-    init_logging()
-    init_config()
 
 
 async def count_existing() -> int:
@@ -204,7 +193,8 @@ async def main() -> int:
         print("--dry-run：未写数据库")
         return 0
 
-    initialize_runtime()
+    # database.db 在 import 时会调用 get_logger，只能在 init_logging 之后延迟导入
+    initialize_migration_runtime()
 
     existing = await count_existing()
     if existing and not args.yes:
