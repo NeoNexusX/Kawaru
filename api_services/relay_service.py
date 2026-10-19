@@ -170,8 +170,9 @@ async def stream_oss_object(
 
     调用方负责 token 校验与 OSS key 解析，本函数只做传输：
     - 下载文件名取 key 的 basename（Content-Disposition 用），调用方不再单独推导
-    - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429），
-      release 在 generator 的 finally（含客户端断开 CancelledError），不漏放
+    - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429）；
+      交接前的失败（含 CancelledError 等 BaseException）由 finally 统一释放，
+      交接后由 generator 的 finally / BackgroundTask 的 _cleanup 释放，不漏放
     - get_object 在构造响应前发起：响应状态码（200/206/416）依赖 res.status_code
     - 逐 chunk 空闲超时：客户端停止消费 → 背压使 OSS read 阻塞 → 超时中断传输
     - HEAD 走 head_object 分支不拉正文（uvicorn 对 HEAD 只是丢弃响应体，
@@ -192,6 +193,9 @@ async def stream_oss_object(
         logger.error("relay download unavailable: internal oss client not created %s", log_ctx)
         raise internal_server_error_exception
 
+    # 响应交给调用方之前的所有失败路径（含 CancelledError 等 BaseException）由 finally 统一释放；
+    # 一旦交出 StreamingResponse，则改由生成器 finally / BackgroundTask 的 _cleanup 负责。
+    handed_off = False
     try:
         if method == "HEAD":
             head = await client.head_object(
@@ -205,8 +209,6 @@ async def stream_oss_object(
                 headers["Content-Type"] = head.content_type
             if head.content_length:
                 headers["Content-Length"] = str(head.content_length)
-            await _close_client(client)
-            RELAY_SEMAPHORE.release()
             return Response(status_code=head.status_code or 200, headers=headers)
 
         res = await client.get_object(
@@ -261,22 +263,24 @@ async def stream_oss_object(
         if res.content_range:
             headers["Content-Range"] = res.content_range
 
-        return StreamingResponse(
+        response = StreamingResponse(
             gen(),
             status_code=res.status_code or 200,
             headers=headers,
             # 兜底：极端情况下生成器未被启动（客户端在建流前就断开）时也能释放资源
             background=BackgroundTask(_cleanup),
         )
-    except HTTPException:
-        await _close_client(client)
-        RELAY_SEMAPHORE.release()
-        raise
+        handed_off = True
+        return response
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error("relay download failed %s: %s", log_ctx, exc)
-        await _close_client(client)
-        RELAY_SEMAPHORE.release()
+        logger.error("relay %s failed %s: %s", method, log_ctx, exc)
         raise internal_server_error_exception from exc
+    finally:
+        if not handed_off:
+            # 先还槽位再关客户端：取消可能在 await _close_client 期间再次抛出，
+            # 槽位必须无条件归还（_close_client 自身已吞异常）
+            RELAY_SEMAPHORE.release()
+            await _close_client(client)
 
 
 async def stream_relay_file(
