@@ -13,6 +13,7 @@ from fastapi import Depends, HTTPException, Query, Request, Response
 from api.user_api import TokenDep
 from api_services.annotation_service import get_annotation_list
 from api_services.relay_service import (
+    SI_DB_NOT_CONFIGURED_DETAIL,
     get_si_db_oss_key,
     head_si_db_size,
     issue_si_db_relay_token,
@@ -79,14 +80,14 @@ async def get_si_db_download(
     """
     oss_key = get_si_db_oss_key()
     if not oss_key:
-        raise HTTPException(status_code=503, detail="注释库文件未配置，请联系管理员")
+        raise HTTPException(status_code=503, detail=SI_DB_NOT_CONFIGURED_DETAIL)
 
     cache_key = f"si_db_dl_relay:{oss_key}"
     cached = await redis_client.get(cache_key)
     if cached:
         return OssDownloadFile.model_validate_json(cached)
 
-    size = await head_si_db_size()
+    size = await head_si_db_size(oss_key)
     if size is None:
         logger.error("si_db download metadata failed: object missing or head failed key=%s", oss_key)
         raise HTTPException(status_code=404, detail="注释库文件不存在，请联系管理员检查配置")

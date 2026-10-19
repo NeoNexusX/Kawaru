@@ -49,7 +49,25 @@ RELAY_SEMAPHORE = asyncio.Semaphore(RELAY_MAX_CONCURRENCY)
 
 RelayPart = Literal["imzml", "ibd"]
 
+RELAY_TOKEN_INVALID_DETAIL = "下载链接无效或已过期"
+
 _CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+# 中转 token 一律对称签名；登录 token 的算法由配置控制，两者互不复用。
+_RELAY_JWT_ALGORITHM = "HS256"
+
+
+def _encode_relay_payload(payload: dict) -> str:
+    """中转 token 统一签发入口（文件中转与 SI 注释库共用同一签名口径）。"""
+    return jwt.encode(payload, SECRET_KEY, algorithm=_RELAY_JWT_ALGORITHM)
+
+
+def _decode_relay_payload(token: str) -> dict | None:
+    """中转 token 统一解码入口：签名或有效期不合法均返回 None。"""
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[_RELAY_JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return None
 
 
 def issue_relay_token(public_id: str, part: RelayPart) -> str:
@@ -65,14 +83,13 @@ def issue_relay_token(public_id: str, part: RelayPart) -> str:
         "part": part,
         "exp": int(time.time()) + RELAY_TOKEN_EXPIRE_SECONDS,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return _encode_relay_payload(payload)
 
 
 def verify_relay_token(token: str, public_id: str, part: RelayPart) -> bool:
     """校验中转 token：签名有效且 public_id/part 与请求一致，防止被拿来取任意 OSS 对象。"""
-    try:
-        data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.PyJWTError:
+    data = _decode_relay_payload(token)
+    if data is None:
         return False
     return data.get("public_id") == public_id and data.get("part") == part
 
@@ -278,7 +295,7 @@ async def stream_relay_file(
     """
     if not verify_relay_token(token, public_id, part):
         logger.warning("relay download rejected: invalid or expired token public_id=%s part=%s", public_id, part)
-        raise HTTPException(status_code=401, detail="下载链接无效或已过期")
+        raise HTTPException(status_code=401, detail=RELAY_TOKEN_INVALID_DETAIL)
 
     file_record = await get_file_record_by_public_id(public_id, session)
     file_id = file_record.file_id
@@ -304,6 +321,7 @@ async def stream_relay_file(
 # SI 注释库 CSV 中转（key 来自配置，无 DB 记录）
 #########################
 SI_DB_TOKEN_SCOPE = "si_db"
+SI_DB_NOT_CONFIGURED_DETAIL = "注释库文件未配置，请联系管理员"
 
 
 def issue_si_db_relay_token() -> str:
@@ -317,16 +335,13 @@ def issue_si_db_relay_token() -> str:
         "scope": SI_DB_TOKEN_SCOPE,
         "exp": int(time.time()) + RELAY_TOKEN_EXPIRE_SECONDS,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return _encode_relay_payload(payload)
 
 
 def verify_si_db_relay_token(token: str) -> bool:
     """校验 SI 注释库中转 token：签名有效且 scope 匹配。"""
-    try:
-        data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.PyJWTError:
-        return False
-    return data.get("scope") == SI_DB_TOKEN_SCOPE
+    data = _decode_relay_payload(token)
+    return data is not None and data.get("scope") == SI_DB_TOKEN_SCOPE
 
 
 def get_si_db_oss_key() -> str | None:
@@ -334,16 +349,13 @@ def get_si_db_oss_key() -> str | None:
     return (get_config().oss.oss_si_db_key or "").strip() or None
 
 
-async def head_si_db_size() -> int | None:
+async def head_si_db_size(oss_key: str) -> int | None:
     """对内网 endpoint 做一次 head_object 拿 CSV 真实大小（兼验证对象存在）。
 
-    供 /download 元数据接口填 OssDownloadFile.size（必填 int）；
-    不占中转信号量（一次元数据请求体积极小）。未配置 key / 客户端不可用 /
-    对象不存在均返回 None，报错口径由调用方决定。
+    供 /download 元数据接口填 OssDownloadFile.size（必填 int）；不占中转信号量
+    （一次元数据请求体积极小）。key 由调用方传入（调用方已做配置闸），本函数
+    只负责探测；客户端不可用 / 对象不存在均返回 None，报错口径由调用方决定。
     """
-    oss_key = get_si_db_oss_key()
-    if not oss_key:
-        return None
     client = create_internal_oss_client()
     if client is None:
         return None
@@ -364,12 +376,12 @@ async def stream_si_db_csv(token: str, range_header: str | None, method: str = "
     """
     if not verify_si_db_relay_token(token):
         logger.warning("si_db relay download rejected: invalid or expired token")
-        raise HTTPException(status_code=401, detail="下载链接无效或已过期")
+        raise HTTPException(status_code=401, detail=RELAY_TOKEN_INVALID_DETAIL)
 
     oss_key = get_si_db_oss_key()
     if not oss_key:
         logger.warning("si_db relay download unavailable: oss_si_db_key not configured")
-        raise HTTPException(status_code=503, detail="注释库文件未配置，请联系管理员")
+        raise HTTPException(status_code=503, detail=SI_DB_NOT_CONFIGURED_DETAIL)
 
     return await stream_oss_object(
         oss_path=oss_key,
