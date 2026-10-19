@@ -200,7 +200,7 @@ async def stream_oss_object(
     try:
         if method == "HEAD":
             head = await client.head_object(
-                HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path)
+                HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path) # type: ignore
             )
             headers = {
                 "Accept-Ranges": "bytes",
@@ -213,7 +213,7 @@ async def stream_oss_object(
             return Response(status_code=head.status_code or 200, headers=headers)
 
         res = await client.get_object(
-            GetObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path, range_header=range_header)
+            GetObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path, range_header=range_header) # type: ignore
         )
 
         cleanup_done = False
@@ -228,7 +228,7 @@ async def stream_oss_object(
                 return
             cleanup_done = True
             try:
-                await res.body.close()
+                await res.body.close() # type: ignore
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("relay close oss body failed %s: %s", log_ctx, exc)
             await _close_client(client)
@@ -237,7 +237,7 @@ async def stream_oss_object(
         async def gen():
             try:
                 # iter_bytes 是异步工厂方法：必须 await 才能拿到异步迭代器（read/iter_bytes 形状不对称）
-                iterator = await res.body.iter_bytes()
+                iterator = await res.body.iter_bytes() # type: ignore
                 while True:
                     try:
                         chunk = await asyncio.wait_for(anext(iterator), timeout=RELAY_IDLE_TIMEOUT)
@@ -304,7 +304,7 @@ async def stream_relay_file(
 
     file_record = await get_file_record_by_public_id(public_id, session)
     file_id = file_record.file_id
-    origin = await get_origin_imzml_by_file_id(session, file_id)
+    origin = await get_origin_imzml_by_file_id(session, file_id) # type: ignore
     if not origin:
         logger.warning("relay download origin missing public_id=%s file_id=%s", public_id, file_id)
         raise file_content_missing_exception
@@ -368,7 +368,7 @@ async def head_si_db_size(oss_key: str) -> int | None:
         return None
     try:
         head = await asyncio.wait_for(
-            client.head_object(HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_key)),
+            client.head_object(HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_key)), # type: ignore
             timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )
         return head.content_length

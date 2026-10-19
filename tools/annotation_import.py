@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import csv
 import hashlib
+import math
 import re
 import sys
 from collections.abc import Iterator
@@ -109,6 +110,8 @@ def iter_rows(path: Path, unknown_origins: set[str]) -> Iterator[dict[str, objec
                 mass = float(mass_text)
             except ValueError as exc:
                 raise ValueError(f"第 {line_no} 行：Mass 无法解析 {mass_text!r}") from exc
+            if not math.isfinite(mass):
+                raise ValueError(f"第 {line_no} 行：Mass 非有限数值 {mass_text!r}")
 
             if origin not in KNOWN_ORIGINS:
                 unknown_origins.add(origin)

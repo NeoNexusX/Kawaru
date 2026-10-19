@@ -5,6 +5,9 @@
 #########################
 from __future__ import annotations
 
+import math
+
+from pydantic import field_validator
 from sqlalchemy import BigInteger, Column, Double, Text
 from sqlmodel import Field, SQLModel
 
@@ -60,6 +63,14 @@ class AnnotationFilter(SQLModel):
     origin: str | None = Field(default=None, max_length=16, description="来源类别（模糊匹配）")
     mass_min: float | None = Field(default=None, description="质量区间下限（含）")
     mass_max: float | None = Field(default=None, description="质量区间上限（含）")
+
+    # JSON 解析器默认放行 NaN/Infinity，但不进 MySQL 就是 500，在入口挡掉
+    @field_validator("mass_min", "mass_max")
+    @classmethod
+    def _reject_non_finite(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("必须是有限数值")
+        return value
 
 
 class AnnotationEntryPublic(SQLModel):
