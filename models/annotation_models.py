@@ -40,7 +40,7 @@ class AnnotationEntryInDB(SQLModel, table=True):
     )
     inchi: str = Field(
         sa_column=Column(Text, nullable=False),
-        description="InChI 结构标识（最长 2133 字符，不进列表响应）",
+        description="InChI 结构标识（最长 2133 字符）",
     )
 
 

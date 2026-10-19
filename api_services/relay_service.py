@@ -44,7 +44,7 @@ logger = get_logger("api_services.relay")
 
 # 并发信号量：限制同时进行的中转下载数，保护服务器带宽与 OSS 连接数。
 # 注意：uvicorn 多 worker 时每个进程各持有独立信号量，实际并发 = worker 数 × RELAY_MAX_CONCURRENCY。
-# 文件中转与 SI 注释库 CSV 共用这一个信号量（不区分来源，见 SI注释数据库实现方案 §10.3）。
+# 文件中转与 SI 注释库 CSV 共用这一个信号量（不区分来源）。
 RELAY_SEMAPHORE = asyncio.Semaphore(RELAY_MAX_CONCURRENCY)
 
 RelayPart = Literal["imzml", "ibd"]
@@ -102,7 +102,7 @@ def resolve_relay_base_url(request_base_url: str) -> str:
 
 
 async def _close_client(client) -> None:
-    """安全关闭 OSS 客户端：关闭失败不能阻断调用方的信号量释放（并发槽只有 5 个）。"""
+    """安全关闭 OSS 客户端：关闭失败不能阻断调用方的信号量释放（并发槽有限）。"""
     try:
         await client.close()
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -199,7 +199,7 @@ async def stream_oss_object(
         cleanup_done = False
 
         async def _cleanup() -> None:
-            """幂等释放（OSS 流 + 客户端 + 并发槽）：并发槽只有 5 个，漏放会逐步废掉整个中转。
+            """幂等释放（OSS 流 + 客户端 + 并发槽）：并发槽有限，漏放会逐步废掉整个中转。
 
             每步单独兜异常，保证任何一步失败都不会阻断最后的信号量释放。
             """

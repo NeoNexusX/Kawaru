@@ -1,6 +1,6 @@
 #########################
 # Annotation Service - SI 注释数据库查询
-# 职责: 单值模糊筛选 → SQL 子句、排序 tiebreak、分页查询、meta 聚合、单条详情
+# 职责: 单值模糊筛选 → SQL 子句、排序 tiebreak、分页查询
 # 说明: 全部只读；表里只有"当前那份 CSV"的数据，无任何版本逻辑（无 join、无子查询）
 #########################
 from __future__ import annotations

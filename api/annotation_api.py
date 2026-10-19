@@ -1,7 +1,7 @@
 #########################
 # Annotation API - SI 注释数据库接口层
 # 职责: 参数声明与校验、登录闸、Redis 缓存中转 URL、调用 service/relay
-# 说明: 浏览三个入口 + 取下载 URL 的入口均需登录；流式端点靠 URL 内嵌 token
+# 说明: 浏览与取下载 URL 的两个入口均需登录；流式端点靠 URL 内嵌 token
 #########################
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ async def get_si_db_download(
     - 缓存不区分用户：TTL 内所有登录用户拿到同一条 URL（与 raw_dl_relay 同构），
       TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，恒早于 token 有效期
     - 缓存键带 oss_key（si_db_dl_relay:<key>）：改配置换路径即换键，重启后
-      不会命中旧文件的 size/filename；原地覆盖同一路径时需运维删该键（§15 第 6 条）
+      不会命中旧文件的 size/filename；原地覆盖同一路径时需运维删该键
     - 缓存值内嵌 base_url：配置了 public_base_url 时无影响；回退模式下
       首次请求的 host 会被固化进缓存（与文件中转一致）
     """
