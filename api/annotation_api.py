@@ -29,8 +29,6 @@ from tools.logger import get_logger
 
 logger = get_logger("api.annotation")
 
-SI_DB_RELAY_CACHE_KEY = "si_db_dl_relay"
-
 
 async def get_si_db_list(
     filters: AnnotationFilter,
@@ -74,6 +72,8 @@ async def get_si_db_download(
     注意：
     - 缓存不区分用户：TTL 内所有登录用户拿到同一条 URL（与 raw_dl_relay 同构），
       TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，恒早于 token 有效期
+    - 缓存键带 oss_key（si_db_dl_relay:<key>）：改配置换路径即换键，重启后
+      不会命中旧文件的 size/filename；原地覆盖同一路径时需运维删该键（§15 第 6 条）
     - 缓存值内嵌 base_url：配置了 public_base_url 时无影响；回退模式下
       首次请求的 host 会被固化进缓存（与文件中转一致）
     """
@@ -81,7 +81,8 @@ async def get_si_db_download(
     if not oss_key:
         raise HTTPException(status_code=503, detail="注释库文件未配置，请联系管理员")
 
-    cached = await redis_client.get(SI_DB_RELAY_CACHE_KEY)
+    cache_key = f"si_db_dl_relay:{oss_key}"
+    cached = await redis_client.get(cache_key)
     if cached:
         return OssDownloadFile.model_validate_json(cached)
 
@@ -95,7 +96,7 @@ async def get_si_db_download(
     url = f"{base_url}/annotations/si-db/relay/download?token={token}"
 
     response = OssDownloadFile(filename=Path(oss_key).name, url=url, size=size)
-    await redis_client.set(SI_DB_RELAY_CACHE_KEY, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     logger.info(f"si_db download issued user={current_user.id} filename={response.filename} size={size}")
     return response
