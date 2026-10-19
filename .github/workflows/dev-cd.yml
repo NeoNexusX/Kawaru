@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # ACR 地址只在这里定义一次；deploy 阶段的登录域名由 APP_IMAGE 前缀推出，
+  # 不会出现「镜像拉取域名改了、docker login 漏改」导致的 unauthorized
+  ACR_REGISTRY: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com
+  ACR_REPO: kawaru/kawaru
+
 concurrency:
   group: dev-cd
   cancel-in-progress: false        # 数据库迁移不可被新提交中途取消
@@ -21,7 +27,7 @@ jobs:
       - name: Log in to ACR
         uses: docker/login-action@v4
         with:
-          registry: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com
+          registry: ${{ env.ACR_REGISTRY }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
@@ -29,7 +35,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru
+          images: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}
           tags: |
             type=raw,value=dev-latest
             type=sha,prefix=dev-,format=long
@@ -75,7 +81,6 @@ jobs:
           script: |
             set -e
             set -o pipefail
-            export APP_IMAGE="${APP_IMAGE,,}"   # 统一转小写（ACR 仓库名要求小写）
             cd /opt/kawaru-dev
 
             # ACR_PASSWORD 是 CI 推送用的可写凭证：只写进临时 DOCKER_CONFIG（mktemp 目录
@@ -84,7 +89,9 @@ jobs:
             export DOCKER_CONFIG="$(mktemp -d)"
             trap 'rm -rf "$DOCKER_CONFIG"' EXIT
             trap 'exit 1' HUP INT TERM   # 信号中断也转成正常退出，确保上面的 trap 执行
-            echo "$ACR_PASSWORD" | docker login crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com -u "$ACR_USERNAME" --password-stdin
+            # 登录域名直接取镜像名的 registry 前缀（APP_IMAGE 本身就是全小写），
+            # 与下面 compose pull 的域名天然一致，不会再出现登录/拉取域名不一致的 unauthorized
+            echo "$ACR_PASSWORD" | docker login "${APP_IMAGE%%/*}" -u "$ACR_USERNAME" --password-stdin
             COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
             $COMPOSE pull migrate app worker beat
             $COMPOSE up -d --wait --wait-timeout 180 mariadb redis
@@ -108,7 +115,7 @@ jobs:
         env:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-          APP_IMAGE: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:dev-${{ github.sha }}
+          APP_IMAGE: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}:dev-${{ github.sha }}
           DEPLOY_SHA: ${{ github.sha }}
 
       # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
@@ -124,7 +131,6 @@ jobs:
           envs: APP_IMAGE
           script: |
             set +e   # 诊断阶段不要因为某条命令失败就中断
-            export APP_IMAGE="${APP_IMAGE,,}"   # 同 deploy：compose 插值需要它，否则 ps/logs 全挂
             cd /opt/kawaru-dev
             COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
 
@@ -145,4 +151,4 @@ jobs:
             done
             exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
         env:
-          APP_IMAGE: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:dev-${{ github.sha }}
+          APP_IMAGE: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}:dev-${{ github.sha }}
