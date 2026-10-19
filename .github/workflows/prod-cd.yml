@@ -71,14 +71,21 @@ jobs:
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           port: 22
-          envs: ACR_PULL_USERNAME,ACR_PULL_PASSWORD,APP_IMAGE,DEPLOY_SHA
+          envs: ACR_USERNAME,ACR_PASSWORD,APP_IMAGE,DEPLOY_SHA
           script: |
             set -e
             set -o pipefail
             export APP_IMAGE="${APP_IMAGE,,}"   # 统一转小写（ACR 仓库名要求小写）
             cd /opt/kawaru-prod
+
+            # ACR_PASSWORD 是 CI 推送用的可写凭证：只写进临时 DOCKER_CONFIG（mktemp 目录
+            # 0700），不落 ~/.docker/config.json；trap 保证任意退出路径都清理——
+            # 旧写法 set -e 中途失败会跳过尾部 logout，推送密码就长期留在服务器上
+            export DOCKER_CONFIG="$(mktemp -d)"
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+            trap 'exit 1' HUP INT TERM   # 信号中断也转成正常退出，确保上面的 trap 执行
             # 香港服务器与 ACR 同地域，走 -vpc 内网域名拉取（dev 在杭州只能走公网域名）
-            echo "$ACR_PULL_PASSWORD" | docker login crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com -u "$ACR_PULL_USERNAME" --password-stdin
+            echo "$ACR_PASSWORD" | docker login crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com -u "$ACR_USERNAME" --password-stdin
             COMPOSE="docker compose -f docker-compose.prod.yml -p kawaru-prod"
             $COMPOSE pull migrate app worker beat
             $COMPOSE up -d --wait --wait-timeout 180 mariadb redis
@@ -98,10 +105,10 @@ jobs:
             docker tag "$APP_IMAGE" "${APP_IMAGE%:*}:latest"
             # 清理无容器引用且超过 7 天的旧镜像（历史 sha-<sha> / dangling）；ACR 仍保留全部 tag，可随时回拉
             docker image prune -af --filter "until=168h"
-            docker logout crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com
+            # 凭证清理由开头的 trap 统一负责（临时 DOCKER_CONFIG 随目录删除），无需 logout
         env:
-          ACR_PULL_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PULL_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
           APP_IMAGE: crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:sha-${{ github.sha }}
           DEPLOY_SHA: ${{ github.sha }}
 
