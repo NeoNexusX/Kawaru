@@ -52,14 +52,21 @@ def build_annotation_filters(filters: AnnotationFilter) -> list[Any]:
 
 
 def build_annotation_order(sort_by: str, order: str) -> tuple[Any, Any]:
-    """排序子句：sort_by/order 映射为排序列 + id ASC 兜底
+    """排序子句：sort_by/order 映射为排序列 + id 同向兜底
 
-    同值行之间按 id 升序，保证翻页不重不漏（name/mass 存在并列值）；
-    写法参照 build_file_order。
+    同值行之间按 id 排序，保证翻页不重不漏（name/mass 存在并列值）。
+    兜底方向必须与主排序一致：InnoDB 二级索引是 (col, id) 升序结构，
+    只有全 ASC 或全 DESC 才能整体正向/反向扫描；方向相反会退化为 filesort。
     """
     column = _SORT_COLUMNS.get(sort_by, AnnotationEntryInDB.entry_key)
-    primary = col(column).asc() if order == "asc" else col(column).desc()  # pylint: disable=no-member
-    return (primary, col(AnnotationEntryInDB.id).asc())  # pylint: disable=no-member
+    descending = order != "asc"
+    primary = col(column).desc() if descending else col(column).asc()  # pylint: disable=no-member
+    tiebreak = (
+        col(AnnotationEntryInDB.id).desc()  # pylint: disable=no-member
+        if descending
+        else col(AnnotationEntryInDB.id).asc()  # pylint: disable=no-member
+    )
+    return (primary, tiebreak)
 
 
 async def get_annotation_list(
