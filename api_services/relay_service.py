@@ -28,6 +28,7 @@ from storage.oss.oss_client import create_internal_oss_client
 
 from constants.file_constants import (
     OSS_BUCKET_NAME,
+    OSS_DEFAULT_TIMEOUT_SECONDS,
     RELAY_ACQUIRE_TIMEOUT,
     RELAY_IDLE_TIMEOUT,
     RELAY_MAX_CONCURRENCY,
@@ -358,14 +359,22 @@ async def head_si_db_size(oss_key: str) -> int | None:
 
     供 /download 元数据接口填 OssDownloadFile.size（必填 int）；不占中转信号量
     （一次元数据请求体积极小）。key 由调用方传入（调用方已做配置闸），本函数
-    只负责探测；客户端不可用 / 对象不存在均返回 None，报错口径由调用方决定。
+    只负责探测；客户端不可用 / 超时 / 对象不存在均返回 None，报错口径由调用方决定。
+    超时用 OSS_DEFAULT_TIMEOUT_SECONDS 兜底：内网 endpoint 卡住时不会挂到 SDK
+    读超时（60s × 3 次重试）。
     """
     client = create_internal_oss_client()
     if client is None:
         return None
     try:
-        head = await client.head_object(HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_key))
+        head = await asyncio.wait_for(
+            client.head_object(HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_key)),
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
+        )
         return head.content_length
+    except asyncio.TimeoutError:
+        logger.error("si_db head timed out after %ss key=%s", OSS_DEFAULT_TIMEOUT_SECONDS, oss_key)
+        return None
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("si_db head failed key=%s: %s", oss_key, exc)
         return None
