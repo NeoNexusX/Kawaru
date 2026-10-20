@@ -160,6 +160,9 @@ class OSSSettings(BaseModel):
     relay_max_concurrency: int = Field(default=5, ge=1, description="中转下载最大并发数（保护服务器带宽）")
     relay_acquire_timeout_seconds: float = Field(default=10, gt=0, description="中转下载排队等待上限（秒），超时返回 429")
     relay_idle_timeout_seconds: float = Field(default=30, gt=0, description="中转下载空闲超时（秒）：客户端 X 秒不消费数据则中断传输")
+    # 浏览器直连下载（download_raw 的 imzML/ibd 预签名 URL）的 CDN 域名：仅替换 URL 域名，
+    # 签名参数不变（V1 签名不含 Host，回源 OSS 验签照常通过）。正式服配置，测试服不配置。
+    oss_cdn_domain: str | None = Field(default=None, description="浏览器直连下载的 CDN 域名（如 https://cdn.neonexus.top）；配置后预签名 URL 换用该域名，未配置保持 OSS 域名")
 
 
 class UserSettings(BaseModel):

@@ -37,6 +37,7 @@ from alibabacloud_tea_openapi import models as open_api_models
 from constants.experiment_constants import OSS_PROCESSED_STORAGE_ROOT
 from constants.file_constants import (
     OSS_BUCKET_NAME,
+    OSS_CDN_DOMAIN,
     OSS_DEFAULT_TIMEOUT_SECONDS,
     OSS_DELETE_OBJECT_TIMEOUT_SECONDS,
     OSS_DELETE_PREFIX_TIMEOUT_SECONDS,
@@ -372,6 +373,10 @@ def _presign_get_url(file_path: str, expires: int) -> str | None:
             ),
             expires=timedelta(seconds=expires),
         )
+        # 配置 CDN 域名（正式服）时仅替换域名：V1 签名不含 Host，不影响 Signature；
+        # 未配置（测试服）则原样返回 OSS 域名。OSS_CDN_DOMAIN 需带协议（如 https://cdn.neonexus.top）
+        if OSS_CDN_DOMAIN:
+            return f"{OSS_CDN_DOMAIN.rstrip('/')}/{pre_result.url.split('/', 3)[3]}"
         return pre_result.url
     except Exception as e: # pylint:disable = broad-exception-caught
         logger.error(f"failed to sign oss file: {e}")

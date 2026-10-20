@@ -82,6 +82,8 @@ assert SIGNED_URL_EXPIRE_SECONDS > DOWNLOAD_CACHE_TTL_SECONDS, (
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
+# 浏览器直连下载的 CDN 域名：正式服配置；测试服不配置（None）则预签名 URL 保持 OSS 域名
+OSS_CDN_DOMAIN = getattr(config.oss, "oss_cdn_domain", None)
 # STS Token 有效期（单位秒；分钟值上限 240 需对齐阿里云 RAM 角色「最大会话时长」设置）
 OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_upload_sts_token_expire_minutes", 60)) * 60
 OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_download_sts_token_expire_minutes", 60)) * 60
@@ -156,4 +158,5 @@ __all__ = [
     "OSS_DELETE_PREFIX_TIMEOUT_SECONDS",
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
+    "OSS_CDN_DOMAIN",
 ]

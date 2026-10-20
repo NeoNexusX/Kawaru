@@ -119,6 +119,9 @@ oss:
   relay_max_concurrency: 10         # 中转下载最大并发数（保护服务器带宽）
   relay_acquire_timeout_seconds: 10 # 排队等待上限，超时返回 429
   relay_idle_timeout_seconds: 30    # 空闲超时：客户端 30s 不消费数据则中断
+  # 浏览器直连下载（download_raw 预签名 URL）的 CDN 域名，仅正式服配置；
+  # V1 签名不含 Host，只换域名不影响签名。测试服不配置则保持 OSS 域名。
+  # oss_cdn_domain: https://cdn.neonexus.top
 
 admin_info:
   username: kawaru
