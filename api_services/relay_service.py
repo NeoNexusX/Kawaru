@@ -2,6 +2,7 @@
 # Relay Service - 中转下载（流式透传）
 # 职责: 签发/校验中转 token、拼接中转 URL、把 OSS 对象经服务器流式透传给用户
 # 说明: OSS→服务器 走内网 endpoint（免费），服务器→用户 走本机出站带宽（套餐内免费）
+# 2026-10 抽出共享内核 stream_oss_object：文件中转与 SI 注释库 CSV 共用同一传输实现
 #########################
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from storage.oss.oss_client import create_internal_oss_client
 
 from constants.file_constants import (
     OSS_BUCKET_NAME,
+    OSS_DEFAULT_TIMEOUT_SECONDS,
     RELAY_ACQUIRE_TIMEOUT,
     RELAY_IDLE_TIMEOUT,
     RELAY_MAX_CONCURRENCY,
@@ -43,11 +45,30 @@ logger = get_logger("api_services.relay")
 
 # 并发信号量：限制同时进行的中转下载数，保护服务器带宽与 OSS 连接数。
 # 注意：uvicorn 多 worker 时每个进程各持有独立信号量，实际并发 = worker 数 × RELAY_MAX_CONCURRENCY。
+# 文件中转与 SI 注释库 CSV 共用这一个信号量（不区分来源）。
 RELAY_SEMAPHORE = asyncio.Semaphore(RELAY_MAX_CONCURRENCY)
 
 RelayPart = Literal["imzml", "ibd"]
 
+RELAY_TOKEN_INVALID_DETAIL = "下载链接无效或已过期"
+
 _CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+# 中转 token 一律对称签名；登录 token 的算法由配置控制，两者互不复用。
+_RELAY_JWT_ALGORITHM = "HS256"
+
+
+def _encode_relay_payload(payload: dict) -> str:
+    """中转 token 统一签发入口（文件中转与 SI 注释库共用同一签名口径）。"""
+    return jwt.encode(payload, SECRET_KEY, algorithm=_RELAY_JWT_ALGORITHM)
+
+
+def _decode_relay_payload(token: str) -> dict | None:
+    """中转 token 统一解码入口：签名或有效期不合法均返回 None。"""
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[_RELAY_JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return None
 
 
 def issue_relay_token(public_id: str, part: RelayPart) -> str:
@@ -63,14 +84,13 @@ def issue_relay_token(public_id: str, part: RelayPart) -> str:
         "part": part,
         "exp": int(time.time()) + RELAY_TOKEN_EXPIRE_SECONDS,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return _encode_relay_payload(payload)
 
 
 def verify_relay_token(token: str, public_id: str, part: RelayPart) -> bool:
     """校验中转 token：签名有效且 public_id/part 与请求一致，防止被拿来取任意 OSS 对象。"""
-    try:
-        data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except jwt.PyJWTError:
+    data = _decode_relay_payload(token)
+    if data is None:
         return False
     return data.get("public_id") == public_id and data.get("part") == part
 
@@ -100,7 +120,7 @@ def resolve_relay_base_url(request_base_url: str) -> str:
 
 
 async def _close_client(client) -> None:
-    """安全关闭 OSS 客户端：关闭失败不能阻断调用方的信号量释放（并发槽只有 5 个）。"""
+    """安全关闭 OSS 客户端：关闭失败不能阻断调用方的信号量释放（并发槽有限）。"""
     try:
         await client.close()
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -140,41 +160,128 @@ async def prepare_download_relay_oss(
     ]
 
 
-async def _relay_head_response(oss_path: str) -> Response:
-    """HEAD 请求只返回头部信息。
+async def stream_oss_object(
+    *,
+    oss_path: str,
+    range_header: str | None,
+    method: str,
+    log_ctx: str,
+) -> Response:
+    """流式透传共享内核：把一个 OSS 对象的字节流交给客户端（文件中转与 SI 注释库共用）。
 
-    不能直接走 GET 分支：uvicorn 对 HEAD 只是丢弃响应体，StreamingResponse 的生成器
-    仍会被完整消费，等于每次 HEAD 都从 OSS 拉一遍整文件。这里改走 head_object（不拉正文）。
+    调用方负责 token 校验与 OSS key 解析，本函数只做传输：
+    - 下载文件名取 key 的 basename（Content-Disposition 用），调用方不再单独推导
+    - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429）；
+      交接前的失败（含 CancelledError 等 BaseException）由 finally 统一释放，
+      交接后由 generator 的 finally / BackgroundTask 的 _cleanup 释放，不漏放
+    - get_object 在构造响应前发起：响应状态码（200/206/416）依赖 res.status_code
+    - 逐 chunk 空闲超时：客户端停止消费 → 背压使 OSS read 阻塞 → 超时中断传输
+    - HEAD 走 head_object 分支不拉正文（uvicorn 对 HEAD 只是丢弃响应体，
+      StreamingResponse 的生成器仍会被完整消费，等于每次 HEAD 拉一遍整文件）
+    - log_ctx 标记来源（如 "file_id=1 part=ibd" / "si_db"），供日志区分与统计
     """
+    download_name = Path(oss_path).name
+    # 有界等待并发槽：在构造响应前获取，超时可干净返回 429
     try:
         await asyncio.wait_for(RELAY_SEMAPHORE.acquire(), timeout=RELAY_ACQUIRE_TIMEOUT)
     except asyncio.TimeoutError as exc:
+        logger.warning("relay download busy %s", log_ctx)
         raise HTTPException(status_code=429, detail="当前下载繁忙，请稍后重试") from exc
 
     client = create_internal_oss_client()
     if client is None:
         RELAY_SEMAPHORE.release()
+        logger.error("relay download unavailable: internal oss client not created %s", log_ctx)
         raise internal_server_error_exception
 
+    # 响应交给调用方之前的所有失败路径（含 CancelledError 等 BaseException）由 finally 统一释放；
+    # 一旦交出 StreamingResponse，则改由生成器 finally / BackgroundTask 的 _cleanup 负责。
+    handed_off = False
     try:
-        head = await client.head_object(
-            HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path)
+        if method == "HEAD":
+            head = await client.head_object(
+                HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path) # type: ignore
+            )
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": _content_disposition(download_name),
+            }
+            if head.content_type:
+                headers["Content-Type"] = head.content_type
+            if head.content_length:
+                headers["Content-Length"] = str(head.content_length)
+            return Response(status_code=head.status_code or 200, headers=headers)
+
+        res = await client.get_object(
+            GetObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path, range_header=range_header) # type: ignore
         )
+
+        cleanup_done = False
+
+        async def _cleanup() -> None:
+            """幂等释放（OSS 流 + 客户端 + 并发槽）：并发槽有限，漏放会逐步废掉整个中转。
+
+            每步单独兜异常，保证任何一步失败都不会阻断最后的信号量释放。
+            """
+            nonlocal cleanup_done
+            if cleanup_done:
+                return
+            cleanup_done = True
+            try:
+                await res.body.close() # type: ignore
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("relay close oss body failed %s: %s", log_ctx, exc)
+            await _close_client(client)
+            RELAY_SEMAPHORE.release()
+
+        async def gen():
+            try:
+                # iter_bytes 是异步工厂方法：必须 await 才能拿到异步迭代器（read/iter_bytes 形状不对称）
+                iterator = await res.body.iter_bytes() # type: ignore
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(anext(iterator), timeout=RELAY_IDLE_TIMEOUT)
+                    except StopAsyncIteration:
+                        # 流正常结束。StopAsyncIteration 绝不能逸出 async generator
+                        # （PEP 479：逸出会被替换为 RuntimeError），必须 return 正常收尾
+                        return
+                    yield chunk
+            except asyncio.TimeoutError:
+                logger.warning("relay download idle timeout, aborting %s", log_ctx)
+                raise
+            finally:
+                # 正常结束、空闲超时、客户端断开（CancelledError）都走这里
+                await _cleanup()
+
         headers = {
             "Accept-Ranges": "bytes",
-            "Content-Disposition": _content_disposition(Path(oss_path).name),
+            "Content-Disposition": _content_disposition(download_name),
         }
-        if head.content_type:
-            headers["Content-Type"] = head.content_type
-        if head.content_length:
-            headers["Content-Length"] = str(head.content_length)
-        return Response(status_code=head.status_code or 200, headers=headers)
+        if res.content_type:
+            headers["Content-Type"] = res.content_type
+        if res.content_length:
+            headers["Content-Length"] = str(res.content_length)
+        if res.content_range:
+            headers["Content-Range"] = res.content_range
+
+        response = StreamingResponse(
+            gen(),
+            status_code=res.status_code or 200,
+            headers=headers,
+            # 兜底：极端情况下生成器未被启动（客户端在建流前就断开）时也能释放资源
+            background=BackgroundTask(_cleanup),
+        )
+        handed_off = True
+        return response
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error("relay HEAD failed key=%s: %s", oss_path, exc)
+        logger.error("relay %s failed %s: %s", method, log_ctx, exc)
         raise internal_server_error_exception from exc
     finally:
-        await _close_client(client)
-        RELAY_SEMAPHORE.release()
+        if not handed_off:
+            # 先还槽位再关客户端：取消可能在 await _close_client 期间再次抛出，
+            # 槽位必须无条件归还（_close_client 自身已吞异常）
+            RELAY_SEMAPHORE.release()
+            await _close_client(client)
 
 
 async def stream_relay_file(
@@ -185,24 +292,19 @@ async def stream_relay_file(
     range_header: str | None,
     method: str = "GET",
 ) -> Response:
-    """流式透传下载：验 token → 解析真实 oss key → 内网拉取 → 边拉边发，不落盘。
+    """文件中转下载：验 token → 解析真实 oss key → 交给共享内核 stream_oss_object。
 
-    关键点：
     - 对外入参为 public_id：验 token 后在库内换回内部 file_id 定位 origin
-    - get_object 在构造响应前发起：响应状态码（200/206/416）依赖 res.status_code。
-    - 并发信号量覆盖传输全程：acquire 在构造响应前（拿不到返回 429），
-      release 在 generator 的 finally（含客户端断开 CancelledError），不漏放。
-    - 逐 chunk 空闲超时：客户端停止消费 → 背压使 OSS read 阻塞 → 超时中断传输。
-    - HEAD 走 head_object 分支，不拉正文（见 _relay_head_response）。
+    - 文件存在性（含删除流程过滤）；origin 路径从数据库解析，绝不信任请求入参
+    - 传输细节（信号量/流式/空闲超时/清理）见 stream_oss_object
     """
     if not verify_relay_token(token, public_id, part):
         logger.warning("relay download rejected: invalid or expired token public_id=%s part=%s", public_id, part)
-        raise HTTPException(status_code=401, detail="下载链接无效或已过期")
+        raise HTTPException(status_code=401, detail=RELAY_TOKEN_INVALID_DETAIL)
 
-    # 文件存在性（含删除流程过滤）；origin 路径从数据库解析
     file_record = await get_file_record_by_public_id(public_id, session)
     file_id = file_record.file_id
-    origin = await get_origin_imzml_by_file_id(session, file_id)
+    origin = await get_origin_imzml_by_file_id(session, file_id) # type: ignore
     if not origin:
         logger.warning("relay download origin missing public_id=%s file_id=%s", public_id, file_id)
         raise file_content_missing_exception
@@ -212,88 +314,91 @@ async def stream_relay_file(
         logger.warning("relay download path empty public_id=%s file_id=%s part=%s", public_id, file_id, part)
         raise file_content_missing_exception
 
-    if method == "HEAD":
-        return await _relay_head_response(oss_path)
+    return await stream_oss_object(
+        oss_path=oss_path,
+        range_header=range_header,
+        method=method,
+        log_ctx=f"file_id={file_id} part={part}",
+    )
 
-    # 有界等待并发槽：在构造响应前获取，超时可干净返回 429
-    try:
-        await asyncio.wait_for(RELAY_SEMAPHORE.acquire(), timeout=RELAY_ACQUIRE_TIMEOUT)
-    except asyncio.TimeoutError as exc:
-        logger.warning("relay download busy file_id=%s part=%s", file_id, part)
-        raise HTTPException(status_code=429, detail="当前下载繁忙，请稍后重试") from exc
 
+#########################
+# SI 注释库 CSV 中转（key 来自配置，无 DB 记录）
+#########################
+SI_DB_TOKEN_SCOPE = "si_db"
+SI_DB_NOT_CONFIGURED_DETAIL = "注释库文件未配置，请联系管理员"
+
+
+def issue_si_db_relay_token() -> str:
+    """签发 SI 注释库 CSV 中转 token：只绑 scope + exp，短时有效。
+
+    - 不绑路径：OSS key 唯一来源是 config.yaml 的 oss_si_db_key，token 与请求都无法影响它
+    - scope 与文件中转 token（{public_id, part, exp}）的 payload 结构不同，互相不可冒充
+    - 可复用（不做一次性消费）：断点续传的并发 Range 连接共用同一个 URL 与 token
+    """
+    payload = {
+        "scope": SI_DB_TOKEN_SCOPE,
+        "exp": int(time.time()) + RELAY_TOKEN_EXPIRE_SECONDS,
+    }
+    return _encode_relay_payload(payload)
+
+
+def verify_si_db_relay_token(token: str) -> bool:
+    """校验 SI 注释库中转 token：签名有效且 scope 匹配。"""
+    data = _decode_relay_payload(token)
+    return data is not None and data.get("scope") == SI_DB_TOKEN_SCOPE
+
+
+def get_si_db_oss_key() -> str | None:
+    """CSV 的 OSS key：唯一来源是配置 oss_si_db_key（空白视为未配置，返回 None）。"""
+    return (get_config().oss.oss_si_db_key or "").strip() or None
+
+
+async def head_si_db_size(oss_key: str) -> int | None:
+    """对内网 endpoint 做一次 head_object 拿 CSV 真实大小（兼验证对象存在）。
+
+    供 /download 元数据接口填 OssDownloadFile.size（必填 int）；不占中转信号量
+    （一次元数据请求体积极小）。key 由调用方传入（调用方已做配置闸），本函数
+    只负责探测；客户端不可用 / 超时 / 对象不存在均返回 None，报错口径由调用方决定。
+    超时用 OSS_DEFAULT_TIMEOUT_SECONDS 兜底：内网 endpoint 卡住时不会挂到 SDK
+    读超时（60s × 3 次重试）。
+    """
     client = create_internal_oss_client()
     if client is None:
-        RELAY_SEMAPHORE.release()
-        logger.error("relay download unavailable: internal oss client not created file_id=%s", file_id)
-        raise internal_server_error_exception
-
+        return None
     try:
-        res = await client.get_object(
-            GetObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_path, range_header=range_header)
+        head = await asyncio.wait_for(
+            client.head_object(HeadObjectRequest(bucket=OSS_BUCKET_NAME, key=oss_key)), # type: ignore
+            timeout=OSS_DEFAULT_TIMEOUT_SECONDS,
         )
-
-        cleanup_done = False
-
-        async def _cleanup() -> None:
-            """幂等释放（OSS 流 + 客户端 + 并发槽）：并发槽只有 5 个，漏放会逐步废掉整个中转。
-
-            每步单独兜异常，保证任何一步失败都不会阻断最后的信号量释放。
-            """
-            nonlocal cleanup_done
-            if cleanup_done:
-                return
-            cleanup_done = True
-            try:
-                await res.body.close()
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("relay close oss body failed file_id=%s: %s", file_id, exc)
-            await _close_client(client)
-            RELAY_SEMAPHORE.release()
-
-        async def gen():
-            try:
-                # iter_bytes 是异步工厂方法：必须 await 才能拿到异步迭代器（read/iter_bytes 形状不对称）
-                iterator = await res.body.iter_bytes()
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(anext(iterator), timeout=RELAY_IDLE_TIMEOUT)
-                    except StopAsyncIteration:
-                        # 流正常结束。StopAsyncIteration 绝不能逸出 async generator
-                        # （PEP 479：逸出会被替换为 RuntimeError），必须 return 正常收尾
-                        return
-                    yield chunk
-            except asyncio.TimeoutError:
-                logger.warning("relay download idle timeout, aborting file_id=%s part=%s", file_id, part)
-                raise
-            finally:
-                # 正常结束、空闲超时、客户端断开（CancelledError）都走这里
-                await _cleanup()
-
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": _content_disposition(Path(oss_path).name),
-        }
-        if res.content_type:
-            headers["Content-Type"] = res.content_type
-        if res.content_length:
-            headers["Content-Length"] = str(res.content_length)
-        if res.content_range:
-            headers["Content-Range"] = res.content_range
-
-        return StreamingResponse(
-            gen(),
-            status_code=res.status_code or 200,
-            headers=headers,
-            # 兜底：极端情况下生成器未被启动（客户端在建流前就断开）时也能释放资源
-            background=BackgroundTask(_cleanup),
-        )
-    except HTTPException:
-        await _close_client(client)
-        RELAY_SEMAPHORE.release()
-        raise
+        return head.content_length
+    except asyncio.TimeoutError:
+        logger.error("si_db head timed out after %ss key=%s", OSS_DEFAULT_TIMEOUT_SECONDS, oss_key)
+        return None
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error("relay download failed file_id=%s part=%s: %s", file_id, part, exc)
+        logger.error("si_db head failed key=%s: %s", oss_key, exc)
+        return None
+    finally:
         await _close_client(client)
-        RELAY_SEMAPHORE.release()
-        raise internal_server_error_exception from exc
+
+
+async def stream_si_db_csv(token: str, range_header: str | None, method: str = "GET") -> Response:
+    """SI 注释库 CSV 中转透传：验 token → 读配置 key → 共享内核（无 DB 参与）。
+
+    key 只来自配置：请求里没有任何字段能影响服务端去读哪个对象。
+    """
+    if not verify_si_db_relay_token(token):
+        logger.warning("si_db relay download rejected: invalid or expired token")
+        raise HTTPException(status_code=401, detail=RELAY_TOKEN_INVALID_DETAIL)
+
+    oss_key = get_si_db_oss_key()
+    if not oss_key:
+        logger.warning("si_db relay download unavailable: oss_si_db_key not configured")
+        raise HTTPException(status_code=503, detail=SI_DB_NOT_CONFIGURED_DETAIL)
+
+    return await stream_oss_object(
+        oss_path=oss_key,
+        range_header=range_header,
+        method=method,
+        log_ctx="si_db",
+    )

@@ -1,29 +1,38 @@
 from datetime import timedelta
 
-from sqlmodel import select, or_
+from sqlmodel import select, func
 
 
 from api_helpers.admin_notify import notify_delete_failed
+from api_helpers.deletion_helper import (
+    DELETING_FILE_STATUSES,
+    DELETING_RUN_STATUSES,
+    file_is_deleting,
+    run_is_deleting,
+    visible_files_clause,
+)
 from api_services.composite_service import (
+    begin_file_deletion,
     finalize_file_deletion,
     finalize_run_deletion,
-    mark_file_for_deletion,
+    mark_run_for_deletion,
 )
+from api_services.processing_service import get_process_run_by_id
 from api_services.user_service import get_user_by_id
 from api_services.file_service import (
     get_file_record_by_id,
     safe_cleanup_preflight_record,
+    unlink_user_from_file,
 )
-from storage.oss.oss_storage import OssStorage
-from background.file_background_helper import delete_oss_objects
+from storage.oss.oss_storage import OssStorage, delete_oss_objects
 from constants.file_constants import (
     PREFLIGHT_TTL_MINUTES,
     DOWNLOAD_ZIP_TTL_MINUTES,
 )
 from constants.file_constants import STALE_PROCESS_RUN_TIMEOUT_MINUTES, STALE_CLUSTERING_RUN_TIMEOUT_MINUTES
+from constants.file_constants import STALE_DELETION_TIMEOUT_MINUTES
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED,FAILED_EXPERIMENT_TTL_MINUTES
 from database.db import get_standalone_async_session
-from database.redis_client import REDIS_DEFAULT_DB, connect_new_redis
 from models.file_models import FileInDB, FileStatus
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
@@ -47,12 +56,16 @@ async def cleanup_stale_preflights_all_users(
     """
     清理所有用户过期且未完成的预检记录(celery定时任务版本)
 
-    清理条件(uploaded_at 超过 TTL, 且满足以下任一):
-    1. 文件物理路径为空（""）(说明为预检记录,未完成上传)
-    2. status == FAILED (回调失败留下的脏记录, include_failed=True 时生效)
+    清理条件(uploaded_at 超过 TTL, 且 path 为空——预检后回调从未把路径落库)。
 
-    失败记录的 path 可能为空(回调未回传路径)或有值(哈希校验/打 tag 失败等)，
-    两种情况都仅清理数据库记录与用户额度，不主动删除 OSS 对象——未打persistent tag 的孤儿对象由 bucket 生命周期规则自动回收。
+    刻意不看 status：回调失败留下的记录里，path 已有值的那条路（先 commit 落库再打
+    persistent tag，tag 失败才回滚）必然是 file + origin 同事务双置 FAILED，由
+    cleanup_failed_experiments 整份删除——它会连 OSS 对象一起删，把这条路径正好兜住
+    （只删 DB 行会让**已打上 persistent tag 的部分对象永久泄漏**）；其余失败都回滚在
+    回调首次 commit 之前，path 仍为空，上面的条件已覆盖。
+
+    本任务只清数据库记录与用户额度，**不主动删除 OSS 对象**——未打 persistent tag 的
+    孤儿对象由 bucket 生命周期规则回收。
 
     Returns:
         清理的记录数量
@@ -65,15 +78,12 @@ async def cleanup_stale_preflights_all_users(
         cutoff_time = now - timedelta(minutes=ttl_minutes)
         total_cleaned = 0
 
-        # 查询所有过期预检记录:
-        #   path 为空(未完成上传) 或 status 为 FAILED(回调失败脏记录) 通过 UserFileLink 关联获取用户
-        conditions = [or_(FileInDB.path == "", FileInDB.status == FileStatus.FAILED),
-                          FileInDB.uploaded_at < cutoff_time]
+        # 查询所有过期预检记录：path 为空（回调从未落库）通过 UserFileLink 关联获取用户
         records = (await session.exec(
             select(FileInDB, UserFileLink.user_id)
             .join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type: ignore[arg-type]
             .join(UserInDB, UserInDB.id == UserFileLink.user_id) # type: ignore[arg-type]
-            .where(*conditions)
+            .where(FileInDB.path == "", FileInDB.uploaded_at < cutoff_time)
             .limit(batch_size)
             .with_for_update(skip_locked=True)
         )).all()
@@ -96,21 +106,25 @@ async def cleanup_stale_preflights_all_users(
 
 
 @celery_app.task() # type: ignore
-async def cleanup_old_download_zips(
+async def cleanup_source_zips(
     retention_minutes: int = DOWNLOAD_ZIP_TTL_MINUTES,
     batch_size: int = 100,
 ) -> int:
     """
-    定时清理符合条件的下载zip文件：
-      - 走到数据库 file 表 path 不为空，且未被标记为已清理（哨兵 SOURCE_FILE_PATH_CLEARED）
-      - last_downloaded_at 早于 当前时间 - retention_days
-    物理文件删除后回写哨兵 path（非空但不再指向物理文件），保留数据库记录。
+    定时清理源 zip：file.path 指向用户上传的原始 zip（存量数据中也可能指向历史打包 zip）。
+    解压回调成功后下载只走 origin（raw / relay），源 zip 不再有读取方，留存只占存储；
+    它在回调时被打了 persistent tag，生命周期规则不会回收，只能由本任务删除。
+    清理条件：
+      - path 不为空，且未被标记为已清理（哨兵 SOURCE_FILE_PATH_CLEARED）
+      - last_downloaded_at 早于 当前时间 - retention_minutes
+    对象删除成功后才回写哨兵 path（非空但不再指向物理文件），保留数据库记录；
+    删除失败保留原 path，下一轮重试——先写哨兵会让对象再无引用、永久泄漏。
 
     注意：查询条件必须排除哨兵。已清理记录的 last_downloaded_at 不会随之更新，
     若不排除，它们会每轮被重复捞起又整批跳过，导致新文件永远得不到清理（任务"卡住"）。
     """
     async with get_standalone_async_session() as session:
-        logger.info(f"starting cleanup old download zips for all users with TTL {retention_minutes} minutes...")
+        logger.info(f"starting cleanup source zips for all users with TTL {retention_minutes} minutes...")
 
         now = utc_time()
         cutoff_time = now - timedelta(minutes=retention_minutes)
@@ -128,92 +142,262 @@ async def cleanup_old_download_zips(
             if not file_path or rec.path == SOURCE_FILE_PATH_CLEARED:
                 continue
             try:
-                await OssStorage.delete_file(file_path)
-                rec.path = SOURCE_FILE_PATH_CLEARED
-                session.add(rec)
-                cleaned += 1
+                ok = await OssStorage.delete_file(file_path)
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to delete old download zip for file_id=%s path=%s error=%s",rec.file_id,file_path,exc)
+                logger.warning("Failed to delete source zip for file_id=%s path=%s error=%s",rec.file_id,file_path,exc)
+                continue
+            if not ok:
+                logger.warning("Failed to delete source zip, keep path for retry file_id=%s path=%s", rec.file_id, file_path)
+                continue
+            rec.path = SOURCE_FILE_PATH_CLEARED
+            session.add(rec)
+            cleaned += 1
 
         if cleaned:
             await session.commit()
 
-        logger.info("cleanup_old_download_zips removed %d old zip(s)", cleaned)
+        logger.info("cleanup_source_zips removed %d source zip(s)", cleaned)
     return cleaned
 
 
-@celery_app.task()  # type: ignore
-async def clean_user_all_task(
-    file_ids: list[int],
-    deleted_user_id: int | None = None,
-    pre_collected_run_paths: list[list[int | str]] | None = None,
-) -> dict:
+async def dispatch_user_file_deletions(session, deleted_user: UserInDB) -> dict:
+    """对被删用户名下**剩余**的文件逐个登记 + 投递删除任务（每个文件独立事务，互不拖累）。
+
+    被两个入口共用：clean_user_all_task（即时加速）与 cleanup_deleted_users（每轮兜底）。
+    因此必须幂等、可反复调用：
+    - 已在删除流程的文件 → 走 begin_file_deletion 的幂等分支重收集快照重投
+      （兜住卡在 DELETE_FAILED 的）
+    - 尚未登记的文件 → 正常登记（兜住 clean_user_all_task 投递失败、文件从没进过流程的）
+    - 还有别的持有者 → 只解除被删用户的关联（文件留给其他人）
+
+    run 输出路径不需要预收集：user 行不删，run 行不会级联消失，快照按 source_file_id
+    反查即可。
+
+    Returns: {"files_unlinked": n, "files_deleted": n, "errors": n}
     """
-    清理指定用户删除后遗留的文件数据。
+    assert deleted_user.id is not None
+    user_id = deleted_user.id
+    file_ids = (await session.exec(select(UserFileLink.file_id).where(UserFileLink.user_id == user_id))).all()
 
-    用户行删除时 userfilelink 已随之级联删除，这里逐个处理传入的全部 file_id（每个文件独立事务）:
-    - 文件仍有其他持有者：不做处理（关联已随用户删除解除）
-    - 文件已无持有者：与用户删除文件走同一条删除状态位流程——行锁内登记 DELETING 并收集路径快照
-      （源文件、packup zip、预览图目录、origin、全部 run 输出），提交后投递 delete_objects_task，
-      OSS 对象全部删除成功后才删 DB 行
+    total_unlinked = 0
+    total_deleted = 0
+    total_errors = 0
 
-    pre_collected_run_paths：del_user 在删 user 行前预收集的 (source_file_id, out_path) 对
-    （run.user_id 外键 ondelete=CASCADE，user 行删除后 run 行消失、out_path 事后查不到，
-    见 docs/zh/删除状态位改造方案.md §4 场景 3）。按 source_file_id 合入对应文件的删除快照；
-    对应文件已无记录或仍有其他持有者时无处合入，仅告警——这些输出未打 persistent tag，
-    依赖 bucket 生命周期规则回收（方案 §7 已接受的取舍）。
+    for file_id in file_ids:
+        if file_id is None:
+            continue
+        try:
+            # 回血：上一轮的 commit / rollback 都会把 deleted_user expire
+            # 触发隐式懒加载，直接抛 MissingGreenlet
+            await session.refresh(deleted_user)
+            # include_deleting=True：已处于删除流程的文件走幂等分支而非 404
+            file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
+            snapshot = await begin_file_deletion(session, file_record, current_user=deleted_user)
+            # 先 commit 再投递（顺序理由见 file_api.delete_user_file）
+            await session.commit()
+            await session.refresh(file_record)
+            await session.refresh(deleted_user)
+
+            if snapshot is None:
+                # 还有其他持有者：只解除被删用户的关联（文件留给其他人）
+                await unlink_user_from_file(session, deleted_user, file_record)
+                await session.commit()
+                total_unlinked += 1
+                continue
+
+            delete_objects_task.delay(  # type: ignore
+                kind="file",
+                resource_id=file_id,
+                paths=list(snapshot.paths),
+            )
+            total_deleted += 1
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            await session.rollback()
+            total_errors += 1
+            logger.error(
+                "dispatch_user_file_deletions failed user_id=%s file_id=%s error=%s", user_id, file_id, exc)
+
+    return {"files_unlinked": total_unlinked, "files_deleted": total_deleted, "errors": total_errors}
+
+
+@celery_app.task()  # type: ignore
+async def clean_user_all_task(deleted_user_id: int) -> dict:
+    """管理员删除用户后的**即时**清理（加速路径）：立刻把该用户名下文件登记 + 投递。
+
+    兜底由 cleanup_deleted_users 每轮重跑同一函数承担，所以本任务投递失败不致命。
     """
     async with get_standalone_async_session() as session:
-        logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id} file_count={len(file_ids)}")
+        logger.info(f"starting clean_user_all_task for deleted_user_id={deleted_user_id}")
+        # 被删用户仍需用于 unlink（按 id 查，不按 active 过滤）
+        deleted_user = await get_user_by_id(deleted_user_id, session)
+        if deleted_user is None:
+            logger.warning("clean_user_all_task: user not found user_id=%s, abort", deleted_user_id)
+            return {"deleted_user_id": deleted_user_id, "files_unlinked": 0, "files_deleted": 0, "errors": 0}
+        result = await dispatch_user_file_deletions(session, deleted_user)
+    result["deleted_user_id"] = deleted_user_id
+    logger.info("clean_user_all_task completed %s", result)
+    return result
 
-        # 预收集的 run 输出按文件分组，待各文件登记成功后合入其删除快照
-        pending_run_paths: dict[int, list[str]] = {}
-        for source_file_id, out_path in pre_collected_run_paths or []:
-            if not out_path:
+
+@celery_app.task()  # type: ignore
+async def cleanup_deleted_users(batch_size: int = 100) -> int:
+    """收敛已删除用户：名下资源清空后物理删其 user 行（删除入口见 api/user_api.del_user）。
+
+    **按 active=False 扫描**——本系统里 active=False 就是"已删除"（见 UserBase.active
+    的注释），它不是"停用"；若将来引入停用功能并复用该字段，本任务会删光那些用户的
+    数据，务必另加字段。
+
+    独立定时任务而非挂在文件 finalize 上——两者的失败域必须隔离：用户收敛里要给
+    「他人文件上的 run」投递删除任务，broker 不可达时不该把文件收尾一起回滚。
+
+    每个用户独立事务，判定顺序:
+    1. **先对名下剩余文件重跑一遍登记 + 投递**（dispatch_user_file_deletions，幂等）。
+       这一步是兜底：`clean_user_all_task` 投递失败时文件从没进过删除流程，只靠"还有
+       link 就跳过"会永久死锁；卡在 DELETE_FAILED 的也靠它重投
+    2. 名下还有 file（UserFileLink 未消失）→ 说明文件刚投递、worker 还没删完，等下一轮
+    3. 名下还有 run → 此时必然在**他人文件**上（自己的文件已删，其上的 run 已级联
+       消失），走 A2 三段式后跳过
+    4. 都没有 → 删 user 行（级联清掉残留 link）
+
+    注意: 查询带 limit 且无 ORDER BY，长期卡在 2/3 的用户会占用批次额度。
+    """
+    async with get_standalone_async_session() as session:
+        # 先抽成纯 id：循环内 commit 会 expire ORM 实例，之后再访问属性会触发隐式 IO
+        user_ids = (await session.exec(
+            select(UserInDB.id).where(UserInDB.active == False)  # type: ignore # pylint: disable=singleton-comparison,no-member
+            .limit(batch_size))).all()
+
+        finalized = 0
+        for user_id in user_ids:
+            if user_id is None:
                 continue
-            pending_run_paths.setdefault(int(source_file_id), []).append(str(out_path).strip())
-
-        total_unlinked = 0
-        total_deleted = 0
-        total_errors = 0
-
-        for file_id in file_ids:
             try:
-                # include_deleting=True：已处于删除流程的文件幂等重投删除任务
-                file_record = await get_file_record_by_id(file_id, session, include_deleting=True)
-                snapshot = await mark_file_for_deletion(session, None, file_record)
-                # 先 commit 再投递（顺序理由见 file_api.delete_user_file）
-                await session.commit()
+                # ① 重跑登记 + 投递（按 id 查用户：已删用户不按 active 过滤）
+                deleted_user = await get_user_by_id(user_id, session)
+                if deleted_user is None or deleted_user.active:
+                    continue
+                await dispatch_user_file_deletions(session, deleted_user)
 
-                if snapshot is None:
-                    # 还有其他用户持有，关联已随用户删除解除
-                    total_unlinked += 1
+                # ② 重新取一次再判定残余：上一步逐文件 commit 会 expire 实例、也释放了行锁，
+                #    这里用行锁把最终判定串行化
+                deleted_user = (await session.exec(
+                    select(UserInDB).where(UserInDB.id == user_id).with_for_update())).first()
+                if deleted_user is None or deleted_user.active:
                     continue
 
-                paths = list(snapshot.paths)
-                paths.extend(pending_run_paths.pop(file_id, []))
-                delete_objects_task.delay(  # type: ignore
-                    kind="file",
-                    resource_id=file_id,
-                    paths=list(dict.fromkeys(paths)),
-                    redis_keys=list(snapshot.redis_keys),
-                )
-                total_deleted += 1
+                link_count = (await session.exec(
+                    select(func.count()).where(UserFileLink.user_id == user_id))).one()  # pylint: disable=not-callable
+                if link_count:
+                    continue
+
+                run_ids = (await session.exec(
+                    select(ExperimentProcessRunInDB.id).where(ExperimentProcessRunInDB.user_id == user_id))).all()
+                if run_ids:
+                    for run_id in run_ids:
+                        run_record = await get_process_run_by_id(session, run_id, include_deleting=True) # type: ignore
+                        if run_record is None or run_is_deleting(run_record.status):
+                            continue
+                        snapshot = await mark_run_for_deletion(session, run_record)
+                        await session.commit()
+                        delete_objects_task.delay(  # type: ignore
+                            kind="run", resource_id=run_id, paths=list(snapshot.paths),
+                        )
+                    continue
+
+                await session.delete(deleted_user)
+                await session.commit()
+                finalized += 1
+                logger.info("cleanup_deleted_users: finalized user_id=%s", user_id)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 await session.rollback()
-                total_errors += 1
-                logger.error(
-                    "clean_user_all_task failed for deleted_user_id=%s file_id=%s error=%s",deleted_user_id,file_id,exc,)
-        if pending_run_paths:
-            logger.warning(
-                "clean_user_all_task: run outputs not dispatched (file gone or shared), "
-                "rely on bucket lifecycle deleted_user_id=%s leftovers=%s",
-                deleted_user_id, pending_run_paths,
-            )
-        result = {"deleted_user_id": deleted_user_id,"files_unlinked": total_unlinked,
-                    "files_deleted": total_deleted,"errors": total_errors,}
-        logger.info("clean_user_all_task completed %s", result)
-    return result
+                logger.error("cleanup_deleted_users failed user_id=%s error=%s", user_id, exc)
+
+        logger.info("cleanup_deleted_users completed finalized=%s scanned=%s", finalized, len(user_ids))
+    return finalized
+
+
+@celery_app.task()  # type: ignore
+async def retry_stale_file_deletions(
+    timeout_minutes: int = STALE_DELETION_TIMEOUT_MINUTES,
+    batch_size: int = 100,
+) -> int:
+    """重投停留过久的文件删除（扫 file 表）。**A1 唯一的自动兜底**。
+
+    条件是 status ∈ {DELETING, DELETE_FAILED} 且 delete_marked_at 早于 timeout——
+    加超时是为了不和正在跑的 worker 抢：刚登记几秒的行不该被重投。
+    重投直接走 begin_file_deletion 的幂等分支（它负责重收集快照）。
+
+    A4（cleanup_failed_experiments 清失败实验）登记之后的重试同样归这里：那边只负责
+    发起（扫描已排除删除流程中的文件），不再自己重投。
+    前提契约：进入删除流程的行必有 delete_marked_at（置位点唯一，
+    composite_service.mark_file_for_deletion 同事务写 status 与时间戳）——
+    本任务靠它判定「卡住」，NULL 的行会两个任务都捞不到。
+    """
+    async with get_standalone_async_session() as session:
+        cutoff = utc_time() - timedelta(minutes=timeout_minutes)
+        rows = (await session.exec(
+            select(FileInDB)
+            .where(FileInDB.status.in_(DELETING_FILE_STATUSES),  # type: ignore # pylint: disable=no-member
+                   FileInDB.delete_marked_at < cutoff) # type: ignore # pylint: disable=no-member
+            .limit(batch_size)
+        )).all()
+
+        retried = 0
+        for row in rows:
+            file_id = row.file_id
+            try:
+                snapshot = await begin_file_deletion(session, row)
+                await session.commit()
+                if snapshot is None:  # 防御：已在删除流程的行不会走判定分支
+                    continue
+                delete_objects_task.delay(  # type: ignore
+                    kind="file", resource_id=file_id, paths=list(snapshot.paths))
+                retried += 1
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                # 行已被并发 finalize 删除（本来要重投的目标已消失）也走这里，属正常
+                await session.rollback()
+                logger.info("retry_stale_file_deletions skipped file_id=%s error=%s", file_id, exc)
+
+        if retried:
+            logger.info("retry_stale_file_deletions re-dispatched %d file(s)", retried)
+    return retried
+
+
+@celery_app.task()  # type: ignore
+async def retry_stale_run_deletions(
+    timeout_minutes: int = STALE_DELETION_TIMEOUT_MINUTES,
+    batch_size: int = 100,
+) -> int:
+    """重投停留过久的 run 删除（扫 run 表）。**A2 唯一的自动兜底**
+    （run 类删除没有 admin 旁路，此前完全没有自动重投）。
+
+    条件与文件侧完全同构，只是对象换成 run；走 mark_run_for_deletion 的幂等分支。
+    """
+    async with get_standalone_async_session() as session:
+        cutoff = utc_time() - timedelta(minutes=timeout_minutes)
+        rows = (await session.exec(
+            select(ExperimentProcessRunInDB)
+            .where(ExperimentProcessRunInDB.status.in_(DELETING_RUN_STATUSES),  # type: ignore # pylint: disable=no-member
+                   ExperimentProcessRunInDB.delete_marked_at < cutoff) # type: ignore # pylint: disable=no-member
+            .limit(batch_size)
+        )).all()
+
+        retried = 0
+        for row in rows:
+            run_id = row.id
+            try:
+                snapshot = await mark_run_for_deletion(session, row)
+                await session.commit()
+                delete_objects_task.delay(  # type: ignore
+                    kind="run", resource_id=run_id, paths=list(snapshot.paths))
+                retried += 1
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                await session.rollback()
+                logger.info("retry_stale_run_deletions skipped run_id=%s error=%s", run_id, exc)
+
+        if retried:
+            logger.info("retry_stale_run_deletions re-dispatched %d run(s)", retried)
+    return retried
 
 
 @celery_app.task()  # type: ignore
@@ -224,18 +408,19 @@ async def cleanup_failed_experiments(
     """
     清理过期的失败 origin 记录（场景 1 的批量版：删除状态位三件套）
 
-    清理流程（每个失败 origin 的源文件独立事务，互不拖累）:
-    1. 查询过期的失败 origin 记录（行锁 skip_locked，多 worker 不重复处理）
-    2. mark_file_for_deletion(unlink_all_owners=True)：行锁内解除全部持有者的关联并
-       释放 storage 配额（用户可见语义在登记事务内生效），置 DELETING 并收集路径快照
-       （源文件、packup zip、预览图目录、origin、全部 run 输出）
-    3. 先 commit 再投递 delete_objects_task：worker 幂等删净 OSS 对象后 finalize 删
-       file 行（级联 UserFileLink / OriginImzMLInDB / run），processed 配额由 finalize
-       退还；任一对象删除失败则行置 DELETE_FAILED 保留，重复触发本任务即幂等重投
+    每个失败 origin 的源文件独立事务，互不拖累：begin_file_deletion(force=True) 登记
+    （失败产物整份删除，不保留共享者引用；配额在 finalize 结算）→ 先 commit 再投递
+    delete_objects_task。对象删失败则行置 DELETE_FAILED 等重投——重投归
+    retry_stale_file_deletions，本任务只负责发起，不再扫已进入删除流程的文件。
 
-    注意:
-    - include_deleting=True：文件已处于删除流程（如用户已自行删除）时走幂等分支直接重投
-    - FC 未回调或路径未落库时无法可靠定位对象，未打 persistent tag 的对象由 OSS 生命周期清理
+    扫描条件：origin=FAILED 且早于 TTL，**且源文件未进入删除流程**，按 id 排序（FIFO）。
+    force 不能省：不加则多持有者时返回 None → 文件不删但 origin 仍是 FAILED →
+    每轮重扫且永不清理。失败文件几乎必然单持有者，唯"打 persistent tag 失败"那条路径
+    存在 file 已 COMPLETED 且已提交的窄窗口，秒传可在其中建出第二条 link。
+
+    另：行锁只护住本次查询事务（多 worker 会重复捞同一批，由 begin_file_deletion 的
+    行锁 + DELETING 守卫幂等吸收）；include_deleting=True 只兜「扫描到处理之间被并发
+    删除」的窗口；FC 未回调、路径未落库的孤儿对象由 OSS 生命周期回收。
     """
     async with get_standalone_async_session() as session:
         logger.info(f"starting cleanup_failed_experiments with TTL {ttl_minutes} minutes... ")
@@ -243,10 +428,21 @@ async def cleanup_failed_experiments(
         threshold = now - timedelta(minutes=ttl_minutes)
         cleaned = 0
         total_errors = 0
-        # 第一步:查询过期的失败 origin 记录
-        failed_origins = (await session.exec(select(OriginImzMLInDB).where(
-                    OriginImzMLInDB.status == ExperimentStatus.FAILED,
-                    OriginImzMLInDB.created_at < threshold,).limit(batch_size).with_for_update(skip_locked=True))).all()
+        # 已进入删除流程的文件不在此列：登记完即移交 retry_stale_file_deletions，
+        # 再捞回来只会永久占满批次（它们的 origin 恒满足 FAILED + 早于 TTL，见 docstring）
+        # JOIN 会连带锁 file 行（MariaDB 无 FOR UPDATE OF），SKIP LOCKED 不等待、首个 commit 即释放
+        failed_origins = (await session.exec(
+            select(OriginImzMLInDB)
+            .join(FileInDB, FileInDB.file_id == OriginImzMLInDB.source_file_id)  # type: ignore[arg-type]
+            .where(
+                OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                OriginImzMLInDB.created_at < threshold,
+                visible_files_clause(),
+            )
+            .order_by(OriginImzMLInDB.id)  # type: ignore[call-overload]  # FIFO，堵住老行长期占位
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )).all()
         # 立刻抽出所需字段为纯元组：per-file commit/rollback 会 expire 全部 ORM 实例，
         # 跨事务再访问 exp.* 会在异步上下文触发隐式 IO 报错
         failed_pairs = [(exp.id, exp.source_file_id) for exp in failed_origins]
@@ -262,18 +458,17 @@ async def cleanup_failed_experiments(
             try:
                 # include_deleting=True：已处于删除流程的文件幂等重投而非 404
                 file_record = await get_file_record_by_id(source_file_id, session, include_deleting=True)
-                snapshot = await mark_file_for_deletion(session, None, file_record, unlink_all_owners=True)
+                snapshot = await begin_file_deletion(session, file_record, force=True)
                 # 先 commit 再投递（顺序理由同 file_api.delete_user_file / clean_user_all_task）
                 await session.commit()
 
-                if snapshot is None:  # 防御：unlink_all_owners 模式不会返回 None
+                if snapshot is None:  # 防御：force=True 不会返回 None
                     continue
 
                 delete_objects_task.delay(  # type: ignore
                     kind="file",
                     resource_id=source_file_id,
                     paths=list(snapshot.paths),
-                    redis_keys=list(snapshot.redis_keys),
                 )
                 cleaned += 1
                 logger.info(
@@ -366,7 +561,6 @@ async def delete_objects_task(
     kind: str,
     resource_id: int,
     paths: list[str],
-    redis_keys: list[str] | None = None,
 ) -> bool:
     """
     统一的 OSS 删除执行任务（② 执行，全系统删除主流程只此一处碰 OSS 删除）。
@@ -378,32 +572,13 @@ async def delete_objects_task(
     - 全部成功 → finalize[kind] 在同一 DB 事务内删行（「要么都删除」）
     finalize 容忍行已不在（重复投递时直接算成功）。
     """
-    # 1. 清理 Redis 状态键（best-effort，键自身有 TTL，失败不影响主流程）
-    # Celery 任务每次 asyncio.run() 都是新事件循环，不能复用全局 redis_client：
-    # 池内缓存的连接绑定在已关闭的旧循环上，命令必失败且坏连接会留在池里；
-    # 这里按任务用一次性连接（同 clean_up_stale_packup_data 的做法）
-    if redis_keys:
-        r = None
-        try:
-            r = connect_new_redis(db_index=REDIS_DEFAULT_DB)
-            for key in redis_keys:
-                await r.delete(key)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning("delete_objects_task: delete redis keys failed keys=%s error=%s", redis_keys, exc)
-        finally:
-            if r is not None:
-                try:
-                    await r.aclose()
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    logger.warning("delete_objects_task: close redis client failed error=%s", exc)
-
-    # 2. 删除 OSS 对象（幂等，可无限重试）
+    # 1. 删除 OSS 对象（幂等，可无限重试）
     ok = await delete_oss_objects(paths)
     if not ok:
         await _mark_delete_failed(kind, resource_id)
         return False
 
-    # 3. finalize：同一 DB 事务内收尾
+    # 2. finalize：同一 DB 事务内收尾
     async with get_standalone_async_session() as session:
         if kind == "file":
             await finalize_file_deletion(session, resource_id)
@@ -421,7 +596,7 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
     async with get_standalone_async_session() as session:
         # 告警用的对外标识（仅 file 类有，run 的对外标识就是 run_id）：
         # 必须在 commit 之前取出——commit 会 expire 实例，之后再访问属性
-        # 会在异步上下文触发隐式 IO 报错
+        # deleting_status 用于判断是否首次失败（DELETING → DELETE_FAILED）还是重复投递（DELETE_FAILED → DELETE_FAILED）
         alert_public_id: str | None = None
         if kind == "file":
             record = (await session.exec(
@@ -429,24 +604,25 @@ async def _mark_delete_failed(kind: str, resource_id: int) -> None:
                 .where(FileInDB.file_id == resource_id)
                 .with_for_update()
             )).first()
-            deleting_states = (FileStatus.DELETING, FileStatus.DELETE_FAILED)
             if record is not None:
                 alert_public_id = record.public_id
+            deleting_status = FileStatus.DELETING
         elif kind == "run":
             record = (await session.exec(
                 select(ExperimentProcessRunInDB)
                 .where(ExperimentProcessRunInDB.id == resource_id)
                 .with_for_update()
             )).first()
-            deleting_states = (ProcessingStatus.DELETING, ProcessingStatus.DELETE_FAILED)
+            deleting_status = ProcessingStatus.DELETING
         else:
             logger.error("_mark_delete_failed: unknown kind=%s resource_id=%s", kind, resource_id)
             return
 
-        if record is not None and record.status in deleting_states:
-            # 告警只挂「DELETING → DELETE_FAILED」跃迁一次：重投时行已是
-            # DELETE_FAILED，不重发，跃迁即天然去重（删除架构现状说明 §8）
-            first_failure = record.status == deleting_states[0]
+        is_deleting = (file_is_deleting if kind == "file" else run_is_deleting)
+        if record is not None and is_deleting(record.status):
+            # 告警只挂「DELETING → DELETE_FAILED」
+            # DELETE_FAILED，不重发，
+            first_failure = record.status == deleting_status
             if kind == "file":
                 record.status = FileStatus.DELETE_FAILED
             else:

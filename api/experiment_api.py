@@ -9,6 +9,7 @@ from fastapi import Depends
 from sqlmodel import select
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api.user_api import token_authen
+from api_helpers.deletion_helper import file_is_deleting
 from api_services.file_service import assert_file_owner
 from database.db import AsyncSessionDep
 from models.user_models import UserInDB
@@ -44,13 +45,15 @@ async def get_origin_by_public_id_api(
     """根据源文件 public_id 查询 origin 记录,根据文件的 experiment_type 字段定位对应 origin 表
 
     文件查询保持内联：不复用 get_file_record_by_public_id，以保留本接口原有的
-    source_file_not_found_exception 与不过滤删除流程状态的行为。
+    source_file_not_found_exception 口径。删除流程中的文件按不存在处理（与文件
+    详情 404 一致）。
     """
 
-    # 1. 查询文件记录
+    # 1. 查询文件记录（删除流程中的按不存在处理）
     file_record = (
         await async_session.exec(select(FileInDB).where(FileInDB.public_id == public_id))).first()
-    if not file_record:
+    if not file_record or file_is_deleting(file_record.status):
+        logger.warning("origin query: file not found or being deleted public_id=%s", public_id)
         raise source_file_not_found_exception
     file_id = file_record.file_id
 

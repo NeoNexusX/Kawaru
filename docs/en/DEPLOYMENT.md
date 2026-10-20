@@ -1,6 +1,8 @@
 # Deployment Guide (dev / prod)
 
-After pushing to `dev` / `main`, CD automatically: **Build image → Push to GHCR → SSH to server and sync the compose file → Backup database (prod) → Start base services → Run migrate container upgrade → `up -d --wait` application containers → retag the local `dev-latest` / `latest` image and prune images older than 7 days**. On deployment failure, CD dumps the status and log tails of all 6 services (including migrate) — no manual SSH log digging needed.
+After pushing to `dev` / `main`, CD automatically: **Build image → Push to ACR → SSH to server and sync the compose file → Backup database (prod) → Start base services → Run migrate container upgrade → `up -d --wait` application containers → retag the local `dev-latest` / `latest` image and prune images older than 7 days**. On deployment failure, CD dumps the status and log tails of all 6 services (including migrate) — no manual SSH log digging needed.
+
+> **Images live in Alibaba Cloud ACR (Hong Kong), not GHCR**: the private repository is `crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru`. Use the public domain on GitHub runners and on the dev server (Hangzhou); on the prod server (Hong Kong) use the `-vpc` intranet domain. Docker authenticates per domain, so log in with the same domain you pull from. ACR Personal Edition rejects OCI attestation manifests, so the workflows pin `provenance: false` + `sbom: false`.
 
 CD **only builds and deploys**; it does not generate secrets or config. `.env` and `{dev,prod}-config.yaml` are prepared and maintained by a human on the server.
 
@@ -78,7 +80,7 @@ Container configuration must use Compose service addresses: `database.host=maria
 
 After this, every push to `dev` / `main` pulls the new image and recreates the corresponding application containers. Database, Redis, and log data remain on the host; business files remain in OSS.
 
-The server `.env` must cover both Compose and application startup: `APP_IMAGE`, `DATABASE_PASSWORD`, `REDIS_PASSWORD`, `SECRET_KEY`, `SMTP_PASSWORD`, `CONFIG_PATH`, `REGION_PATH`, `LOG_DIR`, `LOG_LEVEL`, OSS credentials, FC invocation tokens, and `FC_CALLBACK_TOKEN`. CD temporarily overrides `APP_IMAGE` with the commit-specific image; keeping a `dev-latest` / `latest` value in `.env` makes manual Compose operations work as well.
+The server `.env` must cover both Compose and application startup: `DATABASE_PASSWORD`, `REDIS_PASSWORD`, `SECRET_KEY`, `SMTP_PASSWORD`, `CONFIG_PATH`, `REGION_PATH`, `LOG_DIR`, `LOG_LEVEL`, OSS credentials, FC invocation tokens, and `FC_CALLBACK_TOKEN`. `APP_IMAGE` is deliberately not stored in `.env`: CD injects the commit-specific image through the SSH environment, which takes precedence over `.env`. Before running Compose manually you must `export APP_IMAGE` as shown in section 5 — otherwise the `${APP_IMAGE:?}` check aborts immediately instead of silently using a wrong image.
 
 | Content | Container Path | Host Path |
 |---------|---------------|-----------|
@@ -96,11 +98,11 @@ Application containers do not mount a business-file directory. Uploaded ZIPs, ex
 
 The service is OSS-only. Complete this checklist before the first deployment:
 
-- In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the four object roots (`oss_zip_storage_root`, `oss_packup_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and all six FC endpoints/timeouts.
-- In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, all six `OSS_FC_*_TOKEN` values (packup, algorithm, TIC, feature, raw-convert, clustering), and `FC_CALLBACK_TOKEN`.
+- In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the object roots (`oss_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and the FC endpoints/timeouts.
+- In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, all five `OSS_FC_*_TOKEN` values (algorithm, TIC, feature, raw-convert, clustering), and `FC_CALLBACK_TOKEN`.
 - Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue the generated path-scoped upload/download STS policies to clients.
 - Configure the OSS upload event to invoke the extraction FC function. Uploaded keys use `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`; FC must parse `file_id` from the file name, write imZML/ibd below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and call `/callback/oss_upload_callback` with `file_id` and the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
-- Configure every other FC function to call its matching `/callback/*` route with `X-FC-Token`. Feature/UMAP results use `/callback/umap_callback`, TIC uses `/callback/tic_callback`, and `image_path` must be the full key including `preview.jpg`. The callback URL must be reachable from FC, and app/worker containers must have outbound access to OSS and all FC endpoints.
+- Configure every other FC function to call its matching `/callback/*` route with `X-FC-Token`. Feature/UMAP results use `/callback/umap_callback`, TIC uses `/callback/tic_callback`, and `image_path` must be the preview directory key ending in `/` (e.g. `images/{public_id}/`), not a full object key. The callback URL must be reachable from FC, and app/worker containers must have outbound access to OSS, STS, and all FC endpoints (the app process issues STS credentials directly).
 - Configure an OSS lifecycle rule to remove abandoned objects that never receive the `persistent=true` tag. Do not expire tagged source/extracted objects with that rule.
 
 Default object placement is controlled by configuration rather than host directories:
@@ -108,13 +110,12 @@ Default object placement is controlled by configuration rather than host directo
 | Content | OSS location |
 |---------|--------------|
 | Uploaded ZIP | `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip` |
-| FC-created download ZIP | `{oss_packup_zip_storage_root}/{file_id}.zip` |
 | Extracted imZML/ibd | `{oss_origin_storage_root}/{file_verify_code}/{file_id}/{original_name}.imzML/.ibd` |
 | Algorithm/raw-convert Zarr | `{oss_processed_storage_root}/run_{run_id}.zarr/` |
 | Clustering result | Written back into the run's Zarr; no second output directory |
-| TIC/UMAP preview | `images/{file_id%1000:03d}/file_{file_id}/preview.jpg` (full key supplied by the FC callback) |
+| TIC/UMAP preview | `images/{public_id}/` directory (the FC callback supplies this directory key ending in `/`; TIC writes `preview.jpg`, UMAP writes `preview.jpg`/`preview_2.jpg`/`preview_3.jpg`) |
 
-> A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, run one end-to-end smoke test: preflight → STS upload → extraction callback → RAW signed download. Also verify one processing callback and one packup callback if those features are enabled for clients.
+> A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, run one end-to-end smoke test: preflight → STS upload → extraction callback → RAW signed download. Also verify one relay download and one processing callback if those features are enabled for clients.
 
 ---
 
@@ -126,8 +127,8 @@ See: <https://github.com/nelvko/clash-for-linux-install>
 ```bash
 # Set environment variables first (modify based on actual environment)
 export ENV_NAME=dev   # or prod
-export APP_IMAGE=ghcr.io/neonexusx/kawaru:dev-latest   # dev
-# export APP_IMAGE=ghcr.io/neonexusx/kawaru:latest     # prod
+export APP_IMAGE=crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:dev-latest    # dev
+# export APP_IMAGE=crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:latest  # prod
 
 cd /opt/kawaru-${ENV_NAME}
 
@@ -182,7 +183,7 @@ Only `app` + `mariadb` + `redis` have healthchecks. worker/beat do not (beat doe
 |------|---------|
 | `DEV_SSH_HOST/USER/KEY` | Dev server |
 | `PROD_SSH_HOST/USER/KEY` | Prod server (separate) |
-| `GHCR_PULL_USER/TOKEN` | Pull private images from GHCR (shared) |
+| `ACR_USERNAME/ACR_PASSWORD` | ACR login for image push (CI) and for the post-SSH pull (dev / prod shared) |
 | `OSS_ACCESS_KEY_ID/SECRET` and `OSS_ROLE_ARN` | CI integration-test access to the test bucket and STS role |
 | `SMTP_PASSWORD` | CI concurrent-signup and password-reset tests |
 
@@ -197,5 +198,6 @@ Dev/prod runtime credentials for DB, Redis, OSS, FC, and SMTP stay in each serve
 | Trigger branch | `dev` | `main` |
 | Workflow | [dev-cd.yml](../../.github/workflows/dev-cd.yml) | [prod-cd.yml](../../.github/workflows/prod-cd.yml) |
 | Image tag | `dev-latest` + `dev-<sha>` | `latest` + `sha-<sha>` |
+| Image registry | ACR Hong Kong `kawaru/kawaru`, pull via public domain | Same, pull via `-vpc` intranet domain |
 | Server secrets | `DEV_SSH_*` | `PROD_SSH_*` |
-| Concurrency | `cancel-in-progress: true` | `cancel-in-progress: false` |
+| Concurrency | `cancel-in-progress: false` | `cancel-in-progress: false` |

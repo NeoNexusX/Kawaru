@@ -2,22 +2,27 @@
 删除状态位场景 ④：beat 清失败实验（直插失败 origin → 触发 beat 任务 → 断言收敛）
 
 test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file + FAILED origin +
-                                                  双持有者 link + run（全部真实对象）→
+                                                  双持有者 link + run（全部真实对象）+
+                                                  一条在途 DELETING 失败文件（★6）→
                                                   cleanup_failed_experiments(ttl=0) →
                                                   断言登记/收尾两段配额语义与全链路收敛
 
-验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 4，场景 1 的批量版）的核心承诺：
-  ★1 unlink_all_owners：全部持有者的 storage 配额在登记事务内释放（用户可见语义
-     登记时生效——beat 任务返回即已提交，无需等 worker）
+验证删除状态位改造（场景 4，场景 1 的批量版）的核心承诺：
+  ★1 force=True：失败产物整份删除；登记阶段不动配额
   ★2 文件行由 worker 收敛删除（级联 origin / run / link）
-  ★3 processed 配额由 finalize 退还（登记时不动，行删时退）
+  ★3 全部持有者的 storage 配额 + 全部 run 的 processed 配额都由 finalize 退还
   ★4 OSS 全部对象删净（主文件 + origin + run 输出）
-  ★5 幂等重投语义由任务自身的 include_deleting=True 分支保证，重复触发即重投
+  ★5 分工：本任务只负责**发起**——已进入删除流程（DELETING/DELETE_FAILED）的失败 origin
+     不再被扫到，登记后的重投归 retry_stale_file_deletions（见 ★6）
+  ★6 已在删除流程的失败 origin 不被本任务重复捞取（否则 origin 恒为 FAILED，永久占满批次）
 
 数据构造取舍（与场景 ②③ 一致）：被测对象是 beat 任务本身，文件不需要 COMPLETED
 （任务扫的是 origin.status=FAILED），故 file/origin/link/run 全部直插、对象直传，
-不依赖上传链路。ttl_minutes=0 会扫到环境中全部过期 FAILED origin——开发库无
-需保全数据（已确认）、CI 每次全新建库；断言只锚定本测试造的行，不碰全局计数。
+不依赖上传链路。ttl_minutes=0 的扫描条件是「全部过期 FAILED origin」，所以触发前有
+护栏：库里若还有**非测试文件**（文件名不以 test_ 开头）的过期 FAILED origin 就 skip
+——那些真实数据会被本任务连带删掉（连带其 OSS 对象），只能在全新/可弃库上跑。
+CI 每次全新建库，测试自身残留都是 test_* 文件名，不会触发 skip。
+断言只锚定本测试造的行，不碰全局计数。
 
 注意：origin.created_at 显式回拨 1 分钟——部分 DB DATETIME 秒级精度会把
 「刚刚」四舍五入到未来，导致 created_at < now 的扫描条件漏掉本行。
@@ -88,7 +93,7 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     await sweep_file_rows_by_prefix(DELETION_EXP_FILENAME)
     await sweep_users_by_prefix(DELETION_EXP_USER_PREFIX)
 
-    # 1. 两个真实用户作持有者（unlink_all_owners 逐个退配额的断言对象）
+    # 1. 两个真实用户作持有者（finalize 逐个退 storage 配额的断言对象）
     suffix = secrets.token_hex(3)
     name_a = f"{DELETION_EXP_USER_PREFIX}_a_{suffix}"
     name_b = f"{DELETION_EXP_USER_PREFIX}_b_{suffix}"
@@ -179,6 +184,38 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
         session.add(user_b)
         await session.commit()
 
+        # 2.5 ★6 用：一条**已在删除流程**的失败文件（DELETING + 新鲜 delete_marked_at）。
+        #     本任务扫描必须排除它——不排除就会因 origin 恒为 FAILED 而被反复登记 + 投递，
+        #     worker 很快 finalize 掉行，步骤 4.5 的断言即可抓到。
+        #     不建 link / 不传对象：断言只锚定扫描行为（任务若误投递，快照里的预览图
+        #     前缀也足以走完删除链路并把行删掉）
+        inflight_code = secrets.token_hex(16)
+        inflight_file = FileInDB(
+            filename=f"{DELETION_EXP_FILENAME}_inflight_{suffix}",
+            path=f"data/{inflight_code}/inflight_{suffix}.zip",
+            status=FileStatus.DELETING,
+            storage_type="oss",
+            size=0,
+            file_verify_code=inflight_code,
+            file_type="zip",
+            experiment_type="imzML",
+            delete_marked_at=utc_time(),  # 新鲜时间戳：兜底任务（阈值 30 分钟）本轮不会碰它
+        )
+        session.add(inflight_file)
+        await session.commit()
+        await session.refresh(inflight_file)
+        inflight_file_id = inflight_file.file_id
+        inflight_filename = inflight_file.filename
+        assert inflight_file_id is not None
+        session.add(OriginImzMLInDB(
+            experiment_name=inflight_filename,
+            source_file_id=inflight_file_id,
+            status=ExperimentStatus.FAILED,
+            error_message="deletion-test fixture (in-flight)",
+            created_at=utc_time() - timedelta(minutes=1),
+        ))
+        await session.commit()
+
     assert run_out is not None
     run_keys = [f"{run_out}chunk_{i}" for i in range(RUN_OBJECT_COUNT)]
 
@@ -186,6 +223,27 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     for key in (main_key, imzml_path, ibd_path, *run_keys):
         await put_oss_object(oss_path=key, data=os.urandom(2048))
     logger.info("fixture ready: file_id=%s origin_id=%s run_id=%s", file_id, origin_id, run_id)
+
+    # 3.5 护栏：ttl=0 会把库中其它过期 FAILED origin 一并删掉（连带其 OSS 对象）。
+    #     测试自造的行都是 test_* 文件名（被删无妨），一旦扫到非测试文件的失败实验，
+    #     说明这是共享/生产库，直接 skip——不让测试静默删真实数据。
+    async with get_standalone_async_session() as session:
+        foreign = (await session.exec(
+            select(OriginImzMLInDB.id, FileInDB.filename)
+            .join(FileInDB, FileInDB.file_id == OriginImzMLInDB.source_file_id)  # type: ignore[arg-type]
+            .where(
+                OriginImzMLInDB.status == ExperimentStatus.FAILED,
+                OriginImzMLInDB.created_at < utc_time(),
+                OriginImzMLInDB.id != origin_id,
+            )
+        )).all()
+    real_data = [(oid, name) for oid, name in foreign if not name.startswith("test_")]
+    if real_data:
+        pytest.skip(
+            f"DB holds {len(real_data)} stale FAILED origin(s) of non-test files "
+            f"{real_data[:3]}; cleanup_failed_experiments(ttl_minutes=0) would delete "
+            "them and their OSS objects — run this test against a fresh/disposable DB"
+        )
 
     # 4. 触发 beat 任务（ttl=0 扫全部过期 FAILED origin，与 beat 触发同一 worker 执行路径；
     #    cleaned 可能包含环境中其他过期 FAILED origin，断言只锚定本测试的行）
@@ -196,12 +254,30 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     )
     logger.info("beat task completed, cleaned=%d (registration committed)", cleaned)
 
-    # 5. ★1 任务返回即登记已提交：两持有者 storage 配额已释放（unlink_all_owners）
-    for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
-        file_count, total_size, _ = await _read_user_quota(user_id)
-        assert file_count == 0, f"{name}: file_count not refunded at registration: {file_count}"
-        assert total_size == 0, f"{name}: total_file_size not refunded at registration: {total_size}"
-    logger.info("★1 storage quota refunded for both owners at registration time")
+    # 4.5 ★6 分工：已在删除流程的失败 origin 不再被本任务捞取（捞回去只会永久占满批次）
+    async with get_standalone_async_session() as session:
+        inflight = (await session.exec(
+            select(FileInDB).where(FileInDB.file_id == inflight_file_id))).first()
+        inflight_status = inflight.status if inflight is not None else None
+    assert inflight_status == FileStatus.DELETING, (
+        "已在删除流程（DELETING）的失败文件被本任务重复捞取并删掉："
+        f"row={'已消失' if inflight is None else inflight_status}"
+    )
+    logger.info("★6 in-flight deleting file not re-picked (handover to retry task holds)")
+
+    # 5. ★1 登记阶段不动配额：任务返回时两持有者的 storage 配额应原封不动。
+    #    worker 若已抢先 finalize，行与配额必然一起消失（同事务），此时跳过
+    async with get_standalone_async_session() as session:
+        row = (await session.exec(
+            select(FileInDB).where(FileInDB.file_id == file_id))).first()
+    if row is not None:
+        for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
+            file_count, total_size, _ = await _read_user_quota(user_id)
+            assert file_count == 1, f"{name}: file_count changed at registration: {file_count}"
+            assert total_size == FILE_SIZE, f"{name}: total_file_size changed at registration: {total_size}"
+        logger.info("★1 storage quota untouched at registration (refund happens at finalize)")
+    else:
+        logger.info("★1 row already finalized before quota probe; skipping the 'untouched' check")
 
     # 6. ★2 等 worker 删净 OSS 并 finalize 删文件行
     await wait_db_row_gone(
@@ -210,12 +286,16 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     )
     logger.info("★2 file row finalized")
 
-    # 7. ★3 processed 配额由 finalize 退还（登记时不动）
+    # 7. ★3 两持有者的 storage 配额与 processed 配额都由 finalize 退还
+    for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
+        file_count, total_size, _ = await _read_user_quota(user_id)
+        assert file_count == 0, f"{name}: file_count not refunded at finalize: {file_count}"
+        assert total_size == 0, f"{name}: total_file_size not refunded at finalize: {total_size}"
     _, _, processed_a = await _read_user_quota(user_a_id)
     _, _, processed_b = await _read_user_quota(user_b_id)
     assert processed_a == 0, f"processed quota not refunded via finalize: {processed_a}"
     assert processed_b == 0, f"user_b processed quota changed unexpectedly: {processed_b}"
-    logger.info("★3 processed quota refunded via finalize")
+    logger.info("★3 storage + processed quota both refunded via finalize")
 
     # 8. 行级联：origin / run 都没了；用户仍在（只 unlink 不删用户）
     async with get_standalone_async_session() as session:

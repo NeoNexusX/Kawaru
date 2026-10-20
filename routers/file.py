@@ -1,14 +1,23 @@
-from fastapi import APIRouter
-from models.file_models import FilePublic, FileOssUploadResponse
-from models.filter_models import ListDataResponse
+from fastapi import APIRouter, Depends
+
 from api.file_api import (
-    DeleteFileDep, ListFilesDep, SimpleUploadDep,
-    DownloadFileDep, RawDownloadDep, RawDownloadNoauthDep, PreflightDep,
+    DeleteFileDep,
+    FileMetadataDep,
+    ListFilesDep,
     ListPublicFilesDep,
-    OssUploadDep, FileMetadataDep, SetFilePublicDep, PatchFileMetadataDep,
-    RelayDownloadDep, relay_download_file
+    PatchFileMetadataDep,
+    PreflightDep,
+    RawDownloadDep,
+    RawDownloadNoauthDep,
+    RelayDownloadDep,
+    SetFilePublicDep,
+    UploadFileDep,
+    relay_download_file,
 )
-from database.visit_stats import incr_visit
+from database.visit_stats import count_visit
+from models.file_models import FileOssUploadResponse, FilePublic
+from models.filter_models import ListDataResponse
+from routers.stream_route import add_stream_download_route
 
 file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文件管理相关的api
 
@@ -16,16 +25,9 @@ file_router = APIRouter(prefix="/files", tags=["file manager"]) # 挂接了文�
 # 文件管理 API
 #########################
 
-@file_router.post("/preflight", response_model=FilePublic)
+@file_router.post("/preflight", response_model=FilePublic, dependencies=[Depends(count_visit)])
 async def preflight_file(file_record: PreflightDep):
     """上传预检"""
-    await incr_visit()
-    return file_record
-
-
-@file_router.post("/upload_simple", response_model=FileOssUploadResponse)#简单上传
-async def upload_simple_file(file_record: SimpleUploadDep):
-    """OSS 直传；FC 未回调的无 persistent tag 对象由 OSS 生命周期自动清理。"""
     return file_record
 
 
@@ -35,42 +37,26 @@ async def list_user_files(files: ListFilesDep):
     return files
 
 
-@file_router.get("/{public_id}/download_raw")#直接下载两个文件
+@file_router.get("/{public_id}/download_raw", dependencies=[Depends(count_visit)])#直接下载两个文件
 async def download_file_raw(file_meta: RawDownloadDep):
     """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
-    await incr_visit()
     return file_meta
 
 
-@file_router.get("/{public_id}/download_raw_noauth")#免登录下载两个文件
+@file_router.get("/{public_id}/download_raw_noauth", dependencies=[Depends(count_visit)])#免登录下载两个文件
 async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
     """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
-    await incr_visit()
     return file_meta
 
 
-@file_router.get("/{public_id}/download_relay")#中转下载
+@file_router.get("/{public_id}/download_relay", dependencies=[Depends(count_visit)])#中转下载
 async def download_file_relay(file_meta: RelayDownloadDep):
     """中转下载（需登录）——返回两个指向后端的中转 URL，经服务器流式透传，免 OSS 公网流量"""
-    await incr_visit()
     return file_meta
 
 
-# 中转下载流式透传：返回文件字节流（StreamingResponse），FastAPI 不允许对 Response 子类
-# 使用 Depends 注入，故直接用 add_api_route 注册带完整签名的处理函数。
-# HEAD 需显式声明：FastAPI 的 APIRoute 不会像 Starlette 那样在有 GET 时自动补 HEAD。
-file_router.add_api_route(
-    "/{public_id}/relay/download",
-    relay_download_file,
-    methods=["GET", "HEAD"],
-)
-
-
-@file_router.get("/{file_id}/download")
-async def download_file(file_meta: DownloadFileDep):#使用依赖注入的元数据创建文件流，创建文件流响应
-    """下载文件"""
-    await incr_visit()
-    return file_meta
+# 中转下载流式透传：返回文件字节流，注册细节（GET/HEAD 双注册的原因）见 add_stream_download_route
+add_stream_download_route(file_router, "/{public_id}/relay/download", relay_download_file)
 
 
 @file_router.delete("/{public_id}")#删除文件
@@ -79,16 +65,15 @@ async def delete_file(result: DeleteFileDep):
     return result
 
 
-@file_router.post("/list_files", response_model=ListDataResponse)#列出文件文件
+@file_router.post("/list_files", response_model=ListDataResponse, dependencies=[Depends(count_visit)])#列出文件文件
 async def list_files(list_file_response: ListPublicFilesDep):
     """查询文件列表"""
-    await incr_visit()
     return list_file_response
 
 
 @file_router.post("/upload", response_model=FileOssUploadResponse)#上传接口
-async def upload_file(file_record: OssUploadDep):
-    """上传文件至OSS存储"""
+async def upload_file(file_record: UploadFileDep):
+    """按预检记录的存储类型签发上传凭证（当前仅 OSS：返回 STS，前端直传；FC 未回调的无 persistent tag 对象由 OSS 生命周期自动清理）"""
     return file_record
 
 

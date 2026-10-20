@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from api_services.file_service import get_file_ids_by_public_ids
 from api_services.user_service import count_items, get_user_by_id
+from api_helpers.deletion_helper import file_is_deleting
 from constants.collection_constants import (
     COLLECTION_EXACT_FILTER_FIELDS,
     COLLECTION_FUZZY_FILTER_FIELDS,
@@ -42,6 +43,17 @@ from models.user_models import UserInDB
 from tools import get_logger, utc_time
 
 logger = get_logger("api_services.collection_service")
+
+
+def member_visibility_clause() -> Any:
+    """集合成员的读侧口径（单一出口）：只算 status == COMPLETED 的文件
+
+    加入成员时就要求 COMPLETED（validate_member_files），删除中的文件又已在登记事务内
+    摘掉成员行，所以这里是防老数据/异常态的兜底；同时它让集合列表、owner 详情、公开页
+    三处口径完全一致（DELETING / DELETE_FAILED 不是 COMPLETED，天然被排除）。
+    调序的成员全集比对必须用同一口径——否则 UI 看不到的成员会让调序永远 409。
+    """
+    return FileInDB.status == FileStatus.COMPLETED
 
 
 #########################
@@ -360,6 +372,7 @@ async def _paginate_collections(
             .where(CollectionMember.collection_id.in_([ # type: ignore # pylint: disable=no-member
                 collection.id for collection in collections
             ]))
+            .where(member_visibility_clause())
             .group_by(CollectionMember.collection_id) #type: ignore
         )
     ).all()
@@ -394,19 +407,14 @@ async def _paginate_collections(
 async def build_collection_detail(
     session: AsyncSession,
     collection: DataCollectionInDB,
-    *,
-    only_completed: bool = False,
 ) -> CollectionDetail:
     """聚合集合详情：元数据 + 成员文件列表（按 position 排序）+ 成员数/总大小 + owner 用户名
 
-    Args:
-        only_completed: 公开页传 True，过滤非 completed 成员（防御性，正常成员恒为 completed）
+    成员口径与公开页一致（见 member_visibility_clause）：不再区分 owner 视角与公开视角。
     """
     assert collection.id is not None
-    files = await get_member_files(session, collection.id, only_completed=only_completed)
-    member_count, total_size = await get_member_stats(
-        session, collection.id, only_completed=only_completed
-    )
+    files = await get_member_files(session, collection.id)
+    member_count, total_size = await get_member_stats(session, collection.id)
     owner = await get_user_by_id(collection.owner_id, session)
 
     return CollectionDetail.model_validate(
@@ -438,17 +446,14 @@ async def get_member_file_ids(
 async def get_member_files(
     session: AsyncSession,
     collection_id: int,
-    *,
-    only_completed: bool = False,
 ) -> list[FileInDB]:
     """获取集合成员文件列表，固定按 position 排序（file_id 兜底稳定排序）"""
     stmt = (
         select(FileInDB)
         .join(CollectionMember, CollectionMember.file_id == FileInDB.file_id) # type: ignore
         .where(CollectionMember.collection_id == collection_id)
+        .where(member_visibility_clause())
     )
-    if only_completed:
-        stmt = stmt.where(FileInDB.status == FileStatus.COMPLETED)
     stmt = stmt.order_by(CollectionMember.position, FileInDB.file_id) # type: ignore
     files = (await session.exec(stmt)).all()
     return list(files)
@@ -457,13 +462,10 @@ async def get_member_files(
 async def get_member_stats(
     session: AsyncSession,
     collection_id: int,
-    *,
-    only_completed: bool = False,
 ) -> tuple[int, int]:
     """成员数与总大小（实时聚合，不落库；返回 (member_count, total_size)）
 
-    only_completed=True 时仅统计 completed 成员——公开页成员列表过滤非 completed，
-    统计口径与其保持一致（避免"数量比列表多"的矛盾）。
+    口径与 get_member_files 一致，避免"数量比列表多"的矛盾。
     """
     stmt = (
         select(
@@ -473,9 +475,8 @@ async def get_member_stats(
         .select_from(CollectionMember)
         .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
         .where(CollectionMember.collection_id == collection_id)
+        .where(member_visibility_clause())
     )
-    if only_completed:
-        stmt = stmt.where(FileInDB.status == FileStatus.COMPLETED)
     count, total_size = (await session.exec(stmt)).one()
     return int(count), int(total_size)
 
@@ -523,8 +524,15 @@ async def validate_member_files(
         return []
 
     unique_ids = list(dict.fromkeys(file_ids))
+    # 行锁（主键 IN，锁序与登记侧一致：file 行 → 成员行）：与文件删除登记并发时，
+    # 先拿 file 行锁可避免「登记删成员行 / 加成员插成员行」锁序相反的死锁，
+    # 同时关掉「给正在删除的文件加成员」的窗口（登记提交后这里读到 DELETING → 409）
     records = (
-        await session.exec(select(FileInDB).where(FileInDB.file_id.in_(unique_ids)))  # type: ignore # pylint: disable=no-member
+        await session.exec(
+            select(FileInDB)
+            .where(FileInDB.file_id.in_(unique_ids))  # type: ignore # pylint: disable=no-member
+            .with_for_update()
+        )
     ).all()
     found = {record.file_id: record for record in records}
 
@@ -533,7 +541,7 @@ async def validate_member_files(
     for file_id in unique_ids:
         record = found.get(file_id)
         # 删除流程中的文件按不存在处理（与 get_file_record_by_id 的 404 语义一致）
-        if record is None or record.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+        if record is None or file_is_deleting(record.status):
             reasons[str(file_id)] = "not_found"
         elif record.status != FileStatus.COMPLETED:
             reasons[str(file_id)] = "not_completed"
@@ -690,11 +698,14 @@ async def reorder_members(
         )
         raise member_order_conflict_exception
 
+    # 成员全集比对用与读侧同一口径（member_visibility_clause）：被口径隐藏的成员
+    # 不在全集里，UI 发来的可见成员数组才能对上；隐藏成员保留旧 position（允许空洞/重复）
     members = (
         await session.exec(
-            select(CollectionMember).where(
-                CollectionMember.collection_id == collection.id
-            )
+            select(CollectionMember)
+            .join(FileInDB, CollectionMember.file_id == FileInDB.file_id) # type: ignore
+            .where(CollectionMember.collection_id == collection.id)
+            .where(member_visibility_clause())
         )
     ).all()
     current_ids = {member.file_id for member in members}

@@ -1,5 +1,5 @@
 """
-管理员告警邮件通知测试（删除架构现状说明 §8 落地的前两例）
+管理员告警邮件通知测试（删除状态位架构已落地的两类告警）
 
 覆盖两处典型失败点的通知逻辑：
   例① OSS 删除失败 → DELETE_FAILED（background/file_background._mark_delete_failed）：

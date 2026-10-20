@@ -269,12 +269,13 @@ async def remove_members_api(
     removed = [public_by_file_id[fid] for fid in removed_fids]
     removed_set = set(removed)
     skipped = [p for p in unique_public_ids if p not in removed_set]
+    # commit 会 expire 全部 ORM 实例，异步会话下 commit 后不能再惰性加载：
+    # 日志字段在 commit 前取出，省掉回读 current_user / collection 的两次 refresh
+    user_id = current_user.id
     await async_session.commit()
-    await async_session.refresh(current_user)
-    await async_session.refresh(collection)
 
     logger.info(
-        f"remove collection members user={current_user.id} collection_id={collection.id} "
+        f"remove collection members user={user_id} collection_id={collection_id} "
         f"removed={len(removed)} skipped={len(skipped)}"
     )
     return {"public_id": public_id, "removed": removed, "skipped": skipped}
@@ -335,13 +336,13 @@ async def get_public_collection_api(
 
     安全:
     - 非公开集合即使 public_id 正确也返回 404（不暴露存在性）
-    - 成员仅返回 status == completed 的文件
+    - 成员仅返回 status == completed 的文件（与 owner 视角同一口径）
     - 响应不包含集合数字 id：禁止暴露自增 id，对外标识一律用 public_id
       （管理端操作要求 owner/admin 且走登录态接口，owner 从自己的集合列表拿 public_id，
       非 owner 拿到 public_id 也无权调用管理端，故无暴露必要）
     """
     collection = await get_public_collection_by_public_id(async_session, public_id)
-    detail = await build_collection_detail(async_session, collection, only_completed=True)
+    detail = await build_collection_detail(async_session, collection)
     logger.info(f"get public collection public_id={public_id}")
     return detail
 

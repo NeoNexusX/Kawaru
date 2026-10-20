@@ -74,7 +74,6 @@ oss:
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
@@ -84,7 +83,6 @@ oss:
   # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
   oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
   # 以下 FC 函数端点测试用不到，留空（check_oss_config 不校验它们）
-  fc_packup_endpoint: ""
   fc_algorithm_endpoint: ""
   fc_tic_endpoint: ""
   fc_feature_endpoint: ""

@@ -23,16 +23,9 @@ class FileStatus(str, Enum):
     UPLOADING = "uploading"
     COMPLETED = "completed"
     FAILED = "failed"
-    # 删除流程状态位（OSS 先删、DB 后删、失败标记，见 docs/zh/删除状态位改造方案.md）
+    # 删除流程状态位（OSS 先删、DB 后删、失败标记）
     DELETING = "deleting"            # 删除已登记：OSS 清理进行中，读侧拒绝、回调丢弃
     DELETE_FAILED = "delete_failed"  # OSS 清理失败：行保留作为任务记录，等兜底重投
-
-
-class PackupStatus(str, Enum):
-    """文件打包状态"""
-    PACKING = "packing"
-    FAILED = "failed"
-    COMPLETED = "completed"
 
 
 class FileBase(SQLModel):
@@ -172,34 +165,6 @@ class FileInDB(FileBase, table=True):
         default=None,
         description="删除登记时间（DELETING/DELETE_FAILED 状态的置位时间）",
     )
-
-class FileDownloadMeta(FileBase):
-    """下载所需的文件元数据
-
-    不含 file_id 与 path：path 是 OSS 对象键（如 data/{file_verify_code}/{file_id}.zip），
-    会暴露内部 file_id 与内容指纹；前端下载只需 oss_download_url。
-    """
-
-    oss_download_url: str | None = None
-    uploaded_at: datetime
-    download_count: int
-    last_downloaded_at: datetime
-
-    @classmethod
-    def from_record(cls, record: FileInDB) -> "FileDownloadMeta":
-        """从文件记录创建下载元数据"""
-        return cls(
-            filename=record.filename,
-            file_type=record.file_type,
-            size=record.size,
-            storage_type=record.storage_type,
-            # file_verify_code 有意不回填（保持 None）：内容指纹是秒传接管的钥匙，
-            # 即使此接口已限制为持有者/公开文件，也不对外下发，避免被二次秒传接管
-            uploaded_at=record.uploaded_at,
-            download_count=record.download_count,
-            last_downloaded_at=record.last_downloaded_at,
-        )
-
 
 class OssDownloadFile(SQLModel):
     """RAW 直链下载的单个文件"""

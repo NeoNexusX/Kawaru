@@ -5,11 +5,11 @@ test_delete_run_flow  [deletion]  清扫残留 → 真实上传链（无 FC，�
                                   .upload_completed_file）→ 直插 COMPLETED run + 真实
                                   out_path 对象 → DELETE /processes/{run_id} → 断言
 
-验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 2）的核心承诺：
+验证删除状态位改造（场景 2）的核心承诺：
   ★1 删除接口秒回（登记事务 + 投递，不等 OSS 删除）
   ★2 读侧拦截：runs 列表立即不再展示该 run；zarr 端点按不存在处理（404）
-  ★3 processed 配额在 finalize 才退（与场景 1 的登记即退相反——run 的用户可见
-     语义与行同生共死，行在则未退、行删则已退）
+  ★3 processed 配额在 finalize 才退（run 的用户可见语义与行同生共死，
+     行在则未退、行删则已退）
   ★4 run 行最终被 worker 删除（「要么都删除」DB 侧）
   ★5 配额退还到位（finalize 把完成时计入的 output_size 减回，不重不漏；
      直插 run 由夹具模拟该笔计入，见 helpers/deletion.insert_completed_run）
@@ -114,7 +114,7 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
     )
     logger.info("★1 delete returned in %.3fs with status=deleted", elapsed)
 
-    # 5. ★3 processed 配额在 finalize 才退（与场景 1 的登记即退相反）。
+    # 5. ★3 processed 配额在 finalize 才退。
     #    读序防竞态：先读配额、再复读行——退配额与删行在同一 finalize 事务提交，
     #    复读仍是 DELETING ⟹ finalize 未提交 ⟹ 刚才的配额读数必是登记后的值。
     #    复读行已不在（worker 极快收敛）则跳过该中途断言，最终态由 ★6 保证

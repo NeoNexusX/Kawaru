@@ -12,8 +12,6 @@ from models.config_models import Config
 CELERY_MODULE_IMPORTS = [
     "background.file_background",
     "background.api_background",
-    "background.file_background_helper",
-    "background.experiment_background_helper",
     "background.processing_background",
 ]
 
@@ -49,8 +47,8 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "task": "background.file_background.heartbeat",
             "schedule": 67.0,
         },
-        "cleanup_old_download_zips": {
-            "task": "background.file_background.cleanup_old_download_zips",
+        "cleanup_source_zips": {
+            "task": "background.file_background.cleanup_source_zips",
             "schedule": const_kwargs["cleanup_download_zip_interval_seconds"],
             "args": (),
             "kwargs": {},
@@ -70,6 +68,24 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
         "cleanup_stale_process_runs": {
             "task": "background.file_background.cleanup_stale_process_runs",
             "schedule": const_kwargs["cleanup_stale_process_runs_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "cleanup_deleted_users": {
+            "task": "background.file_background.cleanup_deleted_users",
+            "schedule": const_kwargs["cleanup_deleted_users_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_file_deletions": {
+            "task": "background.file_background.retry_stale_file_deletions",
+            "schedule": const_kwargs["retry_file_deletions_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_run_deletions": {
+            "task": "background.file_background.retry_stale_run_deletions",
+            "schedule": const_kwargs["retry_run_deletions_interval_seconds"],
             "args": (),
             "kwargs": {},
         },

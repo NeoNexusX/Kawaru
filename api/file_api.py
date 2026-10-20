@@ -9,7 +9,7 @@ from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
 from api_helpers.file_helper import check_user_quota
-from api_services.composite_service import mark_file_for_deletion
+from api_services.composite_service import begin_file_deletion
 from api_services.relay_service import (
     prepare_download_relay_oss,
     resolve_relay_base_url,
@@ -21,42 +21,38 @@ from api_services.file_service import (
     build_file_order,
     get_user_file_ids,
     link_file_to_user,
-    prepare_download_file_oss,
     prepare_download_raw_oss,
-    rollback_simple_upload,
     get_reuse_file_by_hash,
     set_file_public_service,
+    unlink_user_from_file,
     update_download_stats,
     update_file_metadata,
-    validate_simple_upload,
-    validate_upload_request,
+    validate_preflight_request,
     get_file_record_by_public_id,
-    update_file_record,
+    upload_oss_file,
 )
 from background.file_background import delete_objects_task
 from api_services.user_service import count_items
-from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, PACKUP_CACHE_TTL_SECONDS
+from constants.file_constants import DOWNLOAD_CACHE_TTL_SECONDS
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
     file_not_found_exception,
-    file_persist_failed_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,
+    storage_type_not_allowed_exception,
     user_download_limit_exception,
     user_file_limit_exception,
     download_not_implemented_exception,
 )
 from models.file_models import (
     FileCreate,
-    FileDownloadMeta,
     FileInDB,
     FilePatch,
     FilePublic,
     FileOssUploadResponse,
-    FileStatus,
     RawDownloadResponse,
 )
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
@@ -91,7 +87,7 @@ async def preflight_create_file(
     - 只有在后续上传接口中校验通过后,才会更新用户计数
     """
     # 参数验证
-    if not await validate_upload_request(async_session, current_user, file_data):
+    if not await validate_preflight_request(async_session, current_user, file_data):
         logger.error(f"validation failed user={current_user.id} filename={file_data.filename}")
         raise invalid_request_parameters_exception
 
@@ -151,70 +147,31 @@ async def preflight_create_file(
     return result # type: ignore
 
 
-async def upload_simple_file(
+async def upload_file_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    storage_type: str = Form("oss"),
     pre_public_id: str = Form(..., pattern=PUBLIC_ID_PATTERN),
-    filename: str | None = Form(None),
+    filename: str = Form(...),
 ) -> FileOssUploadResponse:
     """
-    【OSS 简单上传接口】
+    【上传入口】
 
-    查询预检记录并返回限定对象路径的 STS 临时凭证，文件内容由前端
-    通过 OSS SDK 直传。必须先调用预检接口，以其返回的 public_id 作为 pre_public_id。
+    按预检记录的 storage_type 分发到对应存储的上传实现。
+    必须先调用预检接口，以其返回的 public_id 作为 pre_public_id。
 
-    OSS 对象清理策略：
-    - 回调在路径提交后失败时，失败实验定时任务会按已落库路径尝试删除
-      source/imzML/ibd 对象。
-    - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
-      未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
+    存储类型以预检记录为准（预检时已按 ALLOWED_STORAGE_TYPES 校验），
+    不再由前端在上传时重复声明。
     """
-    # 参数与预检记录校验放在 try 之外：校验失败直接返回对应错误，不触发回滚。
-    # 回滚会解除关联并删除预检记录，对他人的 pre_public_id 或已完成的文件执行时，
-    # 会造成配额虚减或误删已完成文件
-    if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
-        raise invalid_request_parameters_exception
-
     pre_record = await get_file_record_by_public_id(pre_public_id, async_session)
-    if filename is None:
-        raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
 
-    logger.info(
-        "oss upload start user=%s filename=%s storage=%s",
-        current_user.id, filename, storage_type,
+    if pre_record.storage_type == "oss":
+        return await upload_oss_file(current_user, async_session, pre_record, filename)
+
+    logger.error(
+        "unsupported storage_type user=%s file_id=%s storage_type=%s",
+        current_user.id, pre_record.file_id, pre_record.storage_type,
     )
-    await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
-
-    try:
-        # OSS 对象键使用唯一标识 data/{file_verify_code}/{file_id}.{file_type}，
-        # 不再使用文件名；verify_code 前置打散 OSS 分区，FC 从文件名解析 file_id 后回调后端
-        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
-        oss_path = OssStorage.prepare_storage_path(
-            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
-        )
-        oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
-        if not oss_sts_token or not oss_path:
-            raise internal_server_error_exception
-
-        await update_file_record(async_session, pre_record, status=FileStatus.UPLOADING)
-        await async_session.commit()
-        await async_session.refresh(pre_record)
-
-    except Exception as exc:
-        logger.error(
-            "oss upload failed user=%s filename=%s error=%s",
-            current_user.id, filename, exc,
-        )
-        await rollback_simple_upload(async_session, current_user, pre_record)
-        raise file_persist_failed_exception from exc
-
-    response = FileOssUploadResponse.model_validate(pre_record)
-    response.oss_path = oss_path
-    response.oss_sts_token = oss_sts_token
-    response.oss_bucket = OSS_BUCKET_NAME
-    response.oss_region_id = OSS_REGION_ID
-    return response
+    raise storage_type_not_allowed_exception
 
 
 async def list_user_files(
@@ -322,7 +279,7 @@ async def delete_user_file(
     
     2. 如果文件只属于当前用户:
        - 删除 origin 相关文件(如果有,如 imzML、ibd)
-       - 删除 OSS 源文件及关联的 packup 对象
+       - 删除 OSS 源文件
        - 删除文件数据库记录
        - 更新当前用户的统计信息
        - 返回状态:deleted
@@ -332,11 +289,11 @@ async def delete_user_file(
     - 移除当前用户后,如果 owners 为空,则执行完全删除
 
     删除状态位流程（OSS 先删、DB 后删、失败标记）:
-    - 完全删除不再同步等待 OSS 删除完成，而是登记 DELETING 后立即返回
-    - unlink + 扣配额（用户可见语义）在登记事务内完成并提交
-    - worker 删完全部 OSS 对象后才删 DB 行（「要么都删除」）；任一失败则
-      行置 DELETE_FAILED 保留（「要么都保留」），等重试（兜底任务待全部
-      删除场景改造完成后统一上线，期间管理员重复删除即为手动重试）
+    - 完全删除不等 OSS 删完，登记 DELETING 后立即返回
+    - 登记只做「置 DELETING + 摘集合成员 + 收快照」，**不动配额**；link 随 finalize
+      删行级联，storage 与 processed 配额都在那时退还——即配额要等 OSS 删完才降
+    - worker 删完全部 OSS 对象后才删 DB 行；任一失败则置 DELETE_FAILED 保留，
+      等重试（兜底任务未实现，期间管理员重复删除即为手动重试）
     - 重复请求幂等:已处于 DELETING 的文件直接再次投递删除任务
     """
     # include_deleting=True: 对已处于 DELETING 的文件重复发起删除时走幂等分支而非 404
@@ -345,27 +302,24 @@ async def delete_user_file(
         raise permission_denied_exception
     file_id = file_record.file_id
 
-    # 登记删除:行锁抢占 → 置 DELETING → unlink + 扣配额 → 收集路径快照（同一事务）
-    snapshot = await mark_file_for_deletion(session, current_user, file_record)
+    snapshot = await begin_file_deletion(session, file_record, current_user=current_user)
 
     if snapshot is None:
-        # 还有其他用户持有,只解除关联
+        # 还有其他用户持有 → 退化为「退出共享」：只解除当前用户的关联，文件保留。
+        # 行锁由 begin_file_deletion 持有到本事务结束，解除仍在锁保护下
+        await unlink_user_from_file(session, current_user, file_record)
         await session.commit()
         await session.refresh(current_user)
         await session.refresh(file_record)
         logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
         return {"public_id": public_id, "status": "unlinked"}
 
-    # 先 commit（配额已扣、关联已解除，用户可见语义立即生效），再投递删除任务。
-    # 投递失败只留下 DELETING 行（管理员重复删除即可手动重投，兜底任务统一
-    # 上线后自动收敛）;
-    # 顺序不能反:先投后 commit 的崩溃会留下「对象已删、行未标记」的不可自愈形态
+    # 先 commit 再投递：顺序不能反，先投后 commit 的崩溃会留下「对象已删、行未标记」
     await session.commit()
     delete_objects_task.delay( # type: ignore
         kind="file",
         resource_id=file_id,
         paths=list(snapshot.paths),
-        redis_keys=list(snapshot.redis_keys),
     )
 
     await session.refresh(current_user)
@@ -447,80 +401,6 @@ async def patch_file_metadata(
     return FilePublic.model_validate(file_record)
 
 
-async def get_download_file_metadata(
-    public_id: PublicIdPath,
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
-) -> FileDownloadMeta:
-    """
-    【文件下载元数据接口】
-    
-    功能:返回文件元数据和路径,供下载使用
-    时机:在实际下载文件之前调用
-    
-    流程:
-    1. 下载次数限制检查(非管理员用户)
-    2. 准备下载文件(处理 origin 文件ZIP打包)
-    3. 更新下载统计(文件下载次数、用户下载次数)
-
-    origin 文件处理:
-    - 如果原始文件不存在,但 origin 文件(imzML、ibd)存在
-    - 动态创建 ZIP 包,包含 imzML 和 ibd 文件
-    - ZIP 包保存在临时目录,供下载使用
-    
-    下载限制:
-    - 管理员:无限制
-    - 普通用户:受用户下载配额限制
-    
-    注意:
-    - 权限闸:公开文件(is_public=True)允许任意登录用户下载;私有文件仅持有者或管理员可下载
-    - 私有文件对非持有者一律按 404 处理(不暴露存在性),与 download_raw_noauth 口径一致
-    - 此接口只返回元数据,不返回文件流
-    - 实际文件下载由前端或其他接口处理
-    - 实验文件的 ZIP 包是临时生成的,需要定期清理
-    """
-
-    file_record = await get_file_record_by_public_id(public_id, session)
-    file_id = file_record.file_id
-    logger.debug(f"download request user={current_user.id} file_id={file_id}")
-
-    # 权限闸:公开文件任意登录用户可下载;私有文件仅持有者/管理员可下载
-    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
-        logger.warning(
-            "download denied, file not public and not owner user=%s file_id=%s",
-            current_user.id, file_id,
-        )
-        raise file_not_found_exception
-
-    # 下载次数限制检查
-    if current_user.identity != "admin":
-        used = current_user.download_used or 0
-        if used >= current_user.max_download_count:
-            raise user_download_limit_exception
-
-    if file_record.storage_type != "oss":
-        raise download_not_implemented_exception
-
-    oss_download_url = await prepare_download_file_oss(session, file_record)
-
-    if oss_download_url != "<PACKING>":
-        await update_download_stats(session, file_record, current_user)
-
-    await session.commit()
-    await session.refresh(current_user)
-    await session.refresh(file_record)
-
-    if oss_download_url == "<PACKING>":
-        logger.info(f"download packup file in progress, user={current_user.id} file_id={file_id} filename={file_record.filename}")
-    else:
-        logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
-
-    file_download_meta = FileDownloadMeta.from_record(file_record)
-    file_download_meta.oss_download_url = oss_download_url
-
-    return file_download_meta
-
-
 async def get_raw_download_metadata(
     public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
@@ -544,7 +424,7 @@ async def get_raw_download_metadata(
     3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
     4. 更新下载统计（文件维度 + 用户维度）
 
-    Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
+    Redis 缓存：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
 
     下载限制：
     - 管理员：无限制
@@ -601,7 +481,7 @@ async def get_raw_download_metadata(
     response = RawDownloadResponse(files=files)
 
     # 写入缓存
-    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     # 更新下载统计
     await update_download_stats(session, file_record, current_user)
@@ -639,7 +519,7 @@ async def get_raw_download_metadata_noauth(
     2. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
     3. 更新下载统计（仅文件维度）
 
-    Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
+    Redis 缓存：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
 
     注意：
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
@@ -682,7 +562,7 @@ async def get_raw_download_metadata_noauth(
     response = RawDownloadResponse(files=files)
 
     # 写入缓存
-    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     # 更新下载统计
     await update_download_stats(session, file_record)
@@ -726,7 +606,7 @@ async def get_relay_download_metadata(
     - 路径参数为 public_id（对外统一标识），与 raw 直链版一致；中转 URL 与
       token 也一并绑定 public_id，内部 file_id 不再出现在任何对外出参里
     - 中转 URL 内嵌 token，下载端点 /relay/download 无需再携带登录态
-    - Redis 缓存与 raw 直链同构：TTL 取 PACKUP_CACHE_TTL_SECONDS，恒早于 token 有效期
+    - Redis 缓存与 raw 直链同构：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，恒早于 token 有效期
       （RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS），缓存里的 URL 不会指向已失效的 token
     - 缓存值内嵌 base_url：生产配置了 public_base_url 时无影响；回退模式（public_base_url 为空）
       下首次请求的 host 会被固化进缓存
@@ -775,7 +655,7 @@ async def get_relay_download_metadata(
     response = RawDownloadResponse(files=files)
 
     # 写缓存：TTL 与 raw 直链同源，恒早于 token 过期
-    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     # 更新下载统计（文件维度 + 用户维度）
     await update_download_stats(session, file_record, current_user)
@@ -805,7 +685,7 @@ async def relay_download_file(
     注意：
     - 返回的是文件字节流，不是 JSON
     - Range 头原样透传给 OSS，支持断点续传与多线程下载器
-    - HEAD 只返回头部信息（不拉正文），见 relay_service._relay_head_response
+    - HEAD 只返回头部信息（不拉正文），见 relay_service.stream_oss_object 的 HEAD 分支
     - token 由 download_relay* 接口签发，绑定 public_id + part
     """
     return await stream_relay_file(
@@ -949,34 +829,15 @@ async def get_file_metadata(
         raise internal_server_error_exception from e
 
 
-async def oss_upload_file(
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    async_session: AsyncSessionDep,
-    pre_public_id: str = Form(..., pattern=PUBLIC_ID_PATTERN),
-    filename: str = Form(...),
-) -> FileOssUploadResponse:
-    """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
-    storage_type = "oss"
-    return await upload_simple_file(
-        current_user,
-        async_session,
-        storage_type,
-        pre_public_id,
-        filename=filename,
-    )
-
-
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
-SimpleUploadDep = Annotated[FileOssUploadResponse, Depends(upload_simple_file)]
 ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
-DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata_noauth)]
 RelayDownloadDep = Annotated[RawDownloadResponse, Depends(get_relay_download_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
-OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
+UploadFileDep = Annotated[FileOssUploadResponse, Depends(upload_file_api)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
 PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]

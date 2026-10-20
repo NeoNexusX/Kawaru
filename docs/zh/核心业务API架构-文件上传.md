@@ -44,7 +44,6 @@ flowchart LR
 |---|---|---|
 | `POST /files/preflight` | 前端 | 上传预检，创建文件记录或完成秒传 |
 | `POST /files/upload` | 前端 | 获取 OSS 上传路径和 STS 临时凭证 |
-| `POST /files/upload_simple` | 前端 | 兼容上传入口，与 `/files/upload` 使用同一套逻辑 |
 | `POST /callback/oss_upload_callback` | 解包 FC | 报告解包成功或失败 |
 | `GET /files/{public_id}/metadata` | 前端 | 查询文件当前状态和基本信息 |
 
@@ -122,7 +121,7 @@ OSS 直传成功不等于业务上传成功，客户端应以数据库状态 `co
 
 ## 6. 对象保留与清理
 
-上传成功后，OSS 中保留三类核心对象：源 ZIP、解包出的 imzML 和 ibd，以及后续生成的预览图。imzML 和 ibd 是正式业务文件，长期保留；源 ZIP 可以在保留期后删除，需要下载时可以重新打包。
+上传成功后，OSS 中保留三类核心对象：源 ZIP、解包出的 imzML 和 ibd，以及后续生成的预览图。imzML 和 ibd 是正式业务文件，长期保留；下载只读取 imzML 和 ibd，源 ZIP 超过保留期后由定时任务 `cleanup_source_zips` 删除。
 
 清理由应用定时任务和 OSS 生命周期规则共同完成：
 

@@ -2,12 +2,12 @@
 删除状态位流程测试（完整上传链路 → 删除 → 断言收敛）
 
 test_delete_file_flow  [deletion]  清扫残留 → preflight → STS 直传 → 等 FC 解压
-                                    → 模拟回调 → 删除 → 5 个关键断言 → finally 清理
+                                    → 模拟回调 → 删除 → 关键断言 → finally 清理
 
-验证删除状态位改造（docs/zh/删除状态位改造方案.md 场景 1）的核心承诺：
+验证删除状态位改造（场景 1，用户删文件）的核心承诺：
   ★1 删除接口秒回（不等 OSS 删除完成）
   ★2 读侧拦截生效（DELETING 行按 404 处理）
-  ★3 配额在登记事务内即时退还（不等物理删除收敛）
+  ★3 配额在 finalize 才退（登记阶段不动配额）
   ★4 fileindb 行最终被 worker 删除（「要么都删除」DB 侧）
   ★5 OSS 对象最终删净（「要么都删除」OSS 侧，即不变式
      「DB 行已删 ⟹ OSS 已确认删完」）
@@ -45,6 +45,7 @@ from sqlmodel import select
 from tools.cal_hash import compute_imzml_md5
 from storage.oss.oss_storage import OssStorage
 from database.db import get_standalone_async_session
+from api_services.file_service import refund_storage_quota_for_file
 from constants.file_constants import OSS_ORIGIN_STORAGE_ROOT
 from models.file_models import FileInDB, FileStatus
 from .conftest import logger
@@ -75,9 +76,8 @@ DELETE_API_MAX_SECONDS = 2.0
 async def _sweep_leftovers(client: AsyncClient, auth: dict) -> None:
     """清扫上次运行残留的同名文件行，保证本次 preflight 不被重名检查拒绝。
 
-    - 已处于 DELETING / DELETE_FAILED 的行：unlink 与配额已即时生效，直接删行即可
-    - 仍有 owner 的行：走 HTTP DELETE（正常路径退还配额 + 触发异步删除）
-    残留 OSS 对象（如有）未打 persistent tag 的由 bucket 生命周期规则回收。
+    已处于 DELETING / DELETE_FAILED 的行硬删前补退一次配额（配额在 finalize 才退，
+    残留行尚未退，不补会跨轮次漂移）；仍有 owner 的行走 HTTP DELETE。
     """
     linked_public_ids: list[str] = []
     async with get_standalone_async_session() as session:
@@ -86,6 +86,7 @@ async def _sweep_leftovers(client: AsyncClient, auth: dict) -> None:
         )).all()
         for row in rows:
             if row.status in (FileStatus.DELETING, FileStatus.DELETE_FAILED):
+                await refund_storage_quota_for_file(session, row)
                 await session.delete(row)
                 logger.info("sweep: hard-deleted leftover row file_id=%s status=%s", row.file_id, row.status)
             else:
@@ -249,24 +250,46 @@ async def test_delete_file_flow(admin_login: Tuple[AsyncClient, str, str]):
         )
         logger.info("★2 metadata correctly returns 404 while DELETING")
 
-        # 9. ★3 配额即时退还（登记事务已 commit，不等物理删除收敛）
+        # 9. ★3 配额在 finalize 才退：行仍处 DELETING 时配额应原封不动。
+        #    worker 若已抢先 finalize，行与配额必然一起消失（同事务），此时跳过本断言
+        async with get_standalone_async_session() as session:
+            row = (await session.exec(
+                select(FileInDB).where(FileInDB.file_id == file_id)
+            )).first()
         rs = await client.get("/users/quota", headers=auth)
         assert rs.status_code == 200, rs.text
-        quota_after = rs.json()
-        assert quota_after["file_count"] == quota_before["file_count"] - 1, (
-            f"file_count not refunded immediately: "
-            f"before={quota_before['file_count']} after={quota_after['file_count']}"
-        )
-        assert quota_after["total_uploaded_size_bytes"] == quota_before["total_uploaded_size_bytes"] - size, (
-            f"total_uploaded_size not refunded immediately: "
-            f"before={quota_before['total_uploaded_size_bytes']} after={quota_after['total_uploaded_size_bytes']} expected_delta={size}"
-        )
-        logger.info("★3 quota refunded immediately: file_count=%s total_size=%s",
-                    quota_after["file_count"], quota_after["total_uploaded_size_bytes"])
+        quota_during = rs.json()
+        if row is not None:
+            assert quota_during["file_count"] == quota_before["file_count"], (
+                f"file_count refunded before finalize: before={quota_before['file_count']} "
+                f"now={quota_during['file_count']}"
+            )
+            assert quota_during["total_uploaded_size_bytes"] == quota_before["total_uploaded_size_bytes"], (
+                f"total_uploaded_size refunded before finalize: "
+                f"before={quota_before['total_uploaded_size_bytes']} now={quota_during['total_uploaded_size_bytes']}"
+            )
+            logger.info("★3 quota still held while DELETING (refund happens at finalize)")
+        else:
+            logger.info("★3 row already finalized before quota probe; skipping the 'still held' check")
 
         # 10. ★4 等 worker 删完全部 OSS 对象并 finalize 删行
         await _wait_row_gone(file_id)
         logger.info("★4 file row finalized (OSS delete + DB row delete both done)")
+
+        # 10b. ★3（续）配额已随 finalize 退还
+        rs = await client.get("/users/quota", headers=auth)
+        assert rs.status_code == 200, rs.text
+        quota_after = rs.json()
+        assert quota_after["file_count"] == quota_before["file_count"] - 1, (
+            f"file_count not refunded at finalize: "
+            f"before={quota_before['file_count']} after={quota_after['file_count']}"
+        )
+        assert quota_after["total_uploaded_size_bytes"] == quota_before["total_uploaded_size_bytes"] - size, (
+            f"total_uploaded_size not refunded at finalize: "
+            f"before={quota_before['total_uploaded_size_bytes']} after={quota_after['total_uploaded_size_bytes']} expected_delta={size}"
+        )
+        logger.info("★3 quota refunded at finalize: file_count=%s total_size=%s",
+                    quota_after["file_count"], quota_after["total_uploaded_size_bytes"])
 
         # 11. ★5 OSS 对象删净（行已删 ⟹ OSS 已删，不变式保证此刻对象必然不在）
         assert not await OssStorage.check_file_exist(oss_path), (

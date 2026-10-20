@@ -68,9 +68,6 @@ class EmailSettings(BaseModel):
     smtp_username: str
     smtp_from_email: str
     smtp_server: str
-    # 已废弃：邮箱验证码改为按用途 + 邮箱存 Redis（见 api_services/user_service.py），该项不再生效；
-    # 仅为兼容仍包含此项的旧配置文件而保留（extra="forbid" 下直接删除字段会让旧配置校验失败）
-    totp_window: int | None = None
     reset_password_max_attempts: int = Field(
         default=5,
         ge=1,
@@ -80,6 +77,19 @@ class EmailSettings(BaseModel):
         default=60,
         ge=1,
         description="同一邮箱两次发送验证码邮件之间的最小间隔（秒），不区分用途，防邮件轰炸",
+    )
+    # 管理员告警邮件额度闸（background/api_background.send_smtp_email_task 内生效，只作用于
+    # category=alert 的邮件）：告警与验证码共用同一 SMTP 账号，服务商按账号限流，告警洪峰
+    # （FC 端点挂掉、OSS 批量删除失败等）会把验证码邮件挤掉，所以告警要有全局上限。
+    alert_max_per_window: int = Field(
+        default=10,
+        ge=1,
+        description="管理员告警邮件在额度窗口内最多发送的封数，超出直接丢弃（只记 WARN 日志）",
+    )
+    alert_budget_window_seconds: int = Field(
+        default=3600,
+        ge=1,
+        description="管理员告警邮件的额度窗口（秒）",
     )
 
 
@@ -108,6 +118,10 @@ class StorageSettings(BaseModel):
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
     stale_clustering_run_timeout_minutes: int = Field(default=120, description="聚类 run 超过此时间无回调则标记失败")
     cleanup_stale_process_runs_interval_minutes: int = Field(default=15, description="清理僵尸 process_run 的定时间隔")
+    # 删除兜底：DELETING / DELETE_FAILED 行停留超过该时长才算「卡住」，才允许重投
+    stale_deletion_timeout_minutes: int = Field(default=30, ge=1, description="删除行停留超时阈值（分钟）：超过才允许兜底任务重投，避免和正在跑的 worker 抢")
+    retry_file_deletions_interval_minutes: int = Field(default=15, ge=1, description="文件删除兜底重投任务（retry_stale_file_deletions）的扫描间隔（分钟）")
+    retry_run_deletions_interval_minutes: int = Field(default=15, ge=1, description="run 删除兜底重投任务（retry_stale_run_deletions）的扫描间隔（分钟）")
 
 
 class OSSSettings(BaseModel):
@@ -121,14 +135,15 @@ class OSSSettings(BaseModel):
     # 下载（zarr 只读）：240 分钟 = 4 小时
     oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
-    oss_packup_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
+    oss_si_db_key: str | None = Field(
+        default=None,
+        description="SI 注释库 CSV 的完整 OSS key（如 static/si_db/2026-10/SI_DB.csv）；未配置时浏览可用、下载端点报未就绪",
+    )
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间，单位秒")
     oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间，单位秒")
-    fc_packup_endpoint: str | None = Field(default=None, description="函数计算自动打包HTTP触发地址")
-    fc_packup_timeout_seconds: int | None = Field(default=20, description="函数计算自动打包调用时超时时间，单位秒")
     fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
     fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
     fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
@@ -145,6 +160,9 @@ class OSSSettings(BaseModel):
     relay_max_concurrency: int = Field(default=5, ge=1, description="中转下载最大并发数（保护服务器带宽）")
     relay_acquire_timeout_seconds: float = Field(default=10, gt=0, description="中转下载排队等待上限（秒），超时返回 429")
     relay_idle_timeout_seconds: float = Field(default=30, gt=0, description="中转下载空闲超时（秒）：客户端 X 秒不消费数据则中断传输")
+    # 浏览器直连下载（download_raw 的 imzML/ibd 预签名 URL）的 CDN 域名：仅替换 URL 域名，
+    # 签名参数不变（V1 签名不含 Host，回源 OSS 验签照常通过）。正式服配置，测试服不配置。
+    oss_cdn_domain: str | None = Field(default=None, description="浏览器直连下载的 CDN 域名（如 https://cdn.neonexus.top）；配置后预签名 URL 换用该域名，未配置保持 OSS 域名")
 
 
 class UserSettings(BaseModel):
@@ -160,6 +178,10 @@ class UserSettings(BaseModel):
     max_region_length: int
     max_orcid_length: int
     max_homepage_length: int
+    cleanup_deleted_users_interval_minutes: int = Field(
+        default=10, ge=1,
+        description="已删除用户收敛任务（cleanup_deleted_users）的扫描间隔（分钟）：名下资源清完后物理删 user 行",
+    )
 
 
 class SampleInfoSettings(BaseModel):

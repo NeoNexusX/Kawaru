@@ -9,6 +9,7 @@ MODEL_MODULES = (
     "models.experiment_models",
     "models.processing_models",
     "models.collection_models",
+    "models.annotation_models",
 )
 
 

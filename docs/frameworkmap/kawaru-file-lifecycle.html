@@ -5577,10 +5577,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>主流程</h3>
         </div>
         <ul>
-          <li>&bull; 预检返回 file_id / 秒传结果，不签发 STS</li>
+          <li>&bull; 预检返回 public_id / 秒传结果，不签发 STS</li>
           <li>&bull; 客户端再调用上传接口获取 STS 并直传 OSS</li>
           <li>&bull; OSS 事件 → FC 解压 → 回调创建 Origin</li>
-          <li>&bull; 过期空路径 / FAILED 记录清 DB 并退配额</li>
+          <li>&bull; 过期空路径预检：cleanup_stale_preflights 清 DB 并退上传配额（OSS 孤儿归生命周期规则）</li>
+          <li>&bull; FAILED 记录：cleanup_failed_experiments 整份删除 DB + OSS，配额在 finalize 结算</li>
         </ul>
       </div>
 
@@ -5591,9 +5592,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>&bull; 行锁 → DELETING → 快照收集</li>
-          <li>&bull; Redis 清理 → OSS 幂等删除</li>
+          <li>&bull; OSS 幂等删除（不存在的对象视为删除成功）</li>
           <li>&bull; 上传配额在解绑时退；处理配额在删行前退</li>
-          <li>&bull; 失败：DELETE_FAILED 行保留</li>
+          <li>&bull; 失败：DELETE_FAILED 行保留，beat 定期兜底重投</li>
         </ul>
       </div>
     </div>

@@ -232,7 +232,8 @@ async def delete_process_run_endpoint(
     删除状态位流程（OSS 先删、DB 后删、失败标记，方案场景 2）：
     - 登记事务内置 DELETING 后立即返回（不再同步等待 OSS 目录删除）
     - worker 删完 out_path 全部对象后 finalize：删行 + 退 processed 配额 +
-      清 default_run_id（同一事务，天然幂等）；任一失败置 DELETE_FAILED，
+      清 default_run_id（同一事务，天然幂等）；任一失败置 DELETE_FAILED，行保留
+      等重投（本接口无 admin 旁路，重投仅限该 run 的 owner 本人重新调用）
     """
     # include_deleting=True: 对删除流程中的 run 重复发起删除时走幂等分支而非 404
     run_record = await get_process_run_by_id(async_session, run_id, include_deleting=True)
@@ -245,7 +246,9 @@ async def delete_process_run_endpoint(
     # 登记删除:行锁抢占 → 置 DELETING → 收集路径快照（同一事务）
     snapshot = await mark_run_for_deletion(async_session, run_record)
 
-    # 先 commit（登记对 worker 可见），再投递删除任务；投递失败只留下
+    # 先 commit（登记对 worker 可见），再投递删除任务；投递失败只留下 DELETING 行
+    # （owner 重复调用本接口即可重投，兜底任务上线后自动收敛）。顺序不能反：
+    # 先投后 commit 的崩溃会留下「对象已删、行未标记」的不可自愈形态
     await async_session.commit()
     await async_session.refresh(current_user)
     delete_objects_task.delay( # type: ignore
