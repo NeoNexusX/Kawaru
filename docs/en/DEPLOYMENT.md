@@ -80,7 +80,7 @@ Container configuration must use Compose service addresses: `database.host=maria
 
 After this, every push to `dev` / `main` pulls the new image and recreates the corresponding application containers. Database, Redis, and log data remain on the host; business files remain in OSS.
 
-The server `.env` must cover both Compose and application startup: `APP_IMAGE`, `DATABASE_PASSWORD`, `REDIS_PASSWORD`, `SECRET_KEY`, `SMTP_PASSWORD`, `CONFIG_PATH`, `REGION_PATH`, `LOG_DIR`, `LOG_LEVEL`, OSS credentials, FC invocation tokens, and `FC_CALLBACK_TOKEN`. CD temporarily overrides `APP_IMAGE` with the commit-specific image; keeping a `dev-latest` / `latest` value in `.env` makes manual Compose operations work as well.
+The server `.env` must cover both Compose and application startup: `DATABASE_PASSWORD`, `REDIS_PASSWORD`, `SECRET_KEY`, `SMTP_PASSWORD`, `CONFIG_PATH`, `REGION_PATH`, `LOG_DIR`, `LOG_LEVEL`, OSS credentials, FC invocation tokens, and `FC_CALLBACK_TOKEN`. `APP_IMAGE` is deliberately not stored in `.env`: CD injects the commit-specific image through the SSH environment, which takes precedence over `.env`. Before running Compose manually you must `export APP_IMAGE` as shown in section 5 — otherwise the `${APP_IMAGE:?}` check aborts immediately instead of silently using a wrong image.
 
 | Content | Container Path | Host Path |
 |---------|---------------|-----------|
