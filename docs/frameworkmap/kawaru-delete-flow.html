@@ -5251,16 +5251,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="1080" y="418" class="t-messagebus" font-size="7" text-anchor="middle">返回 deleted ≠ 物理删除完成</text>
         </g>
 
-        <g id="node-cache" data-node-id="cache" data-node-label="06  Worker 清缓存" tabindex="0" role="button" aria-label="聚焦06  Worker 清缓存，消费 Redis Broker 中的任务, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="消费 Redis Broker 中的任务" data-node-tag="缓存删除异常不阻断清理" data-node-context="架构组件">
-          <title>06  Worker 清缓存 · 消费 Redis Broker 中的任务 · 架构组件 · 缓存删除异常不阻断清理</title>
+        <g id="node-cache" data-node-id="cache" data-node-label="06  Worker 消费任务" tabindex="0" role="button" aria-label="聚焦06  Worker 消费任务，消费 Redis Broker 中的任务, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="消费 Redis Broker 中的任务" data-node-tag="缓存清理已随 ZIP 打包下线" data-node-context="架构组件">
+          <title>06  Worker 消费任务 · 消费 Redis Broker 中的任务 · 架构组件 · 缓存清理已随 ZIP 打包下线</title>
           <rect x="970" y="570" width="220" height="76" rx="6" class="c-mask"/>
           <rect x="970" y="570" width="220" height="76" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(976 576) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1080" y="606" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">06  Worker 清缓存</text>
+          <text data-node-label="" data-detail-anchor="" x="1080" y="606" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">06  Worker 消费任务</text>
         <text data-detail="context" x="1080" y="622" class="t-muted" font-size="9" text-anchor="middle">消费 Redis Broker 中的任务</text>
-        <text data-detail="fine" x="1080" y="638" class="t-backend" font-size="7" text-anchor="middle">缓存删除异常不阻断清理</text>
+        <text data-detail="fine" x="1080" y="638" class="t-backend" font-size="7" text-anchor="middle">缓存清理已随 ZIP 打包下线</text>
         </g>
 
         <g id="node-objects" data-node-id="objects" data-node-label="07  删除 OSS 对象" tabindex="0" role="button" aria-label="聚焦07  删除 OSS 对象，按快照逐对象 / 目录执行, 架构组件" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="按快照逐对象 / 目录执行" data-node-tag="不存在的对象视为删除成功" data-node-context="架构组件">
@@ -5288,8 +5288,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="460" y="638" class="t-database" font-size="7" text-anchor="middle">独立事务 commit；级联 Origin / Run</text>
         </g>
 
-        <g id="node-failed" data-node-id="failed" data-node-label="保留 DELETE_FAILED" tabindex="0" role="button" aria-label="聚焦保留 DELETE_FAILED，OSS 返回失败 → 状态落库, 架构组件" aria-pressed="false" data-node-kind="database" data-node-sublabel="OSS 返回失败 → 状态落库" data-node-tag="保留 DB 行与处理配额，等待重投" data-node-context="架构组件">
-          <title>保留 DELETE_FAILED · OSS 返回失败 → 状态落库 · 架构组件 · 保留 DB 行与处理配额，等待重投</title>
+        <g id="node-failed" data-node-id="failed" data-node-label="保留 DELETE_FAILED" tabindex="0" role="button" aria-label="聚焦保留 DELETE_FAILED，OSS 返回失败 → 状态落库 + 邮件告警, 架构组件" aria-pressed="false" data-node-kind="database" data-node-sublabel="OSS 返回失败 → 状态落库 + 邮件告警" data-node-tag="保留 DB 行与处理配额，beat 兜底重投" data-node-context="架构组件">
+          <title>保留 DELETE_FAILED · OSS 返回失败 → 状态落库 + 邮件告警 · 架构组件 · 保留 DB 行与处理配额，beat 兜底重投</title>
           <rect x="660" y="770" width="220" height="76" rx="6" class="c-mask"/>
           <rect x="660" y="770" width="220" height="76" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(666 776) scale(0.6875)">
@@ -5297,8 +5297,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="770" y="806" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">保留 DELETE_FAILED</text>
-        <text data-detail="context" x="770" y="822" class="t-muted" font-size="9" text-anchor="middle">OSS 返回失败 → 状态落库</text>
-        <text data-detail="fine" x="770" y="838" class="t-database" font-size="7" text-anchor="middle">保留 DB 行与处理配额，等待重投</text>
+        <text data-detail="context" x="770" y="822" class="t-muted" font-size="9" text-anchor="middle">OSS 返回失败 → 状态落库 + 邮件告警</text>
+        <text data-detail="fine" x="770" y="838" class="t-database" font-size="7" text-anchor="middle">保留 DB 行与处理配额，beat 兜底重投</text>
         </g>
 
         <!-- Connection labels -->
@@ -5585,7 +5585,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>&bull; 投递失败会留下已提交的登记；DELETING / DELETE_FAILED 可重取快照后投递。</li>
-          <li>&bull; 目前由有权限的请求重投，通常需管理员；没有自动重试闭环。</li>
+          <li>&bull; celery beat 的 retry_stale_file_deletions / retry_stale_run_deletions 定期兜底重投（2026-10-14 起）；首次失败 notify_delete_failed 邮件告警，重复投递不重发。</li>
         </ul>
       </div>
     </div>
