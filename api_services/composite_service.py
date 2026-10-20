@@ -81,7 +81,7 @@ async def failed_mark_origin_record_clean(
 
 #########################
 # 删除状态位 - 登记 / 快照 / 收尾（OSS 先删、DB 后删、失败标记）
-# 见 docs/zh/删除状态位改造方案.md；场景 1（用户删文件）先行落地
+# 场景 1（用户删文件）在此；场景 2（删 run）见下节
 #########################
 
 class FileDeleteSnapshot(NamedTuple):
@@ -299,8 +299,7 @@ async def mark_run_for_deletion(
 
     重投入口的限制：DELETE /processes/{run_id} 无 admin 旁路（assert_run_ownership
     只认 owner），所以 run 类失败的重投仅限该 run 的 owner 本人——管理员删不动，
-    只能等 owner 操作；兜底任务 retry_stale_run_deletions 超时后会自动重投
-    （见删除架构现状说明 §3 兜底行 / §5 缺口 1）。
+    只能等 owner 操作；兜底任务 retry_stale_run_deletions 超时后会自动重投。
     """
     assert run_record.id is not None
 

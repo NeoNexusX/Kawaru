@@ -46,7 +46,7 @@ async def get_origin_by_public_id_api(
 
     文件查询保持内联：不复用 get_file_record_by_public_id，以保留本接口原有的
     source_file_not_found_exception 口径。删除流程中的文件按不存在处理（与文件
-    详情 404 一致，见 docs/zh/删除架构现状说明.md §2）。
+    详情 404 一致）。
     """
 
     # 1. 查询文件记录（删除流程中的按不存在处理）

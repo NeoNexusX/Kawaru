@@ -27,7 +27,7 @@ class ProcessingStatus(str, Enum):
     PROCESSING = "processing"  # worker 正在执行
     COMPLETED = "completed"    # 全部算法执行成功
     FAILED = "failed"          # 执行失败
-    # 删除流程状态位（OSS 先删、DB 后删、失败标记，见 docs/zh/删除状态位改造方案.md）
+    # 删除流程状态位（OSS 先删、DB 后删、失败标记）
     DELETING = "deleting"            # 删除已登记：OSS 清理进行中，读侧拒绝、回调丢弃
     DELETE_FAILED = "delete_failed"  # OSS 清理失败：行保留作为任务记录，等兜底重投
 

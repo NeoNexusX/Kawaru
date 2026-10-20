@@ -7,7 +7,7 @@ test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file +
                                                   cleanup_failed_experiments(ttl=0) →
                                                   断言登记/收尾两段配额语义与全链路收敛
 
-验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 4，场景 1 的批量版）的核心承诺：
+验证删除状态位改造（场景 4，场景 1 的批量版）的核心承诺：
   ★1 force=True：失败产物整份删除；登记阶段不动配额
   ★2 文件行由 worker 收敛删除（级联 origin / run / link）
   ★3 全部持有者的 storage 配额 + 全部 run 的 processed 配额都由 finalize 退还

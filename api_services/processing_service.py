@@ -117,7 +117,7 @@ async def create_raw_convert_run(
 
 #########################
 # 删
-# 删除流程已切换到删除状态位架构（docs/zh/删除架构现状说明.md 场景 2）：
+# 删除流程已切换到删除状态位架构（场景 2，删 run）：
 # 登记（mark_run_for_deletion）在 composite 层，执行/收尾在 delete_objects_task。
 # 旧 delete_process_run 已退役；文件级删除同样走删除状态位（run 输出目录进入文件删除快照）。
 #########################

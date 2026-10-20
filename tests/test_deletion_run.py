@@ -5,7 +5,7 @@ test_delete_run_flow  [deletion]  清扫残留 → 真实上传链（无 FC，�
                                   .upload_completed_file）→ 直插 COMPLETED run + 真实
                                   out_path 对象 → DELETE /processes/{run_id} → 断言
 
-验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 2）的核心承诺：
+验证删除状态位改造（场景 2）的核心承诺：
   ★1 删除接口秒回（登记事务 + 投递，不等 OSS 删除）
   ★2 读侧拦截：runs 列表立即不再展示该 run；zarr 端点按不存在处理（404）
   ★3 processed 配额在 finalize 才退（run 的用户可见语义与行同生共死，

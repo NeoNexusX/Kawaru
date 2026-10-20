@@ -8,7 +8,7 @@ test_admin_delete_user_full         [deletion]  建用户 → 真实上传链造
 test_admin_delete_user_shared_file  [deletion]  同上但文件与 admin 共有 →
                                                 断言文件存活（files_unlinked 分支）
 
-验证删除状态位改造（docs/zh/删除架构现状说明.md 场景 3）的核心承诺：
+验证删除状态位改造（场景 3）的核心承诺：
   ★1 用户行**软删除**（同步，API 返回前已 commit）：只置 `active=False`，行保留
   ★2 用户独占文件行由 clean_user_all_task 收敛删除（登记 DELETING → worker 删 OSS
      → finalize 删行）

@@ -5,8 +5,8 @@
 出现了一处有意 opt-out、一处漏检——因为规则写在注释里而不是代码里。本模块把它收敛成
 唯一出口：对象判定用 file_is_deleting / run_is_deleting，SQL 过滤用 visible_*_clause。
 
-读侧语义（docs/zh/删除架构现状说明.md §2）：删除流程中的行一律按不存在处理
-（详情 404、列表隐藏），不泄露「删除中」状态。
+读侧语义：删除流程中的行一律按不存在处理（详情 404、列表隐藏），
+不泄露「删除中」状态。
 """
 from __future__ import annotations
 
