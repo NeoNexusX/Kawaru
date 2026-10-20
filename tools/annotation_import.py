@@ -31,7 +31,7 @@ ID_PATTERN = re.compile(r"^HMDB\d{7}$")
 KNOWN_ORIGINS = frozenset({"endogenous", "exogenous", "expected", "unknown"})
 # 列宽直接取自表模型：超长在入库前就报错，避免 MySQL 严格模式下的半截失败
 MAX_LENGTHS = {
-    field_name: AnnotationEntryInDB.__table__.c[field_name].type.length
+    field_name: AnnotationEntryInDB.__table__.c[field_name].type.length # type: ignore[union-attr]
     for field_name in ("name", "formula", "origin")
 }
 DEFAULT_BATCH_SIZE = 5000
@@ -41,7 +41,7 @@ HASH_CHUNK_SIZE = 1024 * 1024
 CSV_FIELD_SIZE_LIMIT = 10 ** 9
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser: # type: ignore[no-untyped-def]
     parser = argparse.ArgumentParser(
         description="把 SI 注释库 CSV 导入 annotation_entry 表（单事务全量替换）"
     )
@@ -139,7 +139,7 @@ async def count_existing() -> int:
     from database.db import get_standalone_async_session  # pylint: disable=import-outside-toplevel
 
     async with get_standalone_async_session() as session:
-        result = await session.scalar(select(func.count()).select_from(AnnotationEntryInDB))
+        result = await session.scalar(select(func.count()).select_from(AnnotationEntryInDB)) # pylint: disable=not-callable
         return int(result or 0)
 
 

@@ -1,6 +1,8 @@
 # Deployment Guide (dev / prod)
 
-After pushing to `dev` / `main`, CD automatically: **Build image → Push to GHCR → SSH to server and sync the compose file → Backup database (prod) → Start base services → Run migrate container upgrade → `up -d --wait` application containers → retag the local `dev-latest` / `latest` image and prune images older than 7 days**. On deployment failure, CD dumps the status and log tails of all 6 services (including migrate) — no manual SSH log digging needed.
+After pushing to `dev` / `main`, CD automatically: **Build image → Push to ACR → SSH to server and sync the compose file → Backup database (prod) → Start base services → Run migrate container upgrade → `up -d --wait` application containers → retag the local `dev-latest` / `latest` image and prune images older than 7 days**. On deployment failure, CD dumps the status and log tails of all 6 services (including migrate) — no manual SSH log digging needed.
+
+> **Images live in Alibaba Cloud ACR (Hong Kong), not GHCR**: the private repository is `crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru`. Use the public domain on GitHub runners and on the dev server (Hangzhou); on the prod server (Hong Kong) use the `-vpc` intranet domain. Docker authenticates per domain, so log in with the same domain you pull from. ACR Personal Edition rejects OCI attestation manifests, so the workflows pin `provenance: false` + `sbom: false`.
 
 CD **only builds and deploys**; it does not generate secrets or config. `.env` and `{dev,prod}-config.yaml` are prepared and maintained by a human on the server.
 
@@ -125,8 +127,8 @@ See: <https://github.com/nelvko/clash-for-linux-install>
 ```bash
 # Set environment variables first (modify based on actual environment)
 export ENV_NAME=dev   # or prod
-export APP_IMAGE=ghcr.io/neonexusx/kawaru:dev-latest   # dev
-# export APP_IMAGE=ghcr.io/neonexusx/kawaru:latest     # prod
+export APP_IMAGE=crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:dev-latest    # dev
+# export APP_IMAGE=crpi-y6a776c9l4k3agmh-vpc.cn-hongkong.personal.cr.aliyuncs.com/kawaru/kawaru:latest  # prod
 
 cd /opt/kawaru-${ENV_NAME}
 
@@ -181,7 +183,7 @@ Only `app` + `mariadb` + `redis` have healthchecks. worker/beat do not (beat doe
 |------|---------|
 | `DEV_SSH_HOST/USER/KEY` | Dev server |
 | `PROD_SSH_HOST/USER/KEY` | Prod server (separate) |
-| `GHCR_PULL_USER/TOKEN` | Pull private images from GHCR (shared) |
+| `ACR_USERNAME/ACR_PASSWORD` | ACR login for image push (CI) and for the post-SSH pull (dev / prod shared) |
 | `OSS_ACCESS_KEY_ID/SECRET` and `OSS_ROLE_ARN` | CI integration-test access to the test bucket and STS role |
 | `SMTP_PASSWORD` | CI concurrent-signup and password-reset tests |
 
@@ -196,5 +198,6 @@ Dev/prod runtime credentials for DB, Redis, OSS, FC, and SMTP stay in each serve
 | Trigger branch | `dev` | `main` |
 | Workflow | [dev-cd.yml](../../.github/workflows/dev-cd.yml) | [prod-cd.yml](../../.github/workflows/prod-cd.yml) |
 | Image tag | `dev-latest` + `dev-<sha>` | `latest` + `sha-<sha>` |
+| Image registry | ACR Hong Kong `kawaru/kawaru`, pull via public domain | Same, pull via `-vpc` intranet domain |
 | Server secrets | `DEV_SSH_*` | `PROD_SSH_*` |
-| Concurrency | `cancel-in-progress: true` | `cancel-in-progress: false` |
+| Concurrency | `cancel-in-progress: false` | `cancel-in-progress: false` |
