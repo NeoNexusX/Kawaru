@@ -1,6 +1,7 @@
 import asyncio
 import os
 from logging import Logger
+from urllib.parse import quote
 
 from celery import Celery
 from celery import Task as CeleryTask
@@ -11,8 +12,6 @@ from models.config_models import Config
 CELERY_MODULE_IMPORTS = [
     "background.file_background",
     "background.api_background",
-    "background.file_background_helper",
-    "background.experiment_background_helper",
     "background.processing_background",
 ]
 
@@ -32,7 +31,8 @@ def build_redis_urls(cfg: Config) -> dict:
     redis = cfg.redis
     password = os.getenv("REDIS_PASSWORD")
     username = redis.username or "default"
-    auth = f"{username}:{password}@" if password else ""
+    # 认证段做 URL 转义：密码含 @ : / # 等特殊字符时仍能被正确解析
+    auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if password else ""
     return {
         "broker_url": f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_broker_db_index}",
         "result_backend": f"redis://{auth}{redis.host}:{redis.port}/{redis.celery_backend_db_index}",
@@ -47,8 +47,8 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "task": "background.file_background.heartbeat",
             "schedule": 67.0,
         },
-        "cleanup_old_download_zips": {
-            "task": "background.file_background.cleanup_old_download_zips",
+        "cleanup_source_zips": {
+            "task": "background.file_background.cleanup_source_zips",
             "schedule": const_kwargs["cleanup_download_zip_interval_seconds"],
             "args": (),
             "kwargs": {},
@@ -71,6 +71,24 @@ def build_beat_schedule(const_kwargs: dict) -> dict:
             "args": (),
             "kwargs": {},
         },
+        "cleanup_deleted_users": {
+            "task": "background.file_background.cleanup_deleted_users",
+            "schedule": const_kwargs["cleanup_deleted_users_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_file_deletions": {
+            "task": "background.file_background.retry_stale_file_deletions",
+            "schedule": const_kwargs["retry_file_deletions_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
+        "retry_stale_run_deletions": {
+            "task": "background.file_background.retry_stale_run_deletions",
+            "schedule": const_kwargs["retry_run_deletions_interval_seconds"],
+            "args": (),
+            "kwargs": {},
+        },
     }
 
 
@@ -90,7 +108,6 @@ def create_celery_app(
         "imports": CELERY_MODULE_IMPORTS,
         "beat_scheduler": "redbeat.schedulers.RedBeatScheduler",
         "worker_pool_restarts": False,
-        "task_async_backend": "asyncio",
         "task_default_queue": "default",
         "task_routes": {
         },

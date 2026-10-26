@@ -10,8 +10,19 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import zipfile
 from pathlib import Path
+
+from httpx import AsyncClient
+
+from constants.file_constants import OSS_ORIGIN_STORAGE_ROOT
+from tools.cal_hash import compute_imzml_md5
+from tools.logger import get_logger
+
+from .oss import parse_file_id_from_oss_path, put_oss_object, upload_file_to_oss
+
+logger = get_logger("test.helpers.uploads")
 
 # ------------------------------------------------------------------ #
 # 测试文件参数，按需修改
@@ -33,17 +44,20 @@ def _file_md5(path: Path) -> str:
 def make_test_zip_to_local(
     imzml_size: int = TEST_IMZML_SIZE,
     ibd_size: int = TEST_IBD_SIZE,
+    filename: str = TEST_FILENAME,
 ) -> tuple[Path, str, str]:
     """创建合法包含 imzML 和 ibd 文件的 zip 包到本地临时目录。
+
+    filename 可自定义（删除测试用独立文件名与 oss 组隔离，互不残留影响）。
 
     Returns:
         (zip_path, imzml_md5, ibd_md5)
     """
     temp_dir = Path("../test_temp")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = temp_dir / TEST_FILENAME
+    zip_path = temp_dir / filename
 
-    stem = Path(TEST_FILENAME).stem  # 统一 stem，保证内外文件名一致
+    stem = Path(filename).stem  # 统一 stem，保证内外文件名一致
 
     # 分块创建 imzML 文件
     _CHUNK_BUFFER_SIZE = 1024  # 1 KB # pylint:disable = invalid-name
@@ -79,7 +93,6 @@ def build_preflight_payload(
     *,
     size: int,
     file_verify_code: str,
-    total_parts: int,
     storage_type: str = "oss",
     filename: str = TEST_FILENAME,
 ) -> dict:
@@ -108,5 +121,106 @@ def build_preflight_payload(
         "pixel_size_vertical": 0,
         "resolving_power": 0,
         "mz": 0,
-        "total_parts": total_parts,
     }
+
+
+async def upload_completed_file(
+    client: AsyncClient,
+    auth: dict[str, str],
+    *,
+    filename: str,
+    imzml_size: int,
+    ibd_size: int,
+) -> dict:
+    """真实上传链（无 FC）：preflight → STS 直传 zip → 自传 origin 对象 → 模拟回调。
+
+    文件行 / origin 行 / UserFileLink 全部由服务端真实代码创建，回调的真实校验链
+    （zip 大小探测、解压产物存在性探测、size=imzml+ibd 核对、哈希一致性）全部真实
+    执行；仅省去 FC 解压环节——随机数据本就过不了 FC 的 imzML 谱图校验（见
+    test_deletion_flow 模块 docstring），改为先向 origin 路径直传占位对象再回调。
+
+    删除场景 ②③ 共用；与 test_delete_file_flow 的差别只有「FC 解压等待」这一步。
+
+    Returns:
+        dict: file_id / public_id / oss_path / imzml_path / ibd_path /
+              size / file_verify_code
+    """
+    zip_path, imzml_hash, ibd_hash = make_test_zip_to_local(
+        imzml_size=imzml_size,
+        ibd_size=ibd_size,
+        filename=filename,
+    )
+    try:
+        file_verify_code, size = await compute_imzml_md5(zip_path)  # type: ignore
+
+        rs = await client.post(
+            "/files/preflight",
+            headers=auth,
+            json=build_preflight_payload(
+                size=size,
+                file_verify_code=file_verify_code,
+                storage_type="oss",
+                filename=filename,
+            ),
+        )
+        assert rs.status_code == 200, f"preflight failed: {rs.text}"
+        pre_public_id = rs.json()["public_id"]
+
+        rs = await client.post(
+            "/files/upload",
+            headers=auth,
+            data={"pre_public_id": pre_public_id, "filename": filename},
+        )
+        assert rs.status_code == 200, f"upload authorize failed: {rs.text}"
+        body = rs.json()
+        public_id = body["public_id"]
+        assert public_id == pre_public_id
+        file_id = parse_file_id_from_oss_path(body["oss_path"])
+
+        await upload_file_to_oss(
+            oss_sts_token=body["oss_sts_token"],
+            oss_bucket=body["oss_bucket"],
+            oss_path=body["oss_path"],
+            filepath=zip_path,
+            checkpoint_dir=zip_path.parent / "checkpoint",
+        )
+
+        # 先放 origin 占位对象再回调：回调落库前会真实探测对象存在性
+        stem = Path(filename).stem
+        origin_root = OSS_ORIGIN_STORAGE_ROOT.rstrip("/")
+        imzml_path = f"{origin_root}/{file_verify_code}/{file_id}/{stem}.imzML"
+        ibd_path = f"{origin_root}/{file_verify_code}/{file_id}/{stem}.ibd"
+        await put_oss_object(oss_path=imzml_path, data=os.urandom(1024))
+        await put_oss_object(oss_path=ibd_path, data=os.urandom(1024))
+
+        rs = await client.post(
+            "/callback/oss_upload_callback",
+            json={
+                "file_id": file_id,
+                "file_path": body["oss_path"],
+                "is_success": True,
+                "act_hash": file_verify_code,
+                "imzml_path": imzml_path,
+                "ibd_path": ibd_path,
+                "imzml_size": imzml_size,
+                "ibd_size": ibd_size,
+            },
+            headers={"X-FC-Token": os.environ.get("FC_CALLBACK_TOKEN", "test-fc-callback-token")},
+        )
+        assert rs.status_code == 200, f"FC callback failed: {rs.status_code} {rs.text}"
+        assert rs.json()["status"] == "completed", rs.text
+        logger.info("upload_completed_file ok: public_id=%s file_id=%s oss_path=%s",
+                    public_id, file_id, body["oss_path"])
+        return {
+            "file_id": file_id,
+            "public_id": public_id,
+            "oss_path": body["oss_path"],
+            "imzml_path": imzml_path,
+            "ibd_path": ibd_path,
+            "size": size,
+            "file_verify_code": file_verify_code,
+        }
+    finally:
+        zip_path.unlink(missing_ok=True)
+        shutil.rmtree(zip_path.parent / "extract_tmp", ignore_errors=True)
+        shutil.rmtree(zip_path.parent / "checkpoint", ignore_errors=True)

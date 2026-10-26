@@ -1,6 +1,4 @@
-import asyncio
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from models.auth import Token
 from models.user_models import UserPublic,UserDetailPublic, UserQuotaPublic, UserQuotaLimits
 from models.filter_models import ListDataResponse
@@ -8,25 +6,21 @@ from api.user_api import (UserLoginDep, TokenDep, UserCreateDep, ListUsersDep,
                           AdminCreateDep,UserUpdateDep, ResetPasswordDep, UserDeleDep, UserLogoutDep, UserQuotaDep,
                           UpdateUserQuotaDep)
 from api.email_api import EmailConfirmSMTPDep
-from database.visit_stats import incr_visit
+from database.visit_stats import count_visit
 
 user_router = APIRouter(tags=["user manager"]) # 挂接了用户管理相关的api
 #########################
 # 用户管理 API
 #########################
 
-@user_router.post("/login")
+@user_router.post("/login", dependencies=[Depends(count_visit)])
 async def login(token: UserLoginDep) -> Token:
     """
     User log in:
     Method:Post
     Params(OAuth2PasswordRequestForm): username, password
     """
-    try:
-        asyncio.create_task(incr_visit())
-        return token
-    except Exception as e:
-        raise e
+    return token
 
 
 @user_router.post("/logout")
@@ -49,14 +43,13 @@ async def get_current_usr(user: TokenDep):
     return user
 
 
-@user_router.post("/user_signup", response_model=UserPublic)
+@user_router.post("/user_signup", response_model=UserPublic, dependencies=[Depends(count_visit)])
 async def create_user(user: UserCreateDep):
     """
     User sign up:
     Method:Post
     Params(Body):"username", "active", "identity=None", "email", "password", "verify_code"
     """
-    asyncio.create_task(incr_visit())
     return user
 
 

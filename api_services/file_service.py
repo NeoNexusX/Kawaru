@@ -7,43 +7,45 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from fastapi import HTTPException
-from sqlmodel import select, exists, and_, not_, func
+from sqlmodel import select, exists, and_, or_, not_, func, col, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database.db import get_async_engine
-from database.redis_client import redis_client
 from database.atomic_ops import atomic_increment, atomic_decrement, atomic_set
 from api_services.user_service import get_user_by_id
 from api_services.experiment_service import get_origin_imzml_by_file_id
-from api_helpers.experiment_helper import validate_experiment_type, packup_oss_file
+from api_helpers.experiment_helper import validate_experiment_type
+from api_helpers.deletion_helper import file_is_deleting
 from api_helpers.file_helper import (
     check_user_quota,
     validate_file_metadata,
-    validate_total_parts,
-    delete_file_by_storage,
 )
 from storage.oss.oss_storage import OssStorage
 
 from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
-    OSS_PACKUP_ZIP_STORAGE_ROOT,
+    MAX_SINGLE_FILE_SIZE_BYTES,
+    OSS_BUCKET_NAME,
+    OSS_REGION_ID,
     SIGNED_URL_EXPIRE_SECONDS,
-    PACKUP_CACHE_TTL_SECONDS,
 )
 from exceptions import (
     duplicate_file_exception,
     file_not_found_exception,
     file_content_missing_exception,
+    file_persist_failed_exception,
     invalid_request_parameters_exception,
     invalid_user_for_file_list_sync_exception,
     user_file_limit_exception,
-    origin_type_not_supported_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
 from tools import get_logger,utc_time
-from models.file_models import FileCreate, FileInDB, FileStatus, PackupStatus, OssDownloadFile
+from models.file_models import (
+    FileCreate, FileInDB, FileOssUploadResponse, FilePatch, FileStatus, OssDownloadFile,
+)
+from models.filter_models import FileFilter
 from models.user_models import UserInDB
 from models.link_models import UserFileLink
 from models.experiment_models import ExperimentStatus, OriginImzMLInDB
@@ -121,14 +123,19 @@ async def valid_user_duplicate_file_hash(
 async def get_file_record_by_id(
     file_id: int,
     async_session: AsyncSession,
+    *,
+    include_deleting: bool = False,
 ) -> FileInDB:
     """
     根据文件ID查询文件记录
 
+    默认拒绝删除流程中的文件：DELETING / DELETE_FAILED 一律按不存在处理
+    （404 不泄露「删除中」状态），删除登记等管理路径用 include_deleting=True 显式放行。
+
     Returns:
         文件记录对象
     Raises:
-        file_not_found_exception: 文件记录不存在
+        file_not_found_exception: 文件记录不存在（或处于删除流程且未放行）
     """
     statement = select(FileInDB).where(FileInDB.file_id == file_id)
 
@@ -138,7 +145,96 @@ async def get_file_record_by_id(
         logger.warning("file record not found file_id=%s", file_id)
         raise file_not_found_exception
 
+    if not include_deleting and file_is_deleting(file_record.status):
+        logger.warning(
+            "file is being deleted, treat as not found file_id=%s status=%s",
+            file_id, file_record.status,
+        )
+        raise file_not_found_exception
+
     return file_record
+
+
+async def get_file_record_by_public_id(
+    public_id: str,
+    async_session: AsyncSession,
+    *,
+    include_deleting: bool = False,
+) -> FileInDB:
+    """
+    根据 public_id 查询文件记录（对外接口统一入口，内部 file_id 不再对外暴露）
+
+    删除流程中的文件处理与 get_file_record_by_id 完全一致：DELETING / DELETE_FAILED
+    默认按不存在处理，删除登记等管理路径用 include_deleting=True 显式放行。
+    不校验公开状态与持有关系，权限由调用方判断。
+
+    Returns:
+        文件记录对象
+    Raises:
+        file_not_found_exception: 文件记录不存在（或处于删除流程且未放行）
+    """
+    statement = select(FileInDB).where(FileInDB.public_id == public_id)
+
+    file_record = (await async_session.exec(statement)).first()
+
+    if not file_record:
+        logger.warning("file record not found public_id=%s", public_id)
+        raise file_not_found_exception
+
+    if not include_deleting and file_is_deleting(file_record.status):
+        logger.warning(
+            "file is being deleted, treat as not found public_id=%s file_id=%s status=%s",
+            public_id, file_record.file_id, file_record.status,
+        )
+        raise file_not_found_exception
+
+    return file_record
+
+
+async def get_file_ids_by_public_ids(
+    async_session: AsyncSession,
+    public_ids: list[str],
+) -> dict[str, int]:
+    """批量换算 public_id → file_id（API 层对外标识换算入口，业务层一律走 file_id）
+
+    只返回能查到的映射；查不到的 public_id 不在结果中，缺失语义由调用方决定
+    （批量加成员/创建集合 409、移除成员记 skipped、调序 409）。
+    不过滤删除流程中的记录（含 DELETING）——移除成员等场景需要能换算到它们。
+
+    Returns:
+        {public_id: file_id}（仅含存在的记录）
+    """
+    if not public_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(public_ids))
+    rows = (await async_session.exec(
+        select(FileInDB.public_id, FileInDB.file_id).where(
+            FileInDB.public_id.in_(unique_ids)  # type: ignore # pylint: disable=no-member
+        )
+    )).all()
+    return {public_id: file_id for public_id, file_id in rows}  # type: ignore
+
+
+async def get_public_ids_by_file_ids(
+    async_session: AsyncSession,
+    file_ids: list[int],
+) -> dict[int, str]:
+    """批量换算 file_id → public_id（API 层响应装配用：内部 id → 对外标识）
+
+    Returns:
+        {file_id: public_id}（仅含存在的记录）
+    """
+    if not file_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(file_ids))
+    rows = (await async_session.exec(
+        select(FileInDB.file_id, FileInDB.public_id).where(
+            FileInDB.file_id.in_(unique_ids)  # type: ignore # pylint: disable=no-member
+        )
+    )).all()
+    return {file_id: public_id for file_id, public_id in rows}  # type: ignore
 
 
 #########################
@@ -209,6 +305,73 @@ async def link_file_to_user(
 #########################
 # File  - 查
 #########################
+def build_file_order(sort_by: str, order: str) -> tuple[Any, Any]:
+    """文件列表排序子句：sort_by/order 映射为排序列 + file_id DESC 兜底
+
+    供个人文件列表与公共文件列表共用。取值白名单由接口层 Query pattern 约束
+    （sort_by: uploaded_at|size，order: asc|desc），未命中时回落默认排序
+    （uploaded_at 倒序，与接口默认值一致）。
+
+    Returns:
+        (主排序子句, 兜底排序子句)——同值行之间按 file_id 倒序，保证翻页不重不漏
+    """
+    column = FileInDB.size if sort_by == "size" else FileInDB.uploaded_at
+    primary = col(column).asc() if order == "asc" else col(column).desc() # pylint: disable=no-member
+    return (primary, col(FileInDB.file_id).desc()) # pylint: disable=no-member
+
+
+# 精确匹配（IN）的筛选字段：FileInDB 上的单值列，多值语义即为"命中任一值"
+FILE_EXACT_FILTER_FIELDS = (
+    "experiment_type",
+    "organism",
+    "organism_part",
+    "condition",
+    "sample_stabilization",
+    "sample_growth_conditions",
+    "tissue_modification",
+    "maldi_matrix",
+    "maldi_matrix_application",
+    "solvent",
+    "polarity",
+    "ionisation_source",
+    "analyzer",
+)
+
+# 模糊匹配（LIKE %v%）的筛选字段：多值语义为"任一关键词命中"
+FILE_FUZZY_FILTER_FIELDS = (
+    "filename",
+    "first_uploaded_by",
+)
+
+
+def build_file_filters(filters: FileFilter) -> list[Any]:
+    """FileFilter → SQL 谓词列表（同字段多值 OR，不同字段之间由调用方 AND）
+
+    供个人文件列表与公共文件列表共用，口径与 build_file_order 一致：
+    空值不产生谓词（归一化已在 Filter 模型内完成，空值一律为 None）。
+
+    模糊字段为 OR 连接的 LIKE，精确字段为 IN；大小写由列排序规则
+    （utf8mb4_unicode_ci）保证不敏感，无需额外处理。
+
+    注意：username 筛选需要 join 用户-文件关联表，不在此处生成，由调用方单独处理。
+    """
+    clauses: list[Any] = []
+
+    for field in FILE_FUZZY_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(
+                or_(*[col(getattr(FileInDB, field)).like(f"%{value}%") for value in values])
+            )
+
+    for field in FILE_EXACT_FILTER_FIELDS:
+        values = getattr(filters, field)
+        if values:
+            clauses.append(col(getattr(FileInDB, field)).in_(values))
+
+    return clauses
+
+
 async def get_user_file_ids(session: AsyncSession, user_id: int) -> list[int | None]:
     """获取用户所有文件 ID,不加载文件对象"""
     stmt = select(UserFileLink.file_id).where(UserFileLink.user_id == user_id)
@@ -227,12 +390,19 @@ async def get_reuse_file_by_hash(
     Returns:
         如果找到可复用的文件记录,返回该记录；否则返回 None
     """
-    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件
+    # 直接通过 SQL 子句找到 hash 相同但不属于该用户的文件。
+    # 只允许复用 COMPLETED 记录：COMPLETED 由回调在哈希校验、大小核对、
+    # 路径落库全部通过后才设置，蕴含"origin 完整、哈希有效"；
+    # UPLOADING / FAILED / 预检初始态（""）一概禁止复用。
+    # path != "" 与 size > 0 进一步排除路径未确认或大小异常的记录。
     same_hash_file = (
         await async_session.exec(
             select(FileInDB)
             .where(FileInDB.file_verify_code == hash_md5)
             .where(FileInDB.storage_type == "oss")
+            .where(FileInDB.status == FileStatus.COMPLETED)
+            .where(FileInDB.path != "")
+            .where(FileInDB.size > 0)
             .where(not_(exists()
                         .where(
                             and_((UserFileLink.user_id == user.id),
@@ -274,92 +444,99 @@ async def assert_file_owner(async_session: AsyncSession, file_record: FileInDB, 
     return False
 
 
-async def prepare_download_file_oss(
-    session: AsyncSession,
-    file_record: FileInDB,
-) -> str:
-    """
-    准备下载文件,处理实验文件的ZIP打包
-
-    Returns:
-        文件下载URL，如果正在打包则返回 "<PACKING>"
-
-    Raises:
-        file_content_missing_exception: 文件内容缺失
-    """
-    oss_packup_key = f"oss_packup-{file_record.filename}"
-    oss_packup_lock_key = f"oss_packup_lock-{file_record.filename}"
-
-    try:
-        packup = await redis_client.hgetall(oss_packup_key)  # type: ignore
-        # 返回值已无 fc_request_id：FC 日志回捞链路已删除
-        should_pack, zip_download_url, zip_path = await _handle_packup_status_check(
-            file_record, packup, oss_packup_key, oss_packup_lock_key
-        )
-
-        if packup.get("status") == PackupStatus.COMPLETED and zip_download_url is None and zip_path:
-            zip_download_url = await _prepare_download_url_for_completed_packup(
-                file_record, zip_path, oss_packup_key
-            )
-
-        if should_pack:
-            zip_download_url = await _execute_packup_flow(session, file_record, oss_packup_key)
-
-        if not zip_download_url:
-            logger.error("zip_download_url is None, filename=%s", file_record.filename)
-            raise file_content_missing_exception
-
-        if zip_download_url != "<PACKING>":
-            await redis_client.delete(oss_packup_lock_key)
-
-        return zip_download_url
-
-    except HTTPException as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"prepare_download_file failed: {e}")
-        raise internal_server_error_exception from e
+# 允许签发上传 STS / 允许上传失败回滚清理的文件状态：初始预检记录（""）与上传中断后重试的 UPLOADING
+UPLOADABLE_FILE_STATUSES = ("", FileStatus.UPLOADING)
 
 
-async def validate_simple_upload(
+async def validate_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     filename: str | None,
     pre_record: FileInDB,
-    storage_type: str,
 ) -> None:
     """
-    验证简单上传的所有条件：归属、状态、名字、存储类型
+    验证签发上传凭证前的条件：归属、状态、名字
+
+    存储类型由上传入口按预检记录的 storage_type 分发，此处不再比对
 
     Raises:
         file_not_found_exception: 预检记录不属于当前用户（对外隐藏存在性）
         HTTPException: 其他验证失败时抛出异常
     """
     # 归属校验：当前用户必须拥有该预检记录，防止越权签发 STS 覆盖他人对象
-    # 使用 404 而非 403，避免泄露该 pre_file_id 是否存在
+    # 使用 404 而非 403，避免泄露该 pre_public_id 是否存在
     if not await assert_file_owner(async_session, pre_record, current_user):
         logger.warning(
-            f"unauthorized upload attempt user={current_user.id} pre_file_id={pre_record.file_id}"
+            f"unauthorized upload attempt user={current_user.id} file_id={pre_record.file_id}"
         )
         raise file_not_found_exception
 
     # 状态校验：仅允许初始预检记录（""）或上传中断后重试的 UPLOADING 状态重新签发 STS
-    if pre_record.status not in ("", FileStatus.UPLOADING):
+    if pre_record.status not in UPLOADABLE_FILE_STATUSES:
         logger.warning(
             f"invalid upload state user={current_user.id} file_id={pre_record.file_id} status={pre_record.status}"
         )
-        raise invalid_request_parameters_exception
-
-    # 存储类型检查
-    if storage_type != pre_record.storage_type:
-        logger.error(f"storage_type mismatch user={current_user.id}, expected={pre_record.storage_type}, actual={storage_type}")
         raise invalid_request_parameters_exception
 
     # 文件名检查
     if not filename:
         logger.error(f"filename missing user={current_user.id}")
         raise invalid_request_parameters_exception
+
+
+async def upload_oss_file(
+    current_user: UserInDB,
+    async_session: AsyncSession,
+    pre_record: FileInDB,
+    filename: str,
+) -> FileOssUploadResponse:
+    """
+    【OSS 上传实现】
+
+    校验预检记录并返回限定对象路径的 STS 临时凭证，文件内容由前端
+    通过 OSS SDK 直传。自行提交事务，失败时由 rollback_upload 补偿。
+
+    OSS 对象清理策略：
+    - 回调在路径提交后失败时，失败实验定时任务会按已落库路径尝试删除
+      source/imzML/ibd 对象。
+    - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
+      未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
+    """
+    # 预检记录校验放在 try 之外：校验失败直接返回对应错误，不触发回滚。
+    # 回滚会解除关联并删除预检记录，对他人的 pre_public_id 或已完成的文件执行时，
+    # 会造成配额虚减或误删已完成文件
+    logger.info("oss upload start user=%s filename=%s", current_user.id, filename)
+    await validate_upload(async_session, current_user, filename, pre_record)
+
+    try:
+        # OSS 对象键使用唯一标识 data/{file_verify_code}/{file_id}.{file_type}，
+        # 不再使用文件名；verify_code 前置打散 OSS 分区，FC 从文件名解析 file_id 后回调后端
+        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
+        oss_path = OssStorage.prepare_storage_path(
+            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
+        )
+        oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
+        if not oss_sts_token or not oss_path:
+            raise internal_server_error_exception
+
+        await update_file_record(async_session, pre_record, status=FileStatus.UPLOADING)
+        await async_session.commit()
+        await async_session.refresh(pre_record)
+
+    except Exception as exc:
+        logger.error(
+            "oss upload failed user=%s filename=%s error=%s",
+            current_user.id, filename, exc,
+        )
+        await rollback_upload(async_session, current_user, pre_record)
+        raise file_persist_failed_exception from exc
+
+    response = FileOssUploadResponse.model_validate(pre_record)
+    response.oss_path = oss_path
+    response.oss_sts_token = oss_sts_token
+    response.oss_bucket = OSS_BUCKET_NAME
+    response.oss_region_id = OSS_REGION_ID
+    return response
 
 
 #########################
@@ -372,6 +549,24 @@ async def set_file_public_service(
     """将文件标记为公开"""
     await update_file_record(async_session, file_record, is_public=True)
     await async_session.flush()
+
+
+async def update_file_metadata(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+    patch: "FilePatch",
+) -> None:
+    """部分更新文件元数据（持有者即可修改，权限由 api 层校验）
+
+    只改请求中出现的字段（exclude_unset）；可改范围见 FilePatch 注释。
+    公开状态（is_public）不在修改范围，走 set_public 专用接口（公开不可逆）。
+    spectrum_mode / storage_mode 的合法取值由请求模型 Literal 约束（非法值 422）。
+    """
+    updates = patch.model_dump(exclude_unset=True)
+
+    for field, value in updates.items():
+        setattr(file_record, field, value)
+    async_session.add(file_record)
 
 
 async def update_download_stats(
@@ -440,39 +635,15 @@ async def update_file_record(
     async_session.add(file_record)
 
 
-#########################
-# File  - 删
-#########################
-async def delete_file_and_parts(
-    async_session: AsyncSession,
-    file_id: int,
-    current_user_id: int|None = None,
-) -> None:
-    """
-    根据 file_id 删除 OSS 对象和文件记录。
-    函数名为兼容现有调用保留
-    Raises:
-        ValueError: 文件不存在
-        PermissionError: 用户无权限删除该文件
-        OSError: 物理文件删除失败时
-    """
-    file_record = await get_file_record_by_id(file_id, async_session)
-    # TODO：这里删除存在竞态，可能存在已经触发在打包的状态了，但是文件还没打包完，这里不好处理得考虑下。
-    await delete_file_by_storage(
-        file_record.path,
-        file_record.storage_type,
-        include_packup=True,  # 删除原始文件时连带删除下载打包产生的临时 zip
-        file_id=file_record.file_id,  # packup zip 命名为 packup/{file_id}.zip
-    )
-    logger.debug(f"deleted file physical file path={file_record.path} file_id={file_id}")
-
-    await async_session.delete(file_record)
-    logger.info(f"deleted OSS file file_id={file_id} user={current_user_id}")
-
-
-async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> None:
+async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: FileInDB) -> bool:
     """
     删除文件时调用,解除用户与文件的关联关系
+
+    直接执行 DELETE 并按受影响行数判断是否真正解除了关联：DELETE 是当前读，
+    并发请求中只有一个能删掉该行；"先查再删"在快照读下可能看到已被删除的关联，导致重复扣减配额。
+
+    Returns:
+        True 表示确实删除了关联行,False 表示该用户本就不持有此文件
 
     Raises:
         invalid_user_for_file_list_sync_exception: 用户ID无效
@@ -480,17 +651,15 @@ async def remove_file_link(async_session: AsyncSession, user: UserInDB, file: Fi
     if not user.id:
         raise invalid_user_for_file_list_sync_exception
 
-    user_file_linkers = (await async_session.exec(
-        select(UserFileLink).where(
+    result = await async_session.exec(
+        delete(UserFileLink).where(
             and_(UserFileLink.user_id == user.id,
                  UserFileLink.file_id == file.file_id)
         )
-    )).all()
-
-    for linker in user_file_linkers:
-        await async_session.delete(linker)
+    )
     async_session.expire(user, ["files"])
     async_session.expire(file, ["owners"])
+    return result.rowcount > 0
 
 
 async def unlink_user_from_file(
@@ -511,25 +680,56 @@ async def unlink_user_from_file(
     """
     # 1. 更新当前用户的文件关联和统计信息
     assert file_record.file_id is not None and user.id is not None
-    await remove_file_link(session, user, file_record)
+    link_removed = await remove_file_link(session, user, file_record)
     session.add(file_record)
 
     # 2. 更新用户统计信息（原子操作，防止并发丢失更新）
-    await atomic_decrement(session, UserInDB, user.id, "file_count")
-    await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
+    #    仅在确实删除了关联行时扣减：该用户本就不持有此文件时（越权请求、管理员操作他人文件等）
+    #    扣减会让计数虚减，可被用来绕过配额
+    if link_removed:
+        await atomic_decrement(session, UserInDB, user.id, "file_count")
+        await atomic_decrement(session, UserInDB, user.id, "total_file_size", file_record.size)
 
     # 3. 刷新事务
     await session.flush()
     await session.refresh(file_record)
     # 4. 返回是否还有其他用户持有该文件
-    #    注意：此处的 owner_counts 检查与 remove_file_link 之间仍然存在 TOCTOU 竞态
-    #    （并发删除最后两个 owner 时可能都判定 count=0 而触发双重物理删除），
-    #    该问题超出原子计数器范畴，需要后续通过分布式锁或 SELECT FOR UPDATE 解决。
+    #    快照读：并发已解除的关联会被多算（偏「有人持有」的保守侧）。
+    #    删除入口的持有者判定见 begin_file_deletion（加锁读），不看此返回值。
     owner_counts = (await session.exec(
         select(func.count()).where(UserFileLink.file_id == file_record.file_id) # pylint: disable=not-callable
     )).one()
 
     return bool(owner_counts)
+
+
+async def refund_storage_quota_for_file(
+    async_session: AsyncSession,
+    file_record: FileInDB,
+) -> int:
+    """退还该文件全部持有者的 storage 配额（file_count / total_file_size）。
+
+    文件级删除专用。必须在 session.delete(file_record) 之前调用——删完就读不到
+    持有者了。调用方须已持有 file 行锁。
+
+    Returns: 实际退还配额的持有者数量
+    """
+    assert file_record.file_id is not None
+    owner_ids = (await async_session.exec(
+        select(UserFileLink.user_id).where(UserFileLink.file_id == file_record.file_id)
+    )).all()
+
+    refunded = 0
+    for owner_id in owner_ids:
+        if owner_id is None:
+            continue
+        await atomic_decrement(async_session, UserInDB, owner_id, "file_count")
+        await atomic_decrement(async_session, UserInDB, owner_id, "total_file_size", file_record.size)
+        refunded += 1
+
+    if refunded:
+        logger.info("refunded storage quota for file_id=%s owners=%s", file_record.file_id, refunded)
+    return refunded
 
 
 async def safe_cleanup_preflight_record(
@@ -553,13 +753,13 @@ async def safe_cleanup_preflight_record(
         logger.debug(f"preflight cleanup: deleted file_id={pre_record.file_id} completely")
 
 
-async def rollback_simple_upload(
+async def rollback_upload(
     async_session: AsyncSession,
     current_user: UserInDB,
     pre_record: FileInDB | None = None,
 ) -> None:
     """
-    简单上传失败时的统一回滚清理
+    上传失败时的统一回滚清理
     """
     # 在rollback之前临时保存后面新事务所需要的对象信息，防止rollback之后对象信息失效
     if pre_record is None:
@@ -575,6 +775,13 @@ async def rollback_simple_upload(
         async with AsyncSession(get_async_engine()) as async_session: # 开启新事务，安全清理预检记录和用户关联
             assert _record_id is not None and _user_id is not None
             pre_record = await get_file_record_by_id(_record_id, async_session)
+            # 只清理仍可上传的记录：并发到达的上传回调可能已把它置为 COMPLETED 等状态，此时不能删除
+            if pre_record.status not in UPLOADABLE_FILE_STATUSES:
+                logger.warning(
+                    "skip upload rollback, file is no longer uploadable file_id=%s status=%s",
+                    _record_id, pre_record.status,
+                )
+                return
             current_user = await get_user_by_id(_user_id, async_session) # type: ignore
             await safe_cleanup_preflight_record(async_session, current_user, pre_record)
             await async_session.commit() # 提交事务,使清理生效
@@ -624,7 +831,7 @@ async def prepare_download_raw_oss(
 
     - 复用 OssStorage.sign_download_url（零改动），下载名由 OSS 对象 basename 决定，
       imzML/ibd 同 stem 配对天然保留。
-    - 不触碰 file_record.path —— 避免被 cleanup_old_download_zips 误删 origin 永久文件。
+    - 不触碰 file_record.path —— 避免被 cleanup_source_zips 误删 origin 永久文件。
     """
     origin = await assert_origin_files_ready(session, file_record)
 
@@ -639,160 +846,13 @@ async def prepare_download_raw_oss(
     ]
 
 
-async def get_origin_path_for_packup(
-    session: AsyncSession,
-    file_record: FileInDB,
-) -> str:
-    """
-    获取用于打包的 origin 文件路径
-
-    Raises:
-        file_content_missing_exception: origin 文件不存在或未完成
-        origin_type_not_supported_exception: 不支持的实验类型
-    """
-    if file_record.experiment_type == "imzML":
-        origin = await assert_origin_files_ready(session, file_record)
-        return f"{Path(origin.imzml_path).parent}/"
-    else:
-        logger.error("experiment_type not supported, filename=%s, experiment_type=%s", file_record.filename, file_record.experiment_type)
-        raise origin_type_not_supported_exception
-
-
-async def _handle_packup_status_check(
-    file_record: FileInDB,
-    packup: dict | None = None,
-    oss_packup_key: str | None = None,
-    oss_packup_lock_key: str | None = None,
-) -> tuple[bool, str | None, str | None]:
-    """
-    检查Redis中的打包状态并处理相应逻辑
-
-    Returns:
-        tuple: (should_pack, zip_download_url, zip_path)
-    """
-    should_pack = False
-    zip_download_url = None
-    zip_path = None
-
-    if not packup:
-        if not await OssStorage.check_file_exist(file_record.path):
-            # 原子加锁（SET NX EX），防止多个并发请求同时触发打包。
-            # SET key value NX EX seconds 是 Redis 单条原子命令：
-            #   - NX：仅当 key 不存在时才设置成功
-            #   - EX：设置 10 秒过期，防止持锁进程崩溃导致死锁
-            # 替代原来的 GET-then-SET 反模式，彻底消除 check-then-act 竞态窗口。
-            lock_acquired = await redis_client.set(oss_packup_lock_key, "1", nx=True, ex=10)  # type: ignore
-            if not lock_acquired:
-                logger.warning(
-                    "packup is in progress by other user, now wait for it to finish, filename=%s",
-                    file_record.filename,
-                )
-                zip_download_url = "<PACKING>"
-            else:
-                should_pack = True
-        else:
-            zip_download_url = await OssStorage.sign_download_url(file_record.path, expires=SIGNED_URL_EXPIRE_SECONDS)
-            await redis_client.hset(oss_packup_key, mapping={ # type: ignore
-                "status": PackupStatus.COMPLETED,
-                "file_path": file_record.path,
-                "download_url": zip_download_url})  # type: ignore
-            await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
-
-    elif packup.get("status") == PackupStatus.PACKING:
-        logger.info("packup is in progress, file_id=%s", file_record.file_id)
-        zip_download_url = "<PACKING>"
-
-    elif packup.get("status") == PackupStatus.COMPLETED:
-        zip_path = packup.get("file_path")
-        zip_download_url = packup.get("download_url")
-        if not zip_path:
-            logger.warning("packup completed but not file_path, now start new packup, filename=%s", file_record.filename)
-            should_pack = True
-        elif not await OssStorage.check_file_exist(zip_path):
-            logger.warning(f"packup completed but zip has been cleaned up, now start new packup, filename={file_record.filename}")
-            should_pack = True
-
-    elif packup.get("status") == PackupStatus.FAILED:
-        logger.error("packup failed, filename=%s", file_record.filename)
-        await redis_client.delete(oss_packup_key) # type: ignore 删除打包状态，允许重新打包
-        raise file_content_missing_exception
-
-    else:
-        logger.warning("invalid packup status in redis, now start new packup, filename=%s", file_record.filename)
-        should_pack = True
-
-    return should_pack, zip_download_url, zip_path
-
-
-async def _prepare_download_url_for_completed_packup(
-    file_record: FileInDB,
-    zip_path: str,
-    oss_packup_key: str | None,
-) -> str | None:
-    """为已完成的打包生成下载URL"""
-    zip_size = await OssStorage.get_file_size(zip_path)
-    if zip_size is None:
-        raise file_content_missing_exception
-
-    zip_download_url = await OssStorage.sign_download_url(zip_path, expires=SIGNED_URL_EXPIRE_SECONDS)
-
-    await redis_client.hset(oss_packup_key, mapping={"download_url": zip_download_url})  # type: ignore
-    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS) # type: ignore
-
-    file_record.path = zip_path
-    file_record.size = zip_size  # type: ignore
-
-    logger.info(
-        "prepared download zip file_id=%s path=%s size=%s",
-        file_record.file_id,
-        zip_path,
-        file_record.size,
-    )
-
-    return zip_download_url
-
-
-async def _execute_packup_flow(
-    session: AsyncSession,
-    file_record: FileInDB,
-    oss_packup_key: str,
-) -> str:
-    """
-    执行常规打包流程
-
-    Returns:
-        "<PACKING>" 表示正在打包
-
-    Raises:
-        internal_server_error_exception: 内部服务器错误
-    """
-    origin_path = await get_origin_path_for_packup(session, file_record)
-
-    # packup zip 使用 file_id 命名，与原始文件名解耦（同名文件秒传复用场景不冲突）
-    fc_request_id = await packup_oss_file(
-        filename=file_record.filename,
-        packup_folder=origin_path,  # type: ignore
-        zip_file_path=f"{OSS_PACKUP_ZIP_STORAGE_ROOT.strip('/')}/{file_record.file_id}.zip",  # type: ignore
-    )
-
-    if fc_request_id is None:
-        logger.error("packup_oss_file trigger failed, filename=%s", file_record.filename)
-        raise internal_server_error_exception
-
-    # 不再把 fc_request_id 写入 Redis：FC 日志回捞链路已删除，此处仅用于判断触发是否成功
-    await redis_client.hset(oss_packup_key, mapping={"status": PackupStatus.PACKING})  # type: ignore
-    await redis_client.expire(oss_packup_key, PACKUP_CACHE_TTL_SECONDS)
-
-    return "<PACKING>"
-
-
-async def validate_upload_request(
+async def validate_preflight_request(
     async_session: AsyncSession,
     current_user: UserInDB,
     file_data: FileCreate,
 ) -> bool:
     """
-    统一验证上传请求参数
+    统一验证预检请求参数
 
     Returns:
         True 表示验证通过,False 表示验证失败
@@ -809,8 +869,9 @@ async def validate_upload_request(
     if file_data.experiment_type and not validate_experiment_type(file_data.experiment_type):
         return False
 
-    # 4. 分片数量验证(如果需要)
-    if file_data.total_parts is not None and not validate_total_parts(file_data.total_parts):
+    # 4. 单文件大小上限校验（max_file_size_gb 未配置时不限制）
+    if MAX_SINGLE_FILE_SIZE_BYTES and file_data.size and file_data.size > MAX_SINGLE_FILE_SIZE_BYTES:
+        logger.error(f"file size exceeds limit user={current_user.id} size={file_data.size} limit={MAX_SINGLE_FILE_SIZE_BYTES}")
         return False
 
     # 5. 用户配额检查
@@ -821,7 +882,7 @@ async def validate_upload_request(
     if await valid_duplicate_filename(async_session, current_user, file_data.filename):
         raise duplicate_file_exception
 
-    # 7. 重复文件哈希检查
+    # 8. 重复文件哈希检查
     assert file_data.file_verify_code is not None
     if await valid_user_duplicate_file_hash(async_session, current_user, file_data.file_verify_code):
         raise duplicate_file_exception

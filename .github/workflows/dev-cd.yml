@@ -6,7 +6,12 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  # ACR 地址只在这里定义一次；deploy 阶段的登录域名由 APP_IMAGE 前缀推出，
+  # 不会出现「镜像拉取域名改了、docker login 漏改」导致的 unauthorized
+  ACR_REGISTRY: crpi-y6a776c9l4k3agmh.cn-hongkong.personal.cr.aliyuncs.com
+  ACR_REPO: kawaru/kawaru
 
 concurrency:
   group: dev-cd
@@ -19,18 +24,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Log in to GHCR
+      - name: Log in to ACR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/kawaru   # metadata-action 自动转小写
+          images: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}
           tags: |
             type=raw,value=dev-latest
             type=sha,prefix=dev-,format=long
@@ -41,6 +46,9 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: true
+          # ACR 个人版拒绝 OCI attestation manifest，必须关闭 provenance/sbom
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -69,13 +77,21 @@ jobs:
           username: ${{ secrets.DEV_SSH_USER }}
           key: ${{ secrets.DEV_SSH_KEY }}
           port: 22
-          envs: GHCR_PULL_USER,GHCR_PULL_TOKEN,APP_IMAGE,DEPLOY_SHA
+          envs: ACR_USERNAME,ACR_PASSWORD,APP_IMAGE,DEPLOY_SHA
           script: |
             set -e
             set -o pipefail
-            export APP_IMAGE="${APP_IMAGE,,}"   # GHCR 仓库名必须小写（owner 可能含大写）
             cd /opt/kawaru-dev
-            echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u "$GHCR_PULL_USER" --password-stdin
+
+            # ACR_PASSWORD 是 CI 推送用的可写凭证：只写进临时 DOCKER_CONFIG（mktemp 目录
+            # 0700），不落 ~/.docker/config.json；trap 保证任意退出路径都清理——
+            # 旧写法 set -e 中途失败会跳过尾部 logout，推送密码就长期留在服务器上
+            export DOCKER_CONFIG="$(mktemp -d)"
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+            trap 'exit 1' HUP INT TERM   # 信号中断也转成正常退出，确保上面的 trap 执行
+            # 登录域名直接取镜像名的 registry 前缀（APP_IMAGE 本身就是全小写），
+            # 与下面 compose pull 的域名天然一致，不会再出现登录/拉取域名不一致的 unauthorized
+            echo "$ACR_PASSWORD" | docker login "${APP_IMAGE%%/*}" -u "$ACR_USERNAME" --password-stdin
             COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
             $COMPOSE pull migrate app worker beat
             $COMPOSE up -d --wait --wait-timeout 180 mariadb redis
@@ -91,15 +107,15 @@ jobs:
               --abort-on-container-exit --exit-code-from migrate migrate
             $COMPOSE up -d --no-deps --wait --wait-timeout 300 app worker beat
             find ./data/backups -type f -name '*.sql.gz' -mtime +7 -delete
-            # 部署成功后才执行：本地 dev-latest 标签指向本次部署的镜像（与 GHCR 的 dev-latest 同 digest）
+            # 部署成功后才执行：本地 dev-latest 标签指向本次部署的镜像（与 ACR 的 dev-latest 同 digest）
             docker tag "$APP_IMAGE" "${APP_IMAGE%:*}:dev-latest"
-            # 清理无容器引用且超过 7 天的旧镜像（历史 dev-<sha> / dangling）；GHCR 仍保留全部 tag，可随时回拉
+            # 清理无容器引用且超过 7 天的旧镜像（历史 dev-<sha> / dangling）；ACR 仍保留全部 tag，可随时回拉
             docker image prune -af --filter "until=168h"
-            docker logout ghcr.io
+            # 凭证清理由开头的 trap 统一负责（临时 DOCKER_CONFIG 随目录删除），无需 logout
         env:
-          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:dev-${{ github.sha }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          APP_IMAGE: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}:dev-${{ github.sha }}
           DEPLOY_SHA: ${{ github.sha }}
 
       # 上一步任意失败（healthcheck 超时 / 容器 crash / pull 失败）都会落到这里：
@@ -115,7 +131,6 @@ jobs:
           envs: APP_IMAGE
           script: |
             set +e   # 诊断阶段不要因为某条命令失败就中断
-            export APP_IMAGE="${APP_IMAGE,,}"   # 同 deploy：compose 插值需要它，否则 ps/logs 全挂
             cd /opt/kawaru-dev
             COMPOSE="docker compose -f docker-compose.dev.yml -p kawaru-dev"
 
@@ -136,4 +151,4 @@ jobs:
             done
             exit 0   # 诊断步骤永远成功；最终任务失败由前一步决定
         env:
-          APP_IMAGE: ghcr.io/${{ github.repository_owner }}/kawaru:dev-${{ github.sha }}
+          APP_IMAGE: ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPO }}:dev-${{ github.sha }}

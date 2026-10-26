@@ -10,6 +10,7 @@ FC 函数处理完成后通过回调接口返回结果。
 """
 import os
 
+from api_helpers.admin_notify import notify_fc_trigger_failed
 from celery_runtime.state import get_celery_app
 from constants.file_constants import (
     FC_ALGORITHM_ENDPOINT,
@@ -78,44 +79,55 @@ async def trigger_fc_algorithm_task(
         logger.info("trigger fc algorithm success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc algorithm failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-algorithm", run_id=run_id)
 
 
 @celery_app.task()
 async def trigger_fc_tic_task(
     file_id: int,
     imzml_path: str,
+    public_id: str,
 ) -> None:
     """触发 fc-tic 生成 TIC 预览图（异步调用）。"""
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
-        "image_dest": f"images/file_{file_id}/",
+        # 预览图目录约定 images/{public_id}/：public_id 为随机前缀，避免自增 file_id
+        # 形成 OSS 分区热点；前端可凭 public_id 自行拼接取图（删除兜底推导见
+        # composite_service，两处约定需保持一致）
+        "image_dest": f"images/{public_id}/",
     }
-    logger.info("trigger fc tic file_id=%s imzml_path=%s", file_id, imzml_path)
+    logger.info("trigger fc tic file_id=%s public_id=%s imzml_path=%s", file_id, public_id, imzml_path)
     request_id = await invoke_fc(FC_TIC_URL, FC_TIC_TOKEN, event, FC_TIC_TIMEOUT)
     if request_id is not None:
         logger.info("trigger fc tic success file_id=%s request_id=%s", file_id, request_id)
     else:
         logger.error("trigger fc tic failed file_id=%s", file_id)
+        notify_fc_trigger_failed("fc-tic", file_id=file_id)
 
 
 @celery_app.task()
 async def trigger_fc_feature_task(
     file_id: int,
     imzml_path: str,
+    public_id: str,
 ) -> None:
     """触发 fc-feature 生成 UMAP 预览图（异步调用）。"""
     event = {
         "file_id": file_id,
         "imzml_path": imzml_path,
-        "image_dest": f"images/file_{file_id}/",
+        # 预览图目录约定 images/{public_id}/：public_id 为随机前缀，避免自增 file_id
+        # 形成 OSS 分区热点；前端可凭 public_id 自行拼接取图（删除兜底推导见
+        # composite_service，两处约定需保持一致）
+        "image_dest": f"images/{public_id}/",
     }
-    logger.info("trigger fc feature file_id=%s imzml_path=%s", file_id, imzml_path)
+    logger.info("trigger fc feature file_id=%s public_id=%s imzml_path=%s", file_id, public_id, imzml_path)
     request_id = await invoke_fc(FC_FEATURE_URL, FC_FEATURE_TOKEN, event, FC_FEATURE_TIMEOUT)
     if request_id is not None:
         logger.info("trigger fc feature success file_id=%s request_id=%s", file_id, request_id)
     else:
         logger.error("trigger fc feature failed file_id=%s", file_id)
+        notify_fc_trigger_failed("fc-feature", file_id=file_id)
 
 
 @celery_app.task()
@@ -142,6 +154,7 @@ async def trigger_fc_raw_convert_task(
         logger.info("trigger fc raw_convert success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc raw_convert failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-raw-convert", run_id=run_id)
 
 
 @celery_app.task()
@@ -162,3 +175,4 @@ async def trigger_fc_clustering_task(
         logger.info("trigger fc clustering success run_id=%s request_id=%s", run_id, request_id)
     else:
         logger.error("trigger fc clustering failed run_id=%s", run_id)
+        notify_fc_trigger_failed("fc-clustering", run_id=run_id)

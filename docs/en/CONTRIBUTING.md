@@ -129,9 +129,9 @@ docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 External dependencies per marker:
 
 - `oss` uses the real bucket and covers preflight → scoped STS → direct OSS upload → wait for event-triggered FC extraction → simulated authenticated upload callback → RAW signed download with MD5 verification → cleanup. It requires OSS credentials, the configured bucket event, and a working extraction FC function. The test simulates the callback after extraction instead of waiting for FC to call the API itself.
-- `password_reset` needs a working `SMTP_PASSWORD`. `perf_concurrent` uses the real email path by default, but `PERF_TEST_VERIFY_CODE` can supply the registration code directly.
+- `password_reset` needs a working `SMTP_PASSWORD`. `perf_concurrent` sends no email: the test process issues a registration code for each account's email directly (codes are bound to the email), so it must share the server's Redis.
 
-The current OSS test does not validate automatic callback delivery, TIC/UMAP callback output, ZIP packup, algorithm/raw-convert/clustering runs, failure/retry behavior, or multi-user races. Add focused coverage when changing any of those paths; a green `oss` marker alone does not prove the entire OSS/FC deployment is operational.
+The current OSS test does not validate automatic callback delivery, TIC/UMAP callback output, algorithm/raw-convert/clustering runs, failure/retry behavior, or multi-user races. Add focused coverage when changing any of those paths; a green `oss` marker alone does not prove the entire OSS/FC deployment is operational.
 
 ## PR Review Checklist
 

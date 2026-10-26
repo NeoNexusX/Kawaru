@@ -11,14 +11,14 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlmodel import select, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from api_helpers.auth_helper import create_access_token, hashed_password
+from api_helpers.auth_helper import create_access_token, hashed_password, hashed_password_async
 from api_helpers.user_helper import validate_url
-from api_services.file_service import get_user_file_ids
 from api_services.user_service import (
+    add_new_user,
     authenticate_user,
     validate_orcid,
     validate_update_user_data,
-    verify_reset_code,
+    verify_email_code,
     get_user,
     get_user_by_id,
     get_user_by_email,
@@ -38,7 +38,6 @@ from exceptions.user_exceptions import (
     user_already_exists_exception,
     email_already_exists_exception,
     user_not_active_exception,
-    user_verification_bad_exception,
     user_position_not_allowed_exception,
     user_region_not_exist_exception,
     user_orcid_not_exist_exception,
@@ -54,11 +53,10 @@ from exceptions.common_exceptions import (
 )
 from database.db import AsyncSessionDep, get_async_session
 from database.redis_client import redis_client
-from celery_runtime.result import wait_for_result
 from background.file_background import clean_user_all_task
 from boot.config import get_config
-from models.auth import Token, RedisLoginData, oauth2_scheme, SECRET_KEY
-from models.email_models import TOTP
+from models.auth import Token, RedisLoginData, oauth2_scheme, optional_oauth2_scheme, SECRET_KEY
+from models.email_models import EmailPurpose
 from models.user_models import UserCreate, UserInDB, UserUpdate, UserPublic, UserDetailPublic, UserQuotaPublic, UserQuotaLimits, PasswordResetConfirm
 from models.filter_models import UserFilter, PaginationMeta, ListDataResponse
 from tools import utc_time, TIME_STR_FORMAT,get_logger
@@ -142,8 +140,8 @@ async def get_activate_user(username: str, async_session: AsyncSessionDep) -> Us
     return user
 
 
-async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
-    """解析并校验 JWT Token 返回当前登录用户"""
+async def _authenticate_token(token: str, async_session: AsyncSession) -> UserInDB:
+    """解析并校验 JWT Token 返回当前登录用户（token_authen / optional_token_authen 共用）"""
     try:
         payload = jwt.decode(
             token, SECRET_KEY, algorithms=[config.token.algorithm]
@@ -176,6 +174,25 @@ async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_sess
     user = await get_activate_user(username, async_session)
 
     return user
+
+
+async def token_authen(token: Annotated[str, Depends(oauth2_scheme)], async_session: AsyncSessionDep):
+    """解析并校验 JWT Token 返回当前登录用户"""
+    return await _authenticate_token(token, async_session)
+
+
+async def optional_token_authen(
+    token: Annotated[str | None, Depends(optional_oauth2_scheme)],
+    async_session: AsyncSessionDep,
+) -> UserInDB | None:
+    """可选登录：未携带 token 返回 None（按匿名处理），携带了 token 则按 token_authen 校验
+
+    带了无效/过期 token 不降级为匿名，仍返回 401：前端可据此提示重新登录，
+    避免已登录用户因 token 过期而静默拿到匿名视角的结果（如自己的私有文件变成 404）。
+    """
+    if token is None:
+        return None
+    return await _authenticate_token(token, async_session)
 
 
 async def login(
@@ -251,23 +268,20 @@ async def create_user(user: UserCreate, async_session: AsyncSessionDep) -> UserP
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
 
-    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
+    user_past = await get_user(user.username,async_session)  # 检查是否已存在用户名相同的用户
+    if user_past is not None:
+        logger.error("cannot create user ,user already exists, username:%s", user.username)
+        raise user_already_exists_exception
 
-        if user_past is None:
-            user_data = user.model_dump(exclude={'password'})
-            user_data["identity"] = "user"  # 由API设置为普通用户
-            user = UserInDB(**user_data,hashed_password=hashed_password(user.password)) # type:ignore
-            async_session.add(user)
-            await async_session.commit()
-            await async_session.refresh(user)
-        else:
-            logger.error("cannot create user ,user already exists, username:%s", user.username)
-            raise user_already_exists_exception
+    # 验证码必须是发往该注册邮箱的码（单次有效）；放在其余校验之后，避免校验失败白白消耗验证码
+    await verify_email_code(EmailPurpose.REGISTER, user.email, user.verify_code)
 
-        return user # type:ignore
+    user_data = user.model_dump(exclude={'password'})
+    user_data["identity"] = "user"  # 由API设置为普通用户
+    user = UserInDB(**user_data,hashed_password=await hashed_password_async(user.password)) # type:ignore
+    await add_new_user(async_session, user) # type:ignore # 并发注册撞上唯一约束时返回 409
 
-    raise user_verification_bad_exception
+    return user # type:ignore
 
 
 async def create_admin_user_api(user: UserCreate,
@@ -281,26 +295,22 @@ async def create_admin_user_api(user: UserCreate,
     # 校验基本的注册信息（包括邮箱唯一性）
     await validate_signup_info(user, async_session)
 
-    #  TOTP验证
-    if TOTP.verify(user.verify_code, valid_window=config.email.totp_window):  # 有效期默认±30个时间片=±15分钟
-        user_past = await get_user(user.username, async_session)
+    user_past = await get_user(user.username, async_session)
+    if user_past is not None:
+        raise user_already_exists_exception
 
-        if user_past is None:
-            # 排除password，显式设置identity为"admin"
-            user_data = user.model_dump(exclude={'password'})
-            user_data["identity"] = "admin"  # 由API设置身份为管理员
-            user = UserInDB(**user_data, hashed_password=hashed_password(user.password)) # type:ignore
-            async_session.add(user)
-            await async_session.commit()
-            await async_session.refresh(user)
-            await async_session.refresh(current_admin)
-            logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
+    # 验证码必须是发往新管理员邮箱的注册码（单次有效）；放在其余校验之后，避免校验失败白白消耗验证码
+    await verify_email_code(EmailPurpose.REGISTER, user.email, user.verify_code)
 
-            return user # type:ignore
-        else:
-            raise user_already_exists_exception
-    else:
-        raise user_verification_bad_exception
+    # 排除password，显式设置identity为"admin"
+    user_data = user.model_dump(exclude={'password'})
+    user_data["identity"] = "admin"  # 由API设置身份为管理员
+    user = UserInDB(**user_data, hashed_password=await hashed_password_async(user.password)) # type:ignore
+    await add_new_user(async_session, user)  # type:ignore # 并发注册撞上唯一约束时返回 409
+    await async_session.refresh(current_admin)
+    logger.info( f"Admin user {current_admin.username} created new admin user {user.username}")
+
+    return user # type:ignore
 
 
 async def update_user(
@@ -312,26 +322,25 @@ async def update_user(
     更新当前用户信息，支持可选字段及密码变更
     """
     user_data = user.model_dump(exclude_unset=True)  # 只更新已传字段
-
-    # 验证邮箱验证码（只有更新邮箱时需要）
-    if "email" in user_data and user_data["email"] is not None:
-        if not (
-            "verify_code" in user_data
-            and user_data["verify_code"]
-            and TOTP.verify(user_data["verify_code"], valid_window=config.email.totp_window)):
-            raise user_verification_bad_exception
-        # 移除验证码，不更新到数据库
-        user_data.pop("verify_code", None)
+    new_email = user_data.get("email")
+    verify_code = user_data.pop("verify_code", None)  # 验证码不更新到数据库
 
     # 校验其他字段
     user_data = await validate_update_user_data(user_data, user_past, async_session)
+
+    # 更新邮箱时校验发往新邮箱的验证码（单次有效）；放在字段校验之后，避免校验失败白白消耗验证码
+    if new_email is not None:
+        await verify_email_code(EmailPurpose.UPDATE, new_email, verify_code)
 
     # 再更新除密码外剩下的用户信息
     user_past.sqlmodel_update(user_data)
     async_session.add(user_past)
     await async_session.commit()
+    # commit 后对象属性被过期，需 refresh 重新加载，否则序列化为响应模型时
+    # 会在异步会话外触发懒加载导致 500（同 reset_password）
+    await async_session.refresh(user_past)
 
-    return user # type:ignore
+    return user_past # type:ignore
 
 
 async def reset_password(
@@ -340,7 +349,7 @@ async def reset_password(
 ) -> UserPublic:
     """
     忘记密码：未登录用户凭邮箱 + 验证码重置密码。
-    验证码与邮箱绑定且单次有效（见 user_service.verify_reset_code）。
+    验证码与用途、邮箱绑定且单次有效（见 user_service.verify_email_code）。
     """
     user = await get_user_by_email(data.email, async_session)
     # 邮箱不存在或账号未激活时本不该有有效验证码，统一按验证码错误处理，
@@ -348,9 +357,9 @@ async def reset_password(
     if user is None or not user.active:
         raise reset_code_invalid_exception
 
-    await verify_reset_code(data.email, data.verify_code)
+    await verify_email_code(EmailPurpose.RESET_PASSWORD, data.email, data.verify_code)
 
-    user.hashed_password = hashed_password(data.new_password)
+    user.hashed_password = await hashed_password_async(data.new_password)
     async_session.add(user)
     await async_session.commit()
     # commit 后对象属性被过期，需 refresh 重新加载，否则序列化为响应模型时
@@ -367,9 +376,9 @@ async def del_user(
 ) -> dict[str, int | str]:
     """删除指定用户（仅管理员可操作）
 
-    不返回 UserPublic：用户行删除并 commit 后 ORM 对象属性已过期，
-    在异步会话外序列化会触发懒加载导致 500，且对已删除行 refresh 也会失败。
-    与其他删除端点保持一致，返回被删资源标识与状态。
+    软删除：只置 active=False 并投递清理任务，user 行保留（等名下资源清完由
+    cleanup_deleted_users 物理删行）。这样 run 行不随 user 级联消失，快照可反查
+    out_path，投递失败也还有重扫的机会。
     """
 
     if current_admin.identity != "admin":
@@ -381,15 +390,19 @@ async def del_user(
     user = await get_user_by_id(user_id, async_session)
     if user is None:
         raise user_not_found_exception
+    if not user.active:
+        # 幂等重入：不重复投递（清理任务自身可重入）
+        logger.info("user already marked deleted user_id=%s", user_id)
+        return {"user_id": user_id, "status": "deleted"}
     user_id = user.id # type: ignore
 
-    file_ids = await get_user_file_ids(async_session, user.id) # type: ignore
-    await async_session.delete(user)
+    user.active = False
+    async_session.add(user)
     await async_session.commit()
 
-    if file_ids:
-        task = clean_user_all_task.delay(file_ids, user_id)  # type: ignore
-        await wait_for_result(task, poll_interval=1.0)
+    # 不等登记完成即返回（同 delete_user_file）：标记已 commit，等也回滚不了。
+    # 投递失败也不致命——cleanup_deleted_users 每轮会重跑同一套登记逻辑兜底
+    clean_user_all_task.delay(user_id)  # type: ignore
 
     return {"user_id": user_id, "status": "deleted"}
 
@@ -456,7 +469,7 @@ async def get_user_list(
     # 根据filters条件构建查询
     query = select(UserInDB).filter(
         col(UserInDB.username).like(f"%{filters.username}%") if filters.username else True, # type:ignore # pylint: disable=no-member
-        UserInDB.active == filters.active if filters.active else True, # type:ignore
+        UserInDB.active == filters.active if filters.active is not None else True, # type:ignore
         UserInDB.institution == filters.institution if filters.institution else True, # type:ignore
         UserInDB.region == filters.region if filters.region else True # type:ignore
     )
@@ -550,7 +563,6 @@ async def update_user_quota(
 ##########################
 # 以下为依赖注入创建的类型别名
 ##########################
-UserDep = Annotated[UserInDB, Depends(get_activate_user)]  # 获取当前已激活用户
 UserLoginDep = Annotated[Token, Depends(login)]  # 用户登陆
 UserLogoutDep = Annotated[UserPublic, Depends(logout)]  # 用户登出
 UserCreateDep = Annotated[UserCreate, Depends(create_user)]  # 创建普通用户

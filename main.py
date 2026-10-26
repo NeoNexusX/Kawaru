@@ -17,7 +17,9 @@ from celery_runtime.launcher import (
     stop_embedded_celery,
 )
 from database.schema_guard import require_current_schema
+from routers.annotation import annotation_router
 from routers.callback import callback_router
+from routers.collection import collection_router
 from routers.experiment import originexperiment_router
 from routers.file import file_router
 from routers.processing import processing_router
@@ -69,6 +71,8 @@ app.include_router(callback_router)
 app.include_router(originexperiment_router)
 app.include_router(processing_router)
 app.include_router(stats_router)
+app.include_router(collection_router)
+app.include_router(annotation_router)
 
 # update ：uvicorn run config
 if __name__ == "__main__":

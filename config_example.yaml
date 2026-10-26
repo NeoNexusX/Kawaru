@@ -6,6 +6,8 @@ server:
   name: SpatialXomics
   port: 8000
   host: 0.0.0.0
+  # 对外 API 公网前缀，用于拼接中转下载 URL；留空则回退 request.base_url 推导
+  public_base_url: ""
 
 cors:
   allow_origins: ["*"]            # dev：按需收紧到前端域名
@@ -24,9 +26,10 @@ email:
   smtp_username: 1513401658@qq.com
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
-  totp_window: 30
-  reset_password_max_attempts: 5   # 单轮密码重置验证码最大校验失败次数，超过则锁定本轮重置
+  reset_password_max_attempts: 5   # 单个邮箱验证码（注册/改邮箱/重置密码）最大校验失败次数，超过则作废该验证码
   email_send_cooldown_seconds: 60   # 同一邮箱两次发送验证码邮件的最小间隔（秒），不区分用途，防邮件轰炸
+  alert_max_per_window: 100   # 管理员告警邮件在额度窗口内最多发送封数，超出丢弃（告警与验证码共用 SMTP 账号，防告警洪峰挤掉验证码）
+  alert_budget_window_seconds: 3600   # 管理员告警邮件的额度窗口（秒）
 
 database:
   host: 127.0.0.1
@@ -56,10 +59,8 @@ celery:
   worker_log_file: "kawaru_logs/celery.log"
   worker_disable_rate_limits: true
   worker_pool: "threads"
-  large_file_poll_time: 1000
 
 storage:
-  max_chunks_per_upload: 40
   allowed_storage_types: ["oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
@@ -69,39 +70,58 @@ storage:
   cleanup_preflights_interval_minutes: 60
   cleanup_download_zip_interval_minutes: 60
   cleanup_failed_experiments_interval_minutes: 60
-  preflight_ttl_minutes: 30
+  preflight_ttl_minutes: 600      # 预检记录 TTL 下限（分钟）；与下方带宽公式计算值取较大者
+  max_file_size_gb: 20            # 允许的最大单文件（GB）；预检校验 + TTL 公式输入，不配置则不启用
+  min_upload_bandwidth_mbps: 10   # 最低上传带宽假设（Mbps），TTL 公式输入，不配置则不启用公式
+  upload_ttl_safety_factor: 1.5   # TTL 安全余量系数（乘式）
   download_zip_ttl_minutes: 30
   signed_url_ttl_minutes: 60
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
+  stale_clustering_run_timeout_minutes: 120
   cleanup_stale_process_runs_interval_minutes: 30
+  # 删除兜底（DELETING / DELETE_FAILED 行的自动重投）：
+  stale_deletion_timeout_minutes: 30         # 删除行停留超过该时长（分钟）才算「卡住」，才允许重投（避免和正在跑的 worker 抢）
+  retry_file_deletions_interval_minutes: 15  # 文件删除重投任务 retry_stale_file_deletions 的扫描间隔（分钟）
+  retry_run_deletions_interval_minutes: 15   # run 删除重投任务 retry_stale_run_deletions 的扫描间隔（分钟）
 
 oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）
   region_id: cn-hangzhou
   bucket_name: kawaru-oss
-  # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 240 = 4 小时，
+  # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 480 = 8 小时，
   # 且必须 <= 阿里云 RAM 角色「最大会话时长」（控制台：RAM 访问管理 → 角色 → 编辑最大会话时长）
-  oss_upload_sts_token_expire_minutes: 180
+  oss_upload_sts_token_expire_minutes: 480
   # 下载（zarr 只读）STS Token 有效期（分钟），上限同上
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
+  # SI 注释库 CSV 的完整 OSS key（人工上传后填写；未配置时浏览可用、下载端点报未就绪）
+  oss_si_db_key: static/SI_DB.csv
   oss_default_timeout_seconds: 20
-  fc_packup_endpoint: https://packup-oss-pxepaiqpge.cn-hangzhou.fcapp.run
-  fc_packup_timeout_seconds: 200
+  oss_delete_object_timeout_seconds: 30
+  oss_delete_prefix_timeout_seconds: 300
   fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
   fc_algorithm_timeout_seconds: 60
-  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou.fcapp.run
+  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou-vpc.fcapp.run
   fc_tic_timeout_seconds: 60
-  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou.fcapp.run
+  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou-vpc.fcapp.run
   fc_feature_timeout_seconds: 60
-  fc_raw_convert_endpoint: http://imz-to-zarr-xrujfuejtn.cn-hangzhou.fcapp.run
+  fc_raw_convert_endpoint: https://imz-to-zarr-xrujfuejtn.cn-hangzhou-vpc.fcapp.run
   fc_raw_convert_timeout_seconds: 60
-  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou.fcapp.run
+  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou-vpc.fcapp.run
   fc_clustering_timeout_seconds: 60
+  # 中转下载专用内网 endpoint（服务器与 OSS 同地域时可达，OSS→服务器这跳免费）。
+  # 本地开发机上内网域名不可达：改用 CONFIG_PATH 指向覆盖配置，把它临时设为公网
+  # endpoint（https://oss-cn-hangzhou.aliyuncs.com）即可完整验证中转链路。
+  oss_internal_endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com
+  relay_max_concurrency: 10         # 中转下载最大并发数（保护服务器带宽）
+  relay_acquire_timeout_seconds: 10 # 排队等待上限，超时返回 429
+  relay_idle_timeout_seconds: 30    # 空闲超时：客户端 30s 不消费数据则中断
+  # 浏览器直连下载（download_raw 预签名 URL）的 CDN 域名，仅正式服配置；
+  # V1 签名不含 Host，只换域名不影响签名。测试服不配置则保持 OSS 域名。
+  # oss_cdn_domain: https://cdn.neonexus.top
 
 admin_info:
   username: kawaru
@@ -112,7 +132,7 @@ admin_info:
   orcid: admin
   homepage: admin
   email: admin@example.com
-  max_total_file_size: 200
+  max_total_file_size: 100
   max_file_count: 20
   max_processing_size: 200
   max_download_count: 50
@@ -138,6 +158,7 @@ user:
   max_region_length: 128
   max_orcid_length: 128
   max_homepage_length: 128
+  cleanup_deleted_users_interval_minutes: 10   # 已删除用户收敛任务 cleanup_deleted_users 的扫描间隔（分钟）：名下资源清完后物理删 user 行
 
 sample_info:
   max_experiment_name_length: 128

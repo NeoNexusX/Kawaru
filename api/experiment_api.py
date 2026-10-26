@@ -9,6 +9,7 @@ from fastapi import Depends
 from sqlmodel import select
 from api_services.experiment_service import get_origin_imzml_by_file_id
 from api.user_api import token_authen
+from api_helpers.deletion_helper import file_is_deleting
 from api_services.file_service import assert_file_owner
 from database.db import AsyncSessionDep
 from models.user_models import UserInDB
@@ -20,7 +21,7 @@ from exceptions.experiment_exceptions import (
     origin_permission_denied_exception,
     source_file_not_found_exception,
 )
-from tools import get_logger
+from tools import PublicIdPath, get_logger
 logger = get_logger("api.experiment_api")
 
 #########################
@@ -36,18 +37,25 @@ ORIGIN_QUERY_MAP = {
 }
 
 
-async def get_origin_by_file_id_api(
-    file_id: int,
+async def get_origin_by_public_id_api(
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> OriginImzMLPublic:
-    """根据源文件ID查询 origin 记录,根据文件的 experiment_type 字段定位对应 origin 表"""
+    """根据源文件 public_id 查询 origin 记录,根据文件的 experiment_type 字段定位对应 origin 表
 
-    # 1. 查询文件记录
+    文件查询保持内联：不复用 get_file_record_by_public_id，以保留本接口原有的
+    source_file_not_found_exception 口径。删除流程中的文件按不存在处理（与文件
+    详情 404 一致）。
+    """
+
+    # 1. 查询文件记录（删除流程中的按不存在处理）
     file_record = (
-        await async_session.exec(select(FileInDB).where(FileInDB.file_id == file_id))).first()
-    if not file_record:
+        await async_session.exec(select(FileInDB).where(FileInDB.public_id == public_id))).first()
+    if not file_record or file_is_deleting(file_record.status):
+        logger.warning("origin query: file not found or being deleted public_id=%s", public_id)
         raise source_file_not_found_exception
+    file_id = file_record.file_id
 
     # 2. 检查权限
     if not await assert_file_owner(async_session, file_record, current_user):
@@ -67,8 +75,8 @@ async def get_origin_by_file_id_api(
     if not origin:
         raise origin_not_found_exception
 
-    logger.debug(f"get origin by file_id user={current_user.id} file_id={file_id} exp_type={file_record.experiment_type}")
+    logger.debug(f"get origin by public_id user={current_user.id} public_id={public_id} file_id={file_id} exp_type={file_record.experiment_type}")
 
     return origin #type:ignore
 
-GetOriginByFileIdDep = Annotated[OriginImzMLPublic, Depends(get_origin_by_file_id_api)]#用于根据文件id查询 origin 表记录
+GetOriginByPublicIdDep = Annotated[OriginImzMLPublic, Depends(get_origin_by_public_id_api)]#用于根据文件 public_id 查询 origin 表记录

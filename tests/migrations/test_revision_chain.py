@@ -24,6 +24,9 @@ def test_baseline_ddl_matches_registered_metadata() -> None:
 
         assert set(inspect(connection).get_table_names()) == {
             "alembic_version",
+            "annotation_entry",
+            "collectionmember",
+            "datacollection",
             "experiment_process_run",
             "fileindb",
             "origin_imzml",

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [test]
   push:
-    branches: [test]
+    branches: [feature_new,test]
   workflow_dispatch:
 
 concurrency:
@@ -143,7 +143,7 @@ jobs:
     env:
       KAWARU_IMAGE: ${{ needs.build-image.outputs.image }}
       COMPOSE: docker compose -f docker/docker-compose.test.yml -p kawaru-test
-      MARKERS: "oss or perf_concurrent or password_reset"   # OSS 直传 + 并发登录基准 + 忘记密码重置
+      MARKERS: "oss or deletion or perf_concurrent or password_reset"   # OSS 直传 + 删除状态位流程 + 并发登录基准 + 忘记密码重置
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       OSS_ROLE_ARN: ${{ secrets.OSS_ROLE_ARN }}

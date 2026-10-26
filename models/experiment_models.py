@@ -47,10 +47,10 @@ class ExperimentPublic(SQLModel):
     """
     实验公共返回模型
     用于 API 返回，包含所有实验类型的公共字段
+    （不含内部 source_file_id：前端调用 origin 查询接口时本就持有文件 public_id）
     """
     id: int
     experiment_name: str
-    source_file_id: int
     created_at: datetime
     status: str
     error_message: str
@@ -118,3 +118,10 @@ class OriginImzMLPublic(ExperimentPublic):
 # class OriginRawPublic(ExperimentPublic):
 #     """RAW 原始数据公开模型"""
 #     raw_size: int
+
+
+# 运行时导入（不能只放 TYPE_CHECKING）：process_runs 的 Relationship 以字符串引用
+# 'ExperimentProcessRunInDB'，mapper 配置要求该类已在本进程注册；只导入本模块的独立
+# 进程（pytest 收集、脚本）若不导入 processing_models 会抛 InvalidRequestError。
+# 两侧交叉导入均放模块末尾（各自类的定义之后），任意导入顺序都不会循环导入。
+from models.processing_models import ExperimentProcessRunInDB  # noqa: E402,F401

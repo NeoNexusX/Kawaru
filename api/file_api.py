@@ -1,58 +1,65 @@
 #########################
 # File API - API入口层
 #########################
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import Depends, Form, Query, HTTPException
+from fastapi import Depends, Form, Query, HTTPException, Request
+from fastapi.responses import Response
 from sqlmodel import select, and_, or_, col
 
 from api.user_api import token_authen
-from api_helpers.file_helper import delete_file_by_storage
-from api_services.composite_service import delete_origin_files
+from api_helpers.file_helper import check_user_quota
+from api_services.composite_service import begin_file_deletion
+from api_services.relay_service import (
+    prepare_download_relay_oss,
+    resolve_relay_base_url,
+    stream_relay_file,
+)
 from api_services.file_service import (
     assert_file_owner,
-    delete_file_and_parts,
+    build_file_filters,
+    build_file_order,
     get_user_file_ids,
     link_file_to_user,
-    prepare_download_file_oss,
     prepare_download_raw_oss,
-    rollback_simple_upload,
     get_reuse_file_by_hash,
     set_file_public_service,
     unlink_user_from_file,
     update_download_stats,
-    validate_simple_upload,
-    validate_upload_request,
-    get_file_record_by_id,
-    update_file_record,
+    update_file_metadata,
+    validate_preflight_request,
+    get_file_record_by_public_id,
+    upload_oss_file,
 )
+from background.file_background import delete_objects_task
 from api_services.user_service import count_items
-from constants.file_constants import ALLOWED_STORAGE_TYPES, OSS_BUCKET_NAME, OSS_REGION_ID, SIGNED_URL_EXPIRE_SECONDS, PACKUP_CACHE_TTL_SECONDS
+from constants.file_constants import DOWNLOAD_CACHE_TTL_SECONDS
+from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from database.db import AsyncSessionDep
 from database.redis_client import redis_client
 from exceptions.common_exceptions import internal_server_error_exception
 from exceptions.file_exceptions import (
-    file_content_missing_exception,
-    file_persist_failed_exception,
+    file_not_found_exception,
     invalid_request_parameters_exception,
     permission_denied_exception,
+    storage_type_not_allowed_exception,
     user_download_limit_exception,
+    user_file_limit_exception,
     download_not_implemented_exception,
 )
 from models.file_models import (
     FileCreate,
-    FileDownloadMeta,
     FileInDB,
+    FilePatch,
     FilePublic,
     FileOssUploadResponse,
-    FileStatus,
     RawDownloadResponse,
 )
 from models.filter_models import ListDataResponse, FileFilter, PaginationMeta
 from models.link_models import UserFileLink
 from models.user_models import UserInDB
 from storage.oss.oss_storage import OssStorage
-from tools import get_logger
+from tools import PUBLIC_ID_PATTERN, PublicIdPath, get_logger
 
 logger = get_logger("api.file_api")
 
@@ -80,7 +87,7 @@ async def preflight_create_file(
     - 只有在后续上传接口中校验通过后,才会更新用户计数
     """
     # 参数验证
-    if not await validate_upload_request(async_session, current_user, file_data):
+    if not await validate_preflight_request(async_session, current_user, file_data):
         logger.error(f"validation failed user={current_user.id} filename={file_data.filename}")
         raise invalid_request_parameters_exception
 
@@ -89,8 +96,29 @@ async def preflight_create_file(
 
     reused_file = await get_reuse_file_by_hash(async_session, current_user, file_data.file_verify_code) # type: ignore
 
+    # 复用前确认 OSS 对象真实存在（对象可能已被清理任务删除）。
+    # 对象丢失时降级为正常新上传，不产生"幽灵文件"秒传。
+    # path 为哨兵时跳过检查：zip 虽已被定时清理，但 origin（imzML/ibd）仍在
+    # （COMPLETED 蕴含 origin 完整，origin 不存在随 file 记录独立删除的路径），
+    # 下载侧可从 origin 重新打包，不影响复用。
+    if (reused_file and reused_file.path != SOURCE_FILE_PATH_CLEARED
+            and not await OssStorage.check_file_exist(reused_file.path)):
+        logger.warning(
+            "reuse target object missing, fallback to new upload file_id=%s path=%s",
+            reused_file.file_id, reused_file.path,
+        )
+        reused_file = None
+
     is_reuse = False
     if reused_file:
+        # 秒传按被复用记录的实际 size 计费和核对配额（该 size 已经回调核对，可信），
+        # 不能用客户端本次声明值——否则声明 1 字节即可秒传大文件绕过配额
+        if not check_user_quota(current_user, reused_file.size):
+            logger.error(
+                "reuse quota exceeded user=%s file_id=%s size=%s",
+                current_user.id, reused_file.file_id, reused_file.size,
+            )
+            raise user_file_limit_exception
         file_record = reused_file
         is_reuse = True
     else:
@@ -102,8 +130,9 @@ async def preflight_create_file(
         async_session.add(file_record)
         await async_session.flush()  # 获取 file_id
 
-    # 统一建立用户关联
-    await link_file_to_user(async_session, current_user, file_record, file_data.size)
+    # 统一建立用户关联（秒传按记录实际 size 计费，新上传按声明值预占）
+    billed_size = file_record.size if is_reuse else file_data.size
+    await link_file_to_user(async_session, current_user, file_record, billed_size)
     await async_session.commit()
     await async_session.refresh(file_record)
     await async_session.refresh(current_user)
@@ -111,77 +140,38 @@ async def preflight_create_file(
 
     logger.info(
         f"preflight start user={current_user.id} filename={file_data.filename} file_id={file_record.file_id}\r\n"
-        f"storage={file_data.storage_type} size={file_data.size} parts={file_data.total_parts} experiment_type={file_data.experiment_type}")
+        f"storage={file_data.storage_type} size={file_data.size} experiment_type={file_data.experiment_type}")
 
     result = FilePublic.model_validate(file_record)
     result.is_reuse = is_reuse
     return result # type: ignore
 
 
-async def upload_simple_file(
+async def upload_file_api(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
-    storage_type: str = Form("oss"),
-    pre_file_id: int = Form(...),
-    filename: str | None = Form(None),
+    pre_public_id: str = Form(..., pattern=PUBLIC_ID_PATTERN),
+    filename: str = Form(...),
 ) -> FileOssUploadResponse:
     """
-    【OSS 简单上传接口】
+    【上传入口】
 
-    查询预检记录并返回限定对象路径的 STS 临时凭证，文件内容由前端
-    通过 OSS SDK 直传。必须先调用预检接口获取 pre_file_id。
+    按预检记录的 storage_type 分发到对应存储的上传实现。
+    必须先调用预检接口，以其返回的 public_id 作为 pre_public_id。
 
-    OSS 对象清理策略：
-    - 回调在路径提交后失败时，失败实验定时任务会按已落库路径尝试删除
-      source/imzML/ibd 对象。
-    - 回调在路径提交前失败或 FC 完全没有回调时，数据库中没有可靠对象键；
-      未写入 persistent=true 标签的对象由 OSS 生命周期规则回收。
+    存储类型以预检记录为准（预检时已按 ALLOWED_STORAGE_TYPES 校验），
+    不再由前端在上传时重复声明。
     """
+    pre_record = await get_file_record_by_public_id(pre_public_id, async_session)
 
-    pre_record = None
+    if pre_record.storage_type == "oss":
+        return await upload_oss_file(current_user, async_session, pre_record, filename)
 
-    try:
-        if storage_type != "oss" or storage_type not in ALLOWED_STORAGE_TYPES:
-            raise invalid_request_parameters_exception
-
-        pre_record = await get_file_record_by_id(pre_file_id, async_session)
-        if filename is None:
-            raise HTTPException(status_code=400, detail="missing filename while storage_type is oss")
-
-        logger.info(
-            "oss upload start user=%s filename=%s storage=%s",
-            current_user.id, filename, storage_type,
-        )
-        await validate_simple_upload(async_session, current_user, filename, pre_record, storage_type)
-
-        # OSS 对象键使用唯一标识 data/{file_id}/{file_verify_code}.{file_type}，
-        # 不再使用文件名；FC 解压函数从对象键解析 file_id 后回调后端
-        assert pre_record.file_id is not None and pre_record.file_verify_code is not None
-        oss_path = OssStorage.prepare_storage_path(
-            pre_record.file_id, pre_record.file_verify_code, pre_record.file_type,
-        )
-        oss_sts_token = await OssStorage.get_upload_sts_token(file_path=oss_path)
-        if not oss_sts_token or not oss_path:
-            raise internal_server_error_exception
-
-        await update_file_record(async_session, pre_record, status=FileStatus.UPLOADING)
-        await async_session.commit()
-        await async_session.refresh(pre_record)
-
-    except Exception as exc:
-        logger.error(
-            "oss upload failed user=%s filename=%s error=%s",
-            current_user.id, filename, exc,
-        )
-        await rollback_simple_upload(async_session, current_user, pre_record)
-        raise file_persist_failed_exception from exc
-
-    response = FileOssUploadResponse.model_validate(pre_record)
-    response.oss_path = oss_path
-    response.oss_sts_token = oss_sts_token
-    response.oss_bucket = OSS_BUCKET_NAME
-    response.oss_region_id = OSS_REGION_ID
-    return response
+    logger.error(
+        "unsupported storage_type user=%s file_id=%s storage_type=%s",
+        current_user.id, pre_record.file_id, pre_record.storage_type,
+    )
+    raise storage_type_not_allowed_exception
 
 
 async def list_user_files(
@@ -189,23 +179,28 @@ async def list_user_files(
     session: AsyncSessionDep,
     filters: FileFilter,
     page: int ,
-    size: int
+    size: int,
+    sort_by: str = Query("uploaded_at", pattern="^(uploaded_at|size)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ListDataResponse:
     """
     【个人文件列表查询接口】
 
-    功能:查询当前用户的文件记录，支持分页和过滤
+    功能:查询当前用户的文件记录，支持分页、过滤和排序
     返回:包含分页元数据和文件列表的JSON对象
 
     查询逻辑:
     - 从用户的 file_ids 列表中获取文件ID
     - 应用过滤器（文件名模糊匹配、实验类型等）
-    - 分页查询文件记录
+    - 按前端指定排序规则分页查询文件记录
 
     注意:
     - 只返回用户拥有的文件，包括预检记录
+    - 筛选字段支持单值或数组两种写法（旧前端单值兼容），同字段多值 OR、不同字段之间 AND
     - 支持模糊查询文件名
-    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
+    - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
+      非法取值由 FastAPI 返回 422
+    - 结果按 sort_by 方向排序，file_id DESC 兜底，保证分页稳定
     """
     try:
         # 1. 获取用户文件ID列表
@@ -224,21 +219,10 @@ async def list_user_files(
         # 2. 构建查询语句
         file_query = select(FileInDB).where(FileInDB.file_id.in_(user_file_ids))  # pylint: disable=no-member # type: ignore
 
-        # 3. 应用过滤器
-        file_query = file_query.filter(
-            and_(
-                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
-                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
-                FileInDB.organism == filters.organism if filters.organism else True,
-                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
-                FileInDB.condition == filters.condition if filters.condition else True,
-                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
-                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
-                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
-                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
-                FileInDB.solvent == filters.solvent if filters.solvent else True,
-            )
-        )
+        # 3. 应用过滤器（同一字段多值 OR、不同字段之间 AND，谓词构建见 build_file_filters）
+        filter_clauses = build_file_filters(filters)
+        if filter_clauses:
+            file_query = file_query.filter(and_(*filter_clauses))
 
         # 4. 计算总数
         total_records = await count_items(session, file_query, FileInDB)
@@ -250,7 +234,7 @@ async def list_user_files(
         offset = (page - 1) * size
         data = (await session.exec(
             file_query
-            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()).offset(offset).limit(size))).all() or [] # pylint: disable=no-member
+            .order_by(*build_file_order(sort_by, order)).offset(offset).limit(size))).all() or [] # pylint: disable=no-member
 
         # 7. 分页元数据
         pagination_meta = PaginationMeta(
@@ -276,7 +260,7 @@ async def list_user_files(
 
 
 async def delete_user_file(
-    file_id: int,
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: AsyncSessionDep,
 ) -> dict[str, Any]:
@@ -295,7 +279,7 @@ async def delete_user_file(
     
     2. 如果文件只属于当前用户:
        - 删除 origin 相关文件(如果有,如 imzML、ibd)
-       - 删除 OSS 源文件及关联的 packup 对象
+       - 删除 OSS 源文件
        - 删除文件数据库记录
        - 更新当前用户的统计信息
        - 返回状态:deleted
@@ -304,43 +288,48 @@ async def delete_user_file(
     - 通过 file_record.owners 列表判断是否有其他用户持有该文件
     - 移除当前用户后,如果 owners 为空,则执行完全删除
 
+    删除状态位流程（OSS 先删、DB 后删、失败标记）:
+    - 完全删除不等 OSS 删完，登记 DELETING 后立即返回
+    - 登记只做「置 DELETING + 摘集合成员 + 收快照」，**不动配额**；link 随 finalize
+      删行级联，storage 与 processed 配额都在那时退还——即配额要等 OSS 删完才降
+    - worker 删完全部 OSS 对象后才删 DB 行；任一失败则置 DELETE_FAILED 保留，
+      等重试（兜底任务未实现，期间管理员重复删除即为手动重试）
+    - 重复请求幂等:已处于 DELETING 的文件直接再次投递删除任务
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    # include_deleting=True: 对已处于 DELETING 的文件重复发起删除时走幂等分支而非 404
+    file_record = await get_file_record_by_public_id(public_id, session, include_deleting=True)
     if not await assert_file_owner(session, file_record, current_user):
         raise permission_denied_exception
+    file_id = file_record.file_id
 
-    # 解除用户与文件的关联(业务层)
-    has_other_owners = await unlink_user_from_file(session, current_user, file_record)
+    snapshot = await begin_file_deletion(session, file_record, current_user=current_user)
 
-    if has_other_owners:
-        # 还有其他用户持有,只解除关联
+    if snapshot is None:
+        # 还有其他用户持有 → 退化为「退出共享」：只解除当前用户的关联，文件保留。
+        # 行锁由 begin_file_deletion 持有到本事务结束，解除仍在锁保护下
+        await unlink_user_from_file(session, current_user, file_record)
         await session.commit()
         await session.refresh(current_user)
         await session.refresh(file_record)
         logger.info(f"unlinked file reference only user={current_user.id} file_id={file_id}")
-        return {"file_id": file_id, "status": "unlinked"}
+        return {"public_id": public_id, "status": "unlinked"}
 
-    # 没有其他用户持有该文件,执行完全删除
-    # 删除 origin 相关文件(如果有)
-    if file_record.experiment_type == "imzML":
-        await delete_origin_files(session, file_id, file_record.storage_type)
-        # 同步删除对应的图像目录
-        if file_record.image_path:
-            await delete_file_by_storage(file_record.image_path, file_record.storage_type)
-            logger.info("deleted image dir file_id=%s image_path=%s", file_id, file_record.image_path)
-
-    # 删除 OSS 文件和数据库记录
-    await delete_file_and_parts(session, file_id, current_user.id)
-
+    # 先 commit 再投递：顺序不能反，先投后 commit 的崩溃会留下「对象已删、行未标记」
     await session.commit()
-    await session.refresh(current_user)
-    logger.info(f"deleted file completely user={current_user.id} file_id={file_id}")
+    delete_objects_task.delay( # type: ignore
+        kind="file",
+        resource_id=file_id,
+        paths=list(snapshot.paths),
+    )
 
-    return {"file_id": file_id, "status": "deleted"}
+    await session.refresh(current_user)
+    logger.info(f"marked file for deletion user={current_user.id} file_id={file_id}")
+
+    return {"public_id": public_id, "status": "deleted"}
 
 
 async def set_file_public(
-    file_id: int,
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> dict[str, Any]:
@@ -359,9 +348,10 @@ async def set_file_public(
     - 操作是幂等的:重复调用不会产生副作用
     - 设为公开后,文件将出现在公共文件列表中
     """
-    file_record = await get_file_record_by_id(file_id, async_session)
+    file_record = await get_file_record_by_public_id(public_id, async_session)
     if not await assert_file_owner(async_session, file_record, current_user):
         raise permission_denied_exception
+    file_id = file_record.file_id
 
     await set_file_public_service(async_session, file_record)
     await async_session.commit()
@@ -369,75 +359,50 @@ async def set_file_public(
     await async_session.refresh(current_user)
 
     logger.info(f"file set to public user={current_user.id} file_id={file_id}")
-    return {"file_id": file_id, "is_public": file_record.is_public}
+    return {"public_id": public_id, "is_public": file_record.is_public}
 
 
-async def get_download_file_metadata(
-    file_id: int,
+async def patch_file_metadata(
+    public_id: PublicIdPath,
+    patch: FilePatch,
     current_user: Annotated[UserInDB, Depends(token_authen)],
-    session: AsyncSessionDep,
-) -> FileDownloadMeta:
+    async_session: AsyncSessionDep,
+) -> FilePublic:
     """
-    【文件下载元数据接口】
-    
-    功能:返回文件元数据和路径,供下载使用
-    时机:在实际下载文件之前调用
-    
+    【文件元数据修改接口】
+
+    功能:部分更新文件元数据,只改请求中出现的字段
+    可改:样本属性、spectrum_mode、storage_mode
+    禁改:is_public(走 set_public 专用接口,公开不可逆)、experiment_type、filename 及系统字段
+
+    权限:任一持有者即可修改(UserFileLink 存在记录即持有,admin 旁路),
+    与现有 assert_file_owner 语义一致——共享文件的任一持有者修改,其余持有者可见
+
     流程:
-    1. 下载次数限制检查(非管理员用户)
-    2. 准备下载文件(处理 origin 文件ZIP打包)
-    3. 更新下载统计(文件下载次数、用户下载次数)
+    1. 查询文件记录
+    2. 权限校验(持有者或管理员)
+    3. 部分更新元数据
 
-    origin 文件处理:
-    - 如果原始文件不存在,但 origin 文件(imzML、ibd)存在
-    - 动态创建 ZIP 包,包含 imzML 和 ibd 文件
-    - ZIP 包保存在临时目录,供下载使用
-    
-    下载限制:
-    - 管理员:无限制
-    - 普通用户:受用户下载配额限制
-    
     注意:
-    - 此接口不做文件归属权限验证:公开页面允许任意登录用户下载文件,因此只校验登录态(token_authen)而不校验文件归属
-    - 此接口只返回元数据,不返回文件流
-    - 实际文件下载由前端或其他接口处理
-    - 实验文件的 ZIP 包是临时生成的,需要定期清理
+    - spectrum_mode/storage_mode 非法取值由请求模型约束,直接返回 422
+    - 请求中出现 is_public 等白名单外字段会被静默忽略(不报错、不生效)
     """
+    file_record = await get_file_record_by_public_id(public_id, async_session)
+    if not await assert_file_owner(async_session, file_record, current_user):
+        raise permission_denied_exception
+    file_id = file_record.file_id
 
-    file_record = await get_file_record_by_id(file_id, session)
-    logger.debug(f"download request user={current_user.id} file_id={file_id}")
+    await update_file_metadata(async_session, file_record, patch)
+    await async_session.commit()
+    await async_session.refresh(file_record)
+    await async_session.refresh(current_user)
 
-    # 下载次数限制检查
-    if current_user.identity != "admin":
-        used = current_user.download_used or 0
-        if used >= current_user.max_download_count:
-            raise user_download_limit_exception
-
-    if file_record.storage_type != "oss":
-        raise download_not_implemented_exception
-
-    oss_download_url = await prepare_download_file_oss(session, file_record)
-
-    if oss_download_url != "<PACKING>":
-        await update_download_stats(session, file_record, current_user)
-
-    await session.commit()
-    await session.refresh(current_user)
-    await session.refresh(file_record)
-
-    if oss_download_url == "<PACKING>":
-        logger.info(f"download packup file in progress, user={current_user.id} file_id={file_id} filename={file_record.filename}")
-    else:
-        logger.info(f"download success user={current_user.id} file_id={file_id} filename={file_record.filename}")
-
-    file_download_meta = FileDownloadMeta.from_record(file_record)
-    file_download_meta.oss_download_url = oss_download_url
-
-    return file_download_meta
+    logger.info(f"patch file metadata user={current_user.id} file_id={file_id}")
+    return FilePublic.model_validate(file_record)
 
 
 async def get_raw_download_metadata(
-    file_id: int,
+    public_id: PublicIdPath,
     current_user: Annotated[UserInDB, Depends(token_authen)],
     session: AsyncSessionDep,
 ) -> RawDownloadResponse:
@@ -450,8 +415,8 @@ async def get_raw_download_metadata(
     需要登录态：校验用户下载配额，更新用户维度和文件维度下载次数。
 
     与旧下载接口的区别：
-    - 旧接口 GET /files/{id}/download：走 FC ZIP 打包，可能返回 <PACKING>
-    - 新接口 GET /files/{id}/download_raw：跳过打包，返回两个直链 URL
+    - 旧接口 GET /files/{public_id}/download：走 FC ZIP 打包，可能返回 <PACKING>
+    - 新接口 GET /files/{public_id}/download_raw：跳过打包，返回两个直链 URL
 
     流程：
     1. 下载次数限制检查（非管理员用户）
@@ -459,19 +424,30 @@ async def get_raw_download_metadata(
     3. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
     4. 更新下载统计（文件维度 + 用户维度）
 
-    Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
+    Redis 缓存：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
 
     下载限制：
     - 管理员：无限制
     - 普通用户：受用户下载配额限制
 
     注意：
+    - 权限闸：公开文件（is_public=True）允许任意登录用户下载；私有文件仅持有者或管理员可下载
+    - 私有文件对非持有者一律按 404 处理（不暴露存在性），与 download_raw_noauth 口径一致
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
     - 不写 file_record.path，不会误删永久 origin 文件
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    file_record = await get_file_record_by_public_id(public_id, session)
+    file_id = file_record.file_id
 
     logger.debug(f"raw download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸：公开文件任意登录用户可下载；私有文件仅持有者/管理员可下载
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "raw download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
 
     # 下载次数限制检查
     if current_user.identity != "admin":
@@ -505,7 +481,7 @@ async def get_raw_download_metadata(
     response = RawDownloadResponse(files=files)
 
     # 写入缓存
-    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     # 更新下载统计
     await update_download_stats(session, file_record, current_user)
@@ -522,7 +498,7 @@ async def get_raw_download_metadata(
 
 
 async def get_raw_download_metadata_noauth(
-    file_id: int,
+    public_id: PublicIdPath,
     session: AsyncSessionDep,
 ) -> RawDownloadResponse:
     """
@@ -535,23 +511,31 @@ async def get_raw_download_metadata_noauth(
     用户下载配额校验，也不更新用户维度的下载次数（仅更新文件维度统计）。
 
     与鉴权版下载接口的区别：
-    - 鉴权版 GET /files/{id}/download_raw：需要登录，校验用户配额
-    - 免登录版 GET /files/{id}/download_raw_noauth：无需登录，无限制
+    - 鉴权版 GET /files/{public_id}/download_raw：需要登录，校验用户配额
+    - 免登录版 GET /files/{public_id}/download_raw_noauth：无需登录，无限制
 
     流程：
     1. 校验文件类型（仅支持 OSS + imzML）
     2. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 各签 URL → 写入缓存
     3. 更新下载统计（仅文件维度）
 
-    Redis 缓存：TTL 取 PACKUP_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
+    Redis 缓存：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，避免重复点击反复调 OSS 签名。
 
     注意：
     - 不走 ZIP 打包，不产生中间产物，与被清理任务无关
     - 不写 file_record.path，不会误删永久 origin 文件
     """
-    file_record = await get_file_record_by_id(file_id, session)
+    file_record = await get_file_record_by_public_id(public_id, session)
+    file_id = file_record.file_id
 
     logger.debug(f"raw download noauth request file_id={file_id}")
+
+    # 免登录下载仅服务公开文件（404 不暴露存在性）。
+    # 该接口是集合公开页下载的免登录入口，任意 public_id 均可触达且无登录态，
+    # 必须以 is_public 为闸——否则私有文件可被匿名直链遍历下载
+    if not file_record.is_public:
+        logger.warning(f"raw download noauth denied, file not public file_id={file_id}")
+        raise file_not_found_exception
 
     # 只支持 OSS + imzML
     if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
@@ -578,7 +562,7 @@ async def get_raw_download_metadata_noauth(
     response = RawDownloadResponse(files=files)
 
     # 写入缓存
-    await redis_client.set(cache_key, response.model_dump_json(), ex=PACKUP_CACHE_TTL_SECONDS)
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
 
     # 更新下载统计
     await update_download_stats(session, file_record)
@@ -593,11 +577,134 @@ async def get_raw_download_metadata_noauth(
     return response
 
 
+async def get_relay_download_metadata(
+    public_id: PublicIdPath,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
+    session: AsyncSessionDep,
+    request: Request,
+) -> RawDownloadResponse:
+    """【中转下载元数据接口（需登录）】
+
+    功能：不打包不签名，返回两个指向后端的中转 URL（内嵌短时 token）。
+    前端拿到后经服务器流式透传下载，OSS→服务器 走内网免费，免去 OSS 公网下行流量。
+    时机：公开文件分享或本人下载场景调用。
+
+    与 raw 直链版的区别：
+    - raw：签 OSS 预签名 URL，前端直连 OSS
+    - relay：拼后端中转 URL，服务器流式透传（本次新增）
+
+    流程：
+    1. 登录闸（未带/无效/过期 token 一律 401）
+    2. 权限闸：公开文件任意登录用户可下载；私有文件仅持有者或管理员
+       （非持有者一律按 404 处理，不暴露存在性）
+    3. 下载次数限制检查（非管理员用户）
+    4. 校验文件类型（仅支持 OSS + imzML）
+    5. Redis 缓存命中 → 直接返回；未命中 → 校验 origin 就绪 → 拼两个中转 URL → 写缓存
+    6. 更新下载统计（文件维度 + 用户维度）
+
+    注意：
+    - 路径参数为 public_id（对外统一标识），与 raw 直链版一致；中转 URL 与
+      token 也一并绑定 public_id，内部 file_id 不再出现在任何对外出参里
+    - 中转 URL 内嵌 token，下载端点 /relay/download 无需再携带登录态
+    - Redis 缓存与 raw 直链同构：TTL 取 DOWNLOAD_CACHE_TTL_SECONDS，恒早于 token 有效期
+      （RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS），缓存里的 URL 不会指向已失效的 token
+    - 缓存值内嵌 base_url：生产配置了 public_base_url 时无影响；回退模式（public_base_url 为空）
+      下首次请求的 host 会被固化进缓存
+    - 不写 file_record.path，不产生中间产物，与被清理任务无关
+    """
+    file_record = await get_file_record_by_public_id(public_id, session)
+    file_id = file_record.file_id
+
+    logger.debug(f"relay download request user={current_user.id} file_id={file_id}")
+
+    # 权限闸：公开文件任意登录用户可下载；私有文件仅持有者/管理员可下载，
+    # 非持有者一律按 404 处理（不暴露存在性），与 download_raw 口径一致
+    if not file_record.is_public and not await assert_file_owner(session, file_record, current_user):
+        logger.warning(
+            "relay download denied, file not public and not owner user=%s file_id=%s",
+            current_user.id, file_id,
+        )
+        raise file_not_found_exception
+
+    # 下载次数限制检查
+    if current_user.identity != "admin":
+        used = current_user.download_used or 0
+        if used >= current_user.max_download_count:
+            raise user_download_limit_exception
+
+    if file_record.storage_type != "oss" or file_record.experiment_type != "imzML":
+        raise download_not_implemented_exception
+
+    # Redis 缓存命中 → 直接返回（缓存命中仍然计一次下载，与 raw 直链语义一致）
+    cache_key = f"raw_dl_relay:{file_id}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        response = RawDownloadResponse.model_validate_json(cached)
+        await update_download_stats(session, file_record, current_user)
+        await session.commit()
+        await session.refresh(file_record)
+        await session.refresh(current_user)
+        logger.info(
+            f"relay download (cached) user={current_user.id} file_id={file_id} filename={file_record.filename}"
+        )
+        return response
+
+    files = await prepare_download_relay_oss(
+        session, file_record, base_url=resolve_relay_base_url(str(request.base_url))
+    )
+    response = RawDownloadResponse(files=files)
+
+    # 写缓存：TTL 与 raw 直链同源，恒早于 token 过期
+    await redis_client.set(cache_key, response.model_dump_json(), ex=DOWNLOAD_CACHE_TTL_SECONDS)
+
+    # 更新下载统计（文件维度 + 用户维度）
+    await update_download_stats(session, file_record, current_user)
+    await session.commit()
+    await session.refresh(file_record)
+    await session.refresh(current_user)
+
+    logger.info(
+        f"relay download success user={current_user.id} file_id={file_id} filename={file_record.filename}"
+    )
+
+    return response
+
+
+async def relay_download_file(
+    public_id: PublicIdPath,
+    async_session: AsyncSessionDep,
+    request: Request,
+    part: Literal["imzml", "ibd"] = Query(...),
+    token: str = Query(...),
+) -> Response:
+    """【中转流式透传下载】
+
+    功能：验 token → 解析 origin 真实 OSS key → 内网拉取 → 边拉边发（不落盘）。
+    时机：前端/下载器拿到中转 URL 后直接 GET 本接口。
+
+    注意：
+    - 返回的是文件字节流，不是 JSON
+    - Range 头原样透传给 OSS，支持断点续传与多线程下载器
+    - HEAD 只返回头部信息（不拉正文），见 relay_service.stream_oss_object 的 HEAD 分支
+    - token 由 download_relay* 接口签发，绑定 public_id + part
+    """
+    return await stream_relay_file(
+        async_session,
+        public_id,
+        part,
+        token,
+        range_header=request.headers.get("range"),
+        method=request.method,
+    )
+
+
 async def get_file_list(
     filters: FileFilter,
     async_session: AsyncSessionDep,
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
+    sort_by: str = Query("uploaded_at", pattern="^(uploaded_at|size)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ListDataResponse:
     """
     【公共文件列表接口】
@@ -606,42 +713,39 @@ async def get_file_list(
     时机:在前端查询文件列表时调用
 
     流程:
-    1. 按上传时间倒序分页查询文件列表(根据查询参数)
+    1. 按前端指定排序规则分页查询文件列表(根据查询参数)
     2. 返回文件列表和分页元数据
 
     注意:
     - 分页参数 page≥1、1≤size≤100，越界由 FastAPI 返回 422
-    - 结果按 uploaded_at DESC, file_id DESC 排序，保证分页稳定
+    - 排序规则由前端指定:sort_by（uploaded_at|size）+ order（asc|desc），
+      非法取值由 FastAPI 返回 422
+    - 结果按 sort_by 方向排序，file_id DESC 兜底，保证分页稳定
+    - 筛选字段支持单值或数组两种写法（旧前端单值兼容），同字段多值 OR、不同字段之间 AND
     - 查询参数(filters)默认值为空字典
 
     """
     try:
-        # 首先针对username模糊匹配数据库中的用户id列表
+        # username 过滤（多值为 OR 连接的模糊匹配）：先查匹配的用户 id，再按关联表限定
         user_ids = []
         if filters.username:
-            user_query = select(UserInDB.id).where(col(UserInDB.username).like(f"%{filters.username}%"))
+            user_query = select(UserInDB.id).where(
+                or_(*[col(UserInDB.username).like(f"%{username}%") for username in filters.username]) # pylint: disable=no-member
+            )
             user_ids = (await async_session.exec(user_query)).all() or []
 
         # 构建select语句
         file_query = select(FileInDB)
 
-        # 如果有username过滤,则内连接UserFileLink表,确保关联用户的文件会被列出来
-        if user_ids:
+        # 只要有username过滤就内连接UserFileLink表（无匹配用户时由下方条件自然筛空）
+        if filters.username:
             file_query = file_query.join(UserFileLink, FileInDB.file_id == UserFileLink.file_id) # type:ignore
 
-        # 构建其余的筛选条件
+        # 构建其余的筛选条件（同一字段多值 OR、不同字段之间 AND）
+        filter_clauses = build_file_filters(filters)
         file_query = file_query.filter(
             and_(
-                col(FileInDB.filename).like(f"%{filters.filename}%") if filters.filename else True, # pylint: disable=no-member
-                FileInDB.experiment_type == filters.experiment_type if filters.experiment_type else True,
-                FileInDB.organism == filters.organism if filters.organism else True,
-                FileInDB.organism_part == filters.organism_part if filters.organism_part else True,
-                FileInDB.condition == filters.condition if filters.condition else True,
-                FileInDB.sample_stabilization == filters.sample_stabilization if filters.sample_stabilization else True,
-                FileInDB.tissue_modification == filters.tissue_modification if filters.tissue_modification else True,
-                FileInDB.maldi_matrix == filters.maldi_matrix if filters.maldi_matrix else True,
-                FileInDB.maldi_matrix_application == filters.maldi_matrix_application if filters.maldi_matrix_application else True,
-                FileInDB.solvent == filters.solvent if filters.solvent else True,
+                *filter_clauses,
                 FileInDB.is_public == True, # noqa: E712 # pylint: disable=singleton-comparison
 
                 # 用户关联条件：没有username过滤或user_id在匹配列表中
@@ -663,7 +767,7 @@ async def get_file_list(
 
         data = (await async_session.exec(
             file_query
-            .order_by(col(FileInDB.uploaded_at).desc(), col(FileInDB.file_id).desc()) # pylint: disable=no-member
+            .order_by(*build_file_order(sort_by, order)) # pylint: disable=no-member
             .offset(offset)
             .limit(size)
         )).all() or None
@@ -690,21 +794,32 @@ async def get_file_list(
 
 
 async def get_file_metadata(
-    file_id: int,
+    public_id: PublicIdPath,
+    current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> FilePublic:
     """
     【文件元数据查询接口】
 
-    功能:根据文件ID查询文件的元数据信息
-    时机:在前端需要查看单个文件详情时调用
+    功能:根据 public_id 查询文件的元数据信息
+    时机:在前端需要查看单个文件详情时调用（含上传后轮询文件状态、分享页展示）
 
     流程:
-    1. 根据 file_id 查询文件记录
-    2. 返回文件元数据
+    1. 鉴权闸:public_id 相当于分享链接，必须登录，匿名一律 401
+    2. 根据 public_id 查询文件记录，返回元数据
+    3. 不区分公开/私有与持有关系——只要不是匿名，任意登录用户可看（含私有文件）
+
+    注意:
+    - 需登录:未带/无效/过期 token 一律返回 401
+    - 删除流程中的文件（DELETING/DELETE_FAILED）仍按 404 处理
+      （get_file_record_by_public_id 默认口径）
+    - 下载接口仍保留 is_public/持有者闸，此处放开仅针对元数据可见性
     """
     try:
-        file_record = await get_file_record_by_id(file_id, async_session)
+        file_record = await get_file_record_by_public_id(public_id, async_session)
+
+        logger.debug(f"metadata request user={current_user.id} file_id={file_record.file_id}")
+
         return FilePublic(**file_record.model_dump())
 
     except HTTPException:
@@ -714,32 +829,15 @@ async def get_file_metadata(
         raise internal_server_error_exception from e
 
 
-async def oss_upload_file(
-    current_user: Annotated[UserInDB, Depends(token_authen)],
-    async_session: AsyncSessionDep,
-    pre_file_id: int = Form(...),
-    filename: str = Form(...),
-) -> FileOssUploadResponse:
-    """OSS上传文件，底层调用upload_simple_file接口提高复用性"""
-    storage_type = "oss"
-    return await upload_simple_file(
-        current_user,
-        async_session,
-        storage_type,
-        pre_file_id,
-        filename=filename,
-    )
-
-
 # 依赖注入类型别名
 DeleteFileDep = Annotated[dict[str, Any], Depends(delete_user_file)]
-SimpleUploadDep = Annotated[FileOssUploadResponse, Depends(upload_simple_file)]
 ListFilesDep = Annotated[ListDataResponse, Depends(list_user_files)]
-DownloadFileDep = Annotated[FileDownloadMeta, Depends(get_download_file_metadata)]
 RawDownloadDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata)]
 RawDownloadNoauthDep = Annotated[RawDownloadResponse, Depends(get_raw_download_metadata_noauth)]
+RelayDownloadDep = Annotated[RawDownloadResponse, Depends(get_relay_download_metadata)]
 PreflightDep = Annotated[FilePublic, Depends(preflight_create_file)]
 ListPublicFilesDep = Annotated[ListDataResponse, Depends(get_file_list)]
-OssUploadDep = Annotated[FileOssUploadResponse, Depends(oss_upload_file)]
+UploadFileDep = Annotated[FileOssUploadResponse, Depends(upload_file_api)]
 FileMetadataDep = Annotated[FilePublic, Depends(get_file_metadata)]
 SetFilePublicDep = Annotated[dict[str, Any], Depends(set_file_public)]
+PatchFileMetadataDep = Annotated[FilePublic, Depends(patch_file_metadata)]

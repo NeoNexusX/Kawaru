@@ -20,7 +20,8 @@ email:
   smtp_username: 1513401658@qq.com
   smtp_from_email: 1513401658@qq.com
   smtp_server: smtp.qq.com
-  totp_window: 30
+  reset_password_max_attempts: 5
+  email_send_cooldown_seconds: 60
 
 
 database:
@@ -51,10 +52,8 @@ celery:
   worker_log_file: "kawaru_logs/celery.log"
   worker_disable_rate_limits: true
   worker_pool: "threads"
-  large_file_poll_time: 1000
 
 storage:
-  max_chunks_per_upload: 40
   allowed_storage_types: ["oss"]
   allowed_file_types: ["zip"]
   allowed_experiment_types: ["imzML"]
@@ -75,12 +74,15 @@ oss:
   oss_upload_sts_token_expire_minutes: 15
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
-  oss_packup_zip_storage_root: packup/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   oss_default_timeout_seconds: 20
+  oss_delete_object_timeout_seconds: 30
+  oss_delete_prefix_timeout_seconds: 300
+  # 中转下载（relay）取源 endpoint：GitHub 托管 runner 不在阿里云内网，
+  # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
+  oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
   # 以下 FC 函数端点测试用不到，留空（check_oss_config 不校验它们）
-  fc_packup_endpoint: ""
   fc_algorithm_endpoint: ""
   fc_tic_endpoint: ""
   fc_feature_endpoint: ""

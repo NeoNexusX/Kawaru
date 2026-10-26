@@ -1,4 +1,3 @@
-import os
 from typing import Annotated, Any
 
 from fastapi import HTTPException, Depends
@@ -10,10 +9,10 @@ from boot.config import get_config
 from models.email_models import (
 EmailConfirmResponseBase,
 EmailSMTPRequest,
-TOTP, EmailPurpose)
+EmailPurpose)
 from database.db import AsyncSessionDep
 from api_helpers.email_template import render_email
-from api_services.user_service import get_user_by_email, generate_and_store_reset_code, enforce_send_cooldown
+from api_services.user_service import get_user_by_email, generate_email_code, enforce_send_cooldown
 from background.api_background import send_smtp_email_task
 from celery_runtime.result import wait_for_result
 from exceptions.user_exceptions import email_already_exists_exception
@@ -26,11 +25,6 @@ email_config = config.email
 email_send_exception = HTTPException(
     status_code=status.HTTP_400_BAD_REQUEST,
     detail=format_exception_detail("Send Failed error by server reason")
-)
-
-email_server_exception = HTTPException(
-    status_code=status.HTTP_502_BAD_GATEWAY,
-    detail=format_exception_detail("Upstream service error")
 )
 
 # Using SMTP to send an email verify code message
@@ -46,8 +40,7 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
         if existing_user:
             raise email_already_exists_exception
 
-    # 密码重置：码与邮箱绑定存入 Redis。
-    # 邮箱不存在或账号未激活时静默返回成功（不发码）：既防邮箱枚举，又禁止未激活账号重置。
+    # 密码重置：邮箱不存在或账号未激活时静默返回成功（不发码）：既防邮箱枚举，又禁止未激活账号重置。
     username: str | None = None
     if email_info.purpose == EmailPurpose.RESET_PASSWORD:
         existing_user = await get_user_by_email(email_info.email, db)
@@ -57,11 +50,10 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
                 send_time=utc_time(),
                 purpose=email_info.purpose,
             )
-        code = await generate_and_store_reset_code(email_info.email)
         username = existing_user.username  # 正文提示用户名，便于忘记用户名的用户重置
-    else:
-        # 注册 / 更新邮箱：沿用全局 TOTP 时间码
-        code = TOTP.now()
+
+    # 注册 / 更新邮箱 / 密码重置统一：验证码与用途 + 邮箱绑定存入 Redis，单次有效
+    code = await generate_email_code(email_info.purpose, email_info.email)
 
     # 按用途渲染主题与正文
     content = render_email(email_info.purpose, code, username)
@@ -70,7 +62,6 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
     request_data = EmailSMTPRequest.model_validate({
         **email_info.model_dump(),
         "smtp_username": email_config.smtp_username,
-        "smtp_passwd": os.getenv('SMTP_PASSWORD'),
         "smtp_from_email": email_config.smtp_from_email,
         "smtp_server": email_config.smtp_server,
         "smtp_port": int(email_config.smtp_port),
@@ -82,6 +73,7 @@ async def send_smtp_email(email_info: EmailConfirmResponseBase, db: AsyncSession
     response: dict[str, Any] | None = await wait_for_result(task_result, poll_interval=1, timeout=10)
     if not response or not response.get("success"):
         raise email_send_exception
-    return EmailConfirmResponseBase.model_validate(response["data"])
+    # 任务只返回发送状态；响应直接用请求参数（含 email/send_time/purpose），不再经任务回传
+    return email_info
 
 EmailConfirmSMTPDep = Annotated[EmailConfirmResponseBase, Depends(send_smtp_email)]

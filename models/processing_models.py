@@ -27,6 +27,9 @@ class ProcessingStatus(str, Enum):
     PROCESSING = "processing"  # worker 正在执行
     COMPLETED = "completed"    # 全部算法执行成功
     FAILED = "failed"          # 执行失败
+    # 删除流程状态位（OSS 先删、DB 后删、失败标记）
+    DELETING = "deleting"            # 删除已登记：OSS 清理进行中，读侧拒绝、回调丢弃
+    DELETE_FAILED = "delete_failed"  # OSS 清理失败：行保留作为任务记录，等兜底重投
 
 
 #########################
@@ -106,6 +109,8 @@ class ExperimentProcessRunBase(SQLModel):
     error_message: str | None = Field(default=None, max_length=1024, description="错误信息")
     finished_at: datetime | None = Field(default=None, description="结束时间")
     clustering_status: str | None = Field(default=None, max_length=32, description="聚类状态: processing/completed/failed，None 表示未执行")
+    clustering_error_message: str | None = Field(default=None, max_length=1024, description="聚类错误信息(失败时)")
+    clustering_started_at: datetime | None = Field(default=None, description="聚类开始时间，超时巡检判定僵尸聚类 run 的依据")
 
 
 class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
@@ -145,6 +150,11 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
     )
 
     created_at: datetime = Field(default_factory=utc_time, description="创建时间")
+    # 删除登记时间：置 DELETING 时写入，兜底扫描据此判定「停留过久的 DELETING」
+    delete_marked_at: datetime | None = Field(
+        default=None,
+        description="删除登记时间（DELETING/DELETE_FAILED 状态的置位时间）",
+    )
 
     # 输出路径和大小仅 DB 层存储，不对外暴露
     # 聚类结果直接写回该 zarr 内部，不单独记录路径
@@ -172,25 +182,49 @@ class ExperimentProcessRunInDB(ExperimentProcessRunBase, table=True):
 class ExperimentProcessRunCreate(SQLModel):
     """前端提交算法处理请求
 
-    使用 file_id 而非 experiment_id 的原因：
-    - 前端上传文件后已持有 file_id，无需额外查询 experiment
-    - fileindb.file_id → origin_imzml.source_file_id 是 1:1（UNIQUE），
-      后端通过 file_id 即可唯一确定 experiment
+    使用文件 public_id 而非 experiment_id 的原因：
+    - 前端上传文件后已持有 public_id，无需额外查询 experiment
+    - fileindb → origin_imzml.source_file_id 是 1:1（UNIQUE），
+      后端按 public_id 查到文件后即可唯一确定 experiment
     """
-    file_id: int
+    file_public_id: str
     algorithms: ProcessingAlgorithmsConfig
 
 
 class ExperimentProcessRunRawConvert(SQLModel):
-    """前端提交 raw_convert 直转请求（无算法处理，仅需 file_id）"""
-    file_id: int
+    """前端提交 raw_convert 直转请求（无算法处理，仅需文件 public_id）"""
+    file_public_id: str
 
 
 class ExperimentProcessRunPublic(ExperimentProcessRunBase):
-    """API 返回模型"""
+    """API 返回模型
+
+    源文件以 public_id 对外标识（source_file_public_id），不返回内部 source_file_id；
+    该字段不落库，由查询时关联 fileindb.public_id 得到。
+    """
+    id: int
+    experiment_id: int
+    source_file_public_id: str
+    user_id: int
+    created_at: datetime
+    filename: str = ""
+
+
+class ExperimentProcessRunCallbackResponse(ExperimentProcessRunBase):
+    """FC 回调（algorithm_callback / clustering_callback）的响应模型
+
+    与前端返回模型 ExperimentProcessRunPublic 分开：回调是后端与 FC 之间的内部接口，
+    FC 只判断 HTTP 状态码、不读取响应内容。回调直接返回数据库记录，没有前端专用的
+    source_file_public_id / filename，若共用前端模型会因必填字段缺失导致响应校验失败（500）。
+    """
     id: int
     experiment_id: int
     source_file_id: int
     user_id: int
     created_at: datetime
-    filename: str = ""
+
+
+# 运行时导入（不能只放 TYPE_CHECKING）：experiment 反向 Relationship 以字符串引用
+# 'OriginImzMLInDB'，mapper 配置要求该类已在本进程注册（与 experiment_models 末尾的
+# 导入互为闭环，任意导入顺序都不会循环导入）。
+from models.experiment_models import OriginImzMLInDB  # noqa: E402,F401
