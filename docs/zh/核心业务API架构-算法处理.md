@@ -56,13 +56,13 @@ flowchart LR
 
 ## 4. 任务类型与流程
 
-算法与直转创建 run 后投递任务；聚类复用已完成的 run，单独更新 clustering_status。三者均由 Worker 触发 FC，再由回调更新结果：
+算法与直转创建 run 后投递任务；聚类复用已完成的 run，单独更新 clustering_status。三者均由 Worker 经统一调度层提交 E-HPC 容器作业，再由回调更新结果：
 
-| 任务类型 | 对应 FC | 输入 | 特点 |
+| 任务类型 | 对应 EHPC 任务 | 输入 | 特点 |
 |---|---|---|---|
-| 算法处理 | fc-algorithm | imzML + 算法配置 | 可选执行峰检测、归一化、峰对齐、降噪、基线校正，至少选一项 |
-| raw-convert 直转 | fc-raw-convert | imzML | 无算法；同文件已有完成结果时直接复用（类似上传秒传） |
-| 聚类分析 | fc-clustering | 已完成的 zarr | 用户手动触发，UMAP/KMeans 结果写回源 zarr，不产生新目录 |
+| 算法处理 | algorithm | imzML + 算法配置 | 可选执行峰检测、归一化、峰对齐、降噪、基线校正，至少选一项 |
+| raw-convert 直转 | raw_convert | imzML | 无算法；同文件已有完成结果时直接复用（类似上传秒传） |
+| 聚类分析 | clustering | 已完成的 zarr | 用户手动触发，UMAP/KMeans 结果写回源 zarr，不产生新目录 |
 
 ```mermaid
 sequenceDiagram

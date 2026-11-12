@@ -124,22 +124,25 @@ def notify_fc_trigger_failed(
     file_id: int | None = None,
 ) -> bool:
     """
-    Alert admins that an FC trigger failed (invoke_fc returned None): the run
-    stays PROCESSING until cleanup_stale_process_runs marks it FAILED.
+    Alert admins that a compute trigger failed (EHPC CreateJob; reserved FC invoke):
+    run-scoped tasks stay PROCESSING until cleanup_stale_process_runs marks them
+    FAILED; preview failures (file_id) only leave the preview images missing —
+    the file itself is unaffected and the frontend placeholder covers it.
 
     触发任务无自动重试（一次用户操作至多一次投递），无需跃迁去重。
     """
     app_name = get_config().server.name
     target = f"run_id={run_id}" if run_id is not None else f"file_id={file_id}"
-    subject = f"[{app_name}] FC trigger failed alert - {fc_name} ({target})"
+    subject = f"[{app_name}] compute trigger failed alert - {fc_name} ({target})"
     text_content = (
         f"{app_name} admin alert\r\n\r\n"
-        f"FC function trigger failed (invoke_fc returned None):\r\n"
-        f"  FC function: {fc_name}\r\n"
+        f"Compute task trigger failed:\r\n"
+        f"  Task: {fc_name}\r\n"
         f"  Target: {target}\r\n\r\n"
-        "Impact: the run stays PROCESSING until cleanup_stale_process_runs marks "
-        "it FAILED.\r\n"
-        "Check the FC endpoint config, token env vars and function logs "
-        "(background/processing_background).\r\n"
+        "Impact: run-scoped tasks stay PROCESSING until cleanup_stale_process_runs "
+        "marks them FAILED; preview failures leave the images missing "
+        "(file itself unaffected).\r\n"
+        "Check the trigger config, credentials and function/job logs "
+        "(background/processing_background, tools/ehpc_client).\r\n"
     )
     return _send_admin_alert(subject, text_content)

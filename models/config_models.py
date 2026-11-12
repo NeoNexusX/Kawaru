@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ServerSettings(BaseModel):
@@ -144,16 +144,6 @@ class OSSSettings(BaseModel):
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间，单位秒")
     oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间，单位秒")
-    fc_algorithm_endpoint: str | None = Field(default=None, description="FC算法处理函数HTTP触发地址")
-    fc_algorithm_timeout_seconds: int | None = Field(default=60, description="FC算法处理调用超时时间，单位秒")
-    fc_tic_endpoint: str | None = Field(default=None, description="FC TIC 处理函数HTTP触发地址")
-    fc_tic_timeout_seconds: int | None = Field(default=60, description="FC TIC 处理调用超时时间，单位秒")
-    fc_feature_endpoint: str | None = Field(default=None, description="FC UMAP预览图函数HTTP触发地址")
-    fc_feature_timeout_seconds: int | None = Field(default=60, description="FC UMAP预览图调用超时时间，单位秒")
-    fc_raw_convert_endpoint: str | None = Field(default=None, description="FC raw_convert 直转函数HTTP触发地址")
-    fc_raw_convert_timeout_seconds: int | None = Field(default=120, description="FC raw_convert 调用超时时间，单位秒")
-    fc_clustering_endpoint: str | None = Field(default=None, description="FC 聚类分析函数HTTP触发地址")
-    fc_clustering_timeout_seconds: int | None = Field(default=180, description="FC 聚类分析调用超时时间，单位秒")
     # 中转下载（relay）专用内网 endpoint：仅当服务器与 OSS 同地域时可达，OSS→服务器这跳免费。
     # 未配置时中转下载不可用（create_internal_oss_client 返回 None，relay 接口报错）。
     oss_internal_endpoint: str | None = Field(default=None, description="OSS 内网 endpoint（中转下载专用，如 https://oss-cn-hangzhou-internal.aliyuncs.com）")
@@ -232,6 +222,71 @@ class CORSSettings(BaseModel):
     expose_headers: list[str]
 
 
+class EhpcResourceTier(BaseModel):
+    """按输入大小选档的资源档位。"""
+    model_config = ConfigDict(extra="forbid")
+    max_input_gib: float = Field(gt=0, description="输入大小上限（GiB）；超过最后一档时沿用最后一档")
+    cores: int = Field(ge=1, description="该档核数")
+    memory_gib: int = Field(ge=1, description="该档内存（GiB）")
+    system_disk_gib: int = Field(ge=10, description="该档系统盘（GiB）；10 GiB 为实测可行的下限")
+    instance_types: list[str] = Field(default_factory=list, description="该档候选实例规格，最多 5 个；留空由 INSTANT 自选")
+
+    @field_validator("instance_types")
+    @classmethod
+    def _validate_instance_types(cls, value: list[str]) -> list[str]:
+        if len(value) > 5:
+            raise ValueError("instance_types allows at most 5 entries")
+        return value
+
+
+class EhpcResourceSettings(BaseModel):
+    """E-HPC INSTANT 作业资源档位（所有任务共用）；只按 tiers 选档，无固定值兜底。"""
+    model_config = ConfigDict(extra="forbid")
+    fallback_any_type: bool = Field(default=True, description="规格售罄时去掉 instance_types 重提一次")
+    tiers: list[EhpcResourceTier] = Field(min_length=1, description="按输入大小升序的档位，至少一档；input_bytes 缺失时用最后一档（最大资源，保守）")
+
+
+class EhpcCallbackSettings(BaseModel):
+    """单个 mode 的回调配置（如 preview 的 feature/tic 各一组）。"""
+    model_config = ConfigDict(extra="forbid")
+    env: str = Field(description="回调 URL 的环境变量名")
+    path: str = Field(description="回调路由")
+
+
+class EhpcTaskSettings(BaseModel):
+    """单个 EHPC 任务的入口与回调；资源统一用 ehpc.resources（所有任务共用一套档位）。"""
+    model_config = ConfigDict(extra="forbid")
+    command: list[str] = Field(min_length=1, description="容器启动命令，如 python /app/algorithm_processing.py")
+    results_prefix: str = Field(description="manifest 归档前缀，如 hpc-algorithm / hpc-clustering")
+    callback_env: str | None = Field(default=None, description="回调 URL 的环境变量名（单回调任务）")
+    callback_path: str | None = Field(default=None, description="回调路由（单回调任务）")
+    callbacks: dict[str, EhpcCallbackSettings] = Field(
+        default_factory=dict, description="按 mode 区分的回调（如 preview 的 feature/tic）",
+    )
+
+    @model_validator(mode="after")
+    def _validate_callbacks(self) -> "EhpcTaskSettings":
+        if not self.callbacks and not (self.callback_env and self.callback_path):
+            raise ValueError("either callback_env/callback_path or callbacks is required")
+        return self
+
+
+class EhpcSettings(BaseModel):
+    """E-HPC INSTANT 配置。"""
+    model_config = ConfigDict(extra="forbid")
+    region: str = Field(default="cn-hangzhou", description="INSTANT/OSS/VPC 所在地域")
+    image: str = Field(default="", description="任务镜像地址（所有任务共用，建议固定 digest）")
+    private_registry: bool = Field(default=True, description="镜像仓库是否需要认证")
+    vswitch_id: str = Field(default="", description="VPC 交换机 ID")
+    security_group_id: str = Field(default="", description="作业安全组 ID")
+    enable_external_ip: bool = Field(default=True, description="作业是否分配公网 IP（拉香港镜像/回调需要）")
+    callback_enabled: bool = Field(default=True, description="是否向容器下发回调环境变量")
+    callback_base_url: str | None = Field(default=None, description="回调地址前缀；留空用 server.public_base_url，按任务补 callback_path")
+    sts_duration_seconds: int = Field(default=10800, ge=900, le=43200, description="STS 有效期，需不超过角色最大会话时长")
+    resources: EhpcResourceSettings = Field(default_factory=EhpcResourceSettings, description="所有任务共用的资源与档位") # type: ignore
+    tasks: dict[str, EhpcTaskSettings] = Field(default_factory=dict, description="按任务名分组的入口命令与回调")
+
+
 class Config(BaseModel):
     """全局配置模型"""
     model_config = ConfigDict(extra="forbid")
@@ -242,6 +297,7 @@ class Config(BaseModel):
     celery: CelerySettings
     storage: StorageSettings
     oss: OSSSettings
+    ehpc: EhpcSettings | None = None
     user: UserSettings
     token: TokenSettings
     admin_info: AdminInfo

@@ -497,7 +497,7 @@ async def cleanup_stale_process_runs(
     """
     清理僵尸算法/转换/聚类 run：将超过 timeout 仍为 processing 的记录标记为 failed。
 
-    FC 函数异步执行后通过回调更新状态，若 FC 超时/崩溃/回调丢失，
+    计算任务异步执行后通过回调更新状态，若作业超时/崩溃/回调丢失，
     run 会永久卡在 processing。此任务定期扫描并标记为 failed。
 
     两个阶段独立判定超时，互不覆盖对方的错误字段：
@@ -520,7 +520,7 @@ async def cleanup_stale_process_runs(
 
         for run_record in records:
             run_record.status = ProcessingStatus.FAILED
-            run_record.error_message = "FC task timeout: no callback received"
+            run_record.error_message = "E-HPC task timeout: no callback received"
             run_record.finished_at = now
             session.add(run_record)
             total_cleaned += 1
@@ -531,7 +531,7 @@ async def cleanup_stale_process_runs(
 
         # 阶段二：聚类超时（处理阶段已 COMPLETED 的 run 才可能处于聚类 processing，
         # 只置 clustering_status/clustering_error_message，不动处理阶段字段；
-        # 若 FC 回调迟到，真实回调会无条件覆盖此处标记）
+        # 若容器回调迟到，真实回调会无条件覆盖此处标记）
         clustering_cutoff_time = now - timedelta(minutes=clustering_timeout_minutes)
         clustering_records = (await session.exec(
             select(ExperimentProcessRunInDB).where(
@@ -541,7 +541,7 @@ async def cleanup_stale_process_runs(
 
         for run_record in clustering_records:
             run_record.clustering_status = ProcessingStatus.FAILED
-            run_record.clustering_error_message = "FC clustering task timeout: no callback received"
+            run_record.clustering_error_message = "E-HPC clustering task timeout: no callback received"
             session.add(run_record)
             total_cleaned += 1
             logger.info(

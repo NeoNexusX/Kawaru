@@ -39,7 +39,8 @@ from models.processing_models import (
 )
 from storage.oss.oss_storage import OssStorage
 
-from background.processing_background import trigger_fc_algorithm_task, trigger_fc_raw_convert_task, trigger_fc_clustering_task
+from background.processing_background import dispatch
+from models.task_models import AlgorithmParams, ClusteringParams, RawConvertParams
 from background.file_background import delete_objects_task
 from tools.logger import get_logger
 
@@ -51,7 +52,7 @@ async def create_algorithm_task(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunPublic:
-    """创建算法处理任务 — 写 DB + 异步触发 FC"""
+    """创建算法处理任务 — 写 DB + 异步提交 E-HPC 作业"""
     run_record = None
     try:
         # 1. 纯校验（配额、算法配置）
@@ -82,14 +83,15 @@ async def create_algorithm_task(
         await async_session.refresh(run_record)
         await async_session.refresh(origin)
 
-        # 异步触发 FC 函数执行算法处理
-        trigger_fc_algorithm_task.delay( # type: ignore
-            run_id=run_record.id,
+        # 异步提交算法处理作业（API 层构造并校验载荷，Worker 提交 E-HPC）
+        dispatch(AlgorithmParams(
+            run_id=run_record.id, # type: ignore
             imzml_path=origin.imzml_path,
-            config_json=run_record.params_json,
+            config_json=run_record.params_json, #type: ignore
             output_path=oss_output_path,
             metadata=metadata,
-        )
+            input_bytes=origin.imzml_size + origin.ibd_size,
+        ))
 
         return ExperimentProcessRunPublic(
             **run_record.model_dump(), filename=filename, source_file_public_id=file_public_id,
@@ -108,7 +110,7 @@ async def create_raw_convert_task(
     current_user: Annotated[UserInDB, Depends(token_authen)],
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunPublic:
-    """创建 raw_convert 直转任务 — 写 DB + 异步触发 FC fc-raw-convert"""
+    """创建 raw_convert 直转任务 — 写 DB + 异步提交 E-HPC 作业"""
     run_record = None
     try:
         # 1. API 层换算 public_id → file_id（缺失/删除流程 404 口径不变），
@@ -160,14 +162,15 @@ async def create_raw_convert_task(
         await async_session.refresh(run_record)
         await async_session.refresh(origin)
 
-        # 3. 异步触发 FC raw_convert 函数
-        trigger_fc_raw_convert_task.delay(  # type: ignore
-            run_id=run_record.id,
+        # 3. 异步提交 raw_convert 作业（API 层构造并校验载荷，Worker 提交 E-HPC）
+        dispatch(RawConvertParams(
+            run_id=run_record.id, #type: ignore
             imzml_path=origin.imzml_path,
             ibd_path=origin.ibd_path,
             output_path=oss_output_path,
             metadata=metadata,
-        )
+            input_bytes=origin.imzml_size + origin.ibd_size,
+        ))
 
         return ExperimentProcessRunPublic(
             **run_record.model_dump(), filename=filename,
@@ -331,11 +334,12 @@ async def create_clustering_task(
         await async_session.commit()
         await async_session.refresh(run_record)
 
-        # 异步触发 FC 聚类函数（聚类结果写回 run_record.out_path 内部）
-        trigger_fc_clustering_task.delay(  # type: ignore
+        # 异步提交聚类作业（API 层构造并校验载荷，Worker 提交 E-HPC；结果写回源 zarr）
+        dispatch(ClusteringParams(
             run_id=run_id,
-            source_zarr_path=run_record.out_path,
-        )
+            source_zarr_path=run_record.out_path, #type: ignore
+            input_bytes=run_record.output_size,
+        ))
 
         return ExperimentProcessRunPublic(
             **run_record.model_dump(), source_file_public_id=source_file_public_id,

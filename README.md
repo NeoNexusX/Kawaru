@@ -85,7 +85,6 @@ Core runtime variables are checked at startup, and OSS initialization/callback r
 | `SECRET_KEY` | Stable JWT signing key. Set it explicitly outside the disposable test stack; otherwise a random key is generated on every process start and existing tokens become invalid after restart. |
 | `SMTP_PASSWORD` | SMTP login password (server / port / account / sender are configured in `config.yaml` → `email:`) |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | Aliyun OSS credentials and the RAM role used to issue scoped upload/download STS credentials |
-| `OSS_FC_ALGORITHM_TOKEN` / `OSS_FC_TIC_TOKEN` / `OSS_FC_FEATURE_TOKEN` / `OSS_FC_RAW_CONVERT_TOKEN` / `OSS_FC_CLUSTERING_TOKEN` | Tokens used by the worker to invoke the configured FC functions |
 | `FC_CALLBACK_TOKEN` | Shared token required in the `X-FC-Token` header of every `/callback/*` request |
 | `CONFIG_PATH` / `REGION_PATH` | Paths to the app config and country/region validation dataset |
 | `LOG_DIR` / `LOG_LEVEL` | Log directory and level |

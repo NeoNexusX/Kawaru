@@ -5,18 +5,18 @@
   例① OSS 删除失败 → DELETE_FAILED（background/file_background._mark_delete_failed）：
      告警只挂「DELETING → DELETE_FAILED」跃迁一次，重投不重发（跃迁即去重）；
      file / run 两种 kind；行已消失 / 未知 kind 静默
-  例② FC 触发失败（invoke_fc 返回 None，background/processing_background 的
-     5 个 trigger 任务）：失败分支告警一次（fc 名 + run_id/file_id 正确），
-     成功分支静默
+  例② EHPC 触发失败（提交器抛异常，background/processing_background 的
+     run_compute_task → _execute）：失败分支告警一次（ehpc 名 + run_id/file_id
+     正确），成功分支静默
 
 测试策略（不发真实邮件、不依赖 server / worker / OSS）：
   - 投递侧全程 mock：payload 组测试替换 api_helpers.admin_notify.send_smtp_email_task；
     例① patch background.file_background.notify_delete_failed；
-    例② patch background.processing_background.invoke_fc / notify_fc_trigger_failed
+    例② patch background.processing_background.notify_fc_trigger_failed
   - 例① 的状态跃迁用本地库真实行验证（kawaru_bear）：直插 file / origin / run 行，
     OSS 对象从不创建，收尾按文件名前缀硬删行（FK 级联清 origin / run），
     直接 await _mark_delete_failed（普通 async 函数）
-  - 例② 直接 await trigger_fc_*.run(...)：CeleryAsyncTask.run 即原协程函数，
+  - 例② 直接 await run_compute_task.run(...)：CeleryAsyncTask.run 即原协程函数，
     绕开 __call__ 的 asyncio.run，避免在测试事件循环内嵌套起 loop
 
 运行方式:
@@ -315,51 +315,55 @@ class TestDeleteFailedTransition:
 
 
 class TestFCTriggerAlert:
-    """例②：invoke_fc 返回 None → 5 个 trigger 任务失败分支各告警一次；成功分支静默"""
+    """触发失败告警：四个任务走 EHPC（提交器失败 → ehpc-<label>）"""
 
-    async def _run_trigger(self, monkeypatch, task_name: str, kwargs: dict, invoke_result):
-        """patch invoke_fc / notify_fc_trigger_failed 后直接驱动原协程，返回告警记录"""
+    async def _run_trigger(self, monkeypatch, task_key: str, kwargs: dict, submit_result):
+        """patch 告警 / 提交器后直接驱动 Worker 执行入口，返回告警记录。
+
+        submit_result 为 Exception 实例时提交器抛出；否则提交器返回该值。
+        """
         calls: list[tuple] = []
-
-        async def fake_invoke_fc(*args, **kwargs):
-            return invoke_result
 
         def fake_notify(fc_name: str, *, run_id=None, file_id=None):
             calls.append((fc_name, run_id, file_id))
             return True
 
-        monkeypatch.setattr(processing_background, "invoke_fc", fake_invoke_fc)
         monkeypatch.setattr(processing_background, "notify_fc_trigger_failed", fake_notify)
-        task = getattr(processing_background, task_name)
-        await task.run(**kwargs)
+
+        async def fake_submit(**_kwargs):
+            if isinstance(submit_result, Exception):
+                raise submit_result
+            return submit_result
+
+        monkeypatch.setitem(processing_background._EHPC_SUBMITTERS,  # pylint: disable=protected-access
+                            task_key, fake_submit)
+        await processing_background.run_compute_task.run(task_key, kwargs)
         return calls
 
-    @pytest.mark.parametrize("task_name,kwargs,expected", [
-        ("trigger_fc_algorithm_task",
+    @pytest.mark.parametrize("task_key,kwargs,expected", [
+        ("algorithm",
          dict(run_id=11, imzml_path="p.imzML", config_json="{}", output_path="out/"),
-         ("fc-algorithm", 11, None)),
-        ("trigger_fc_tic_task",
-         dict(file_id=12, imzml_path="p.imzML", public_id="pub1"),
-         ("fc-tic", None, 12)),
-        ("trigger_fc_feature_task",
-         dict(file_id=13, imzml_path="p.imzML", public_id="pub2"),
-         ("fc-feature", None, 13)),
-        ("trigger_fc_raw_convert_task",
-         dict(run_id=14, imzml_path="p.imzML", ibd_path="p.ibd", output_path="out/"),
-         ("fc-raw-convert", 14, None)),
-        ("trigger_fc_clustering_task",
-         dict(run_id=15, source_zarr_path="z/"),
-         ("fc-clustering", 15, None)),
+         ("ehpc-algorithm", 11, None)),
+        ("preview",
+         dict(file_id=12, imzml_path="p.imzML", image_dest="images/pub1/", mode="tic"),
+         ("ehpc-preview", None, 12)),
+        ("raw_convert",
+         dict(run_id=13, imzml_path="p.imzML", ibd_path="p.ibd", output_path="out/"),
+         ("ehpc-raw_convert", 13, None)),
+        ("clustering",
+         dict(run_id=14, source_zarr_path="z/"),
+         ("ehpc-clustering", 14, None)),
     ])
-    async def test_trigger_failure_notifies_once(self, monkeypatch, task_name, kwargs, expected):
-        calls = await self._run_trigger(monkeypatch, task_name, kwargs, invoke_result=None)
+    async def test_trigger_failure_notifies_once(self, monkeypatch, task_key, kwargs, expected):
+        calls = await self._run_trigger(monkeypatch, task_key, kwargs,
+                                        submit_result=RuntimeError("boom"))
         assert calls == [expected]
 
     async def test_trigger_success_stays_silent(self, monkeypatch):
-        """invoke_fc 成功返回 request_id：不告警"""
+        """提交成功：不告警"""
         calls = await self._run_trigger(
-            monkeypatch, "trigger_fc_algorithm_task",
+            monkeypatch, "algorithm",
             dict(run_id=11, imzml_path="p.imzML", config_json="{}", output_path="out/"),
-            invoke_result="req-success-1",
+            submit_result="job-success-1",
         )
         assert calls == []

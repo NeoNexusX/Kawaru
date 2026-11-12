@@ -113,7 +113,7 @@ async def collect_file_delete_snapshot(
     if file_record.image_path:
         paths.append(file_record.image_path)
     # 预览图目录按约定命名推导（image_dest 约定见 processing_background）：
-    # FC 可能在删除登记之后才写回 image_path，仅凭 DB 字段会漏删成孤儿；
+    # 容器可能在删除登记之后才写回 image_path，仅凭 DB 字段会漏删成孤儿；
     # 新约定 images/{public_id}/：public_id 随机前缀避免 OSS 写入热点；
     # 旧约定（file_id 取模 1000 分片）过渡期保留，兜住发布时仍在途的旧格式
     # 预览任务（OSS 删除 204 幂等，多推无副作用），确认无旧任务后可移除
