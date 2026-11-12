@@ -208,6 +208,8 @@ async def oss_upload_callback(
             imzml_path=imzml_path,
             image_dest=image_dest,
             mode=mode,
+            # 按解压后实际大小选资源档；缺省会被 choose_resources 兜底到最大档
+            input_bytes=extracted_total_size,
         ))
 
         return source_file

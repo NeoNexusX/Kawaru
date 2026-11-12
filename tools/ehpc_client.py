@@ -1,13 +1,14 @@
 """
 E-HPC INSTANT 作业提交（四个计算任务：raw_convert / preview / algorithm / clustering）。
 
-镜像契约（单容器单任务，完成后退出；数据路径均为 bucket 内相对 key）：
+镜像契约（单容器单任务，完成后退出；数据路径均为 bucket 内相对 key，
+输出目录键尾带 /，容器原样回传，回调端 check_file_exist 依赖尾斜杠走前缀列举）：
     raw_convert: python /app/imz_to_zarr.py --run-id N --imzml-path <key>
-                 [--ibd-path <key>] --output-path <key> [--metadata-json <json>]
+                 [--ibd-path <key>] --output-path <key>/ [--metadata-json <json>]
     preview:     python /app/imzml_preview.py --file-id N --imzml-path <key>
-                 --image-dest <key> [--mode feature|tic] [--ibd-path <key>]
+                 --image-dest <key>/ [--mode feature|tic] [--ibd-path <key>]
     algorithm:   python /app/algorithm_processing.py --run-id N --imzml-path <key>
-                 --config-json <json> --output-path <key> [--metadata-json <json>]
+                 --config-json <json> --output-path <key>/ [--metadata-json <json>]
     clustering:  python /app/clustering_umap_kmeans.py --run-id N --source-zarr-path <key>
 
 容器环境变量（由 _job_env 注入；INSTANT 限制 20 个变量、单项 ≤256 字符）：
@@ -366,7 +367,9 @@ def _algorithm_args(run_id: int, imzml_path: str, config_json: str,
         "--run-id", str(run_id),
         "--imzml-path", imzml_path.strip("/"),
         "--config-json", config_json,
-        "--output-path", output_path.strip("/"),
+        # zarr 输出是目录：键尾带 /。容器原样回传 out_path，algorithm_callback
+        # 的 check_file_exist 靠尾斜杠走前缀列举；丢了斜杠会 HEAD 裸 key 误判「输出缺失」
+        "--output-path", f"{output_path.strip('/')}/",
     ]
     if metadata:
         args += ["--metadata-json", json.dumps(metadata, separators=(",", ":"), ensure_ascii=False)]
@@ -418,7 +421,8 @@ def _raw_convert_args(run_id: int, imzml_path: str, ibd_path: str,
         "--run-id", str(run_id),
         "--imzml-path", imzml_path.strip("/"),
         "--ibd-path", ibd_path.strip("/"),
-        "--output-path", output_path.strip("/"),
+        # 同 _algorithm_args：目录键尾带 /，回调端前缀探测依赖它
+        "--output-path", f"{output_path.strip('/')}/",
     ]
     if metadata:
         args += ["--metadata-json", json.dumps(metadata, separators=(",", ":"), ensure_ascii=False)]
@@ -477,12 +481,15 @@ async def submit_preview_job(*, file_id: int, imzml_path: str, image_dest: str,
     input_dir = posixpath.dirname(imzml_path.strip("/"))
     if not input_dir:
         raise ValueError("imzml_path must be under a directory")
-    image_prefix = image_dest.strip("/")
+    # 图片目录键尾带 /：容器原样回传 image_path，_handle_preview_callback 的
+    # check_file_exist 靠尾斜杠走前缀列举，丢斜杠会 HEAD 裸 key 误判缺失。
+    # STS 可写前缀用去斜杠形式（策略按 {p}/* 拼接，尾斜杠会产生双斜杠不匹配）
+    image_dest = f"{image_dest.strip('/')}/"
     return await _submit_job(
         config, "preview", target_id=file_id, id_field="file_id",
-        args=_preview_args(file_id, imzml_path, image_prefix, mode, ibd_path),
+        args=_preview_args(file_id, imzml_path, image_dest, mode, ibd_path),
         readable=[input_dir],
-        writable=[image_prefix, _manifest_prefix(task, file_id, suffix=mode)],
+        writable=[image_dest.rstrip("/"), _manifest_prefix(task, file_id, suffix=mode)],
         input_bytes=input_bytes,
         callback_env=callback.env, callback_path=callback.path,
     )

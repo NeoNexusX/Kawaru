@@ -99,6 +99,7 @@ Application containers do not mount a business-file directory. Uploaded ZIPs, ex
 The service is OSS-only. Complete this checklist before the first deployment:
 
 - In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the object roots (`oss_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and the `ehpc:` section (image, vSwitch, security group, callbacks, resource tiers).
+- Upgrading a pre-E-HPC deployment: remove the retired `fc_*` keys from the `oss:` section. The config model rejects unknown keys, so leftovers fail app/worker startup (the pydantic error names each offending key).
 - In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, and `FC_CALLBACK_TOKEN`; private registries also need `ACR_PULL_USERNAME` / `ACR_PULL_PASSWORD`.
 - Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue the generated path-scoped upload/download STS policies to clients and job-scoped STS credentials to E-HPC containers.
 - Configure the OSS upload event to invoke the extraction FC function. Uploaded keys use `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`; FC must parse `file_id` from the file name, write imZML/ibd below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and call `/callback/oss_upload_callback` with `file_id` and the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
