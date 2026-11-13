@@ -1,11 +1,17 @@
 """processing_background 调度层单测：不入队、不提交真实作业。"""
+import inspect
 from typing import ClassVar, get_args
 
 import pytest
 from pydantic import ValidationError
 
 import background.processing_background as pb
-from models.task_models import AlgorithmParams, PreviewMode, PreviewParams
+from models.task_models import (
+    AlgorithmParams,
+    ComputeTaskParams,
+    PreviewMode,
+    PreviewParams,
+)
 from tools.ehpc_client import PREVIEW_MODES
 
 
@@ -27,6 +33,25 @@ def test_registries_stay_in_sync():
     tasks = set(pb._ID_FIELDS)  # pylint: disable=protected-access
     backends = set(pb._EHPC_SUBMITTERS) | set(pb._FC_ENDPOINTS)  # pylint: disable=protected-access
     assert tasks == backends
+
+
+def test_submitters_cover_model_fields():
+    """提交器签名必须覆盖对应载荷模型的全部字段（含重复 task 键检查）。
+
+    载荷模型与提交器签名没有静态关联（无类型 Callable），漂移原本只能在
+    Worker 运行时以 TypeError 暴露，且被 _execute 的宽泛 except 误报成
+    E-HPC 触发失败——对齐检查放测试期（与 test_registries_stay_in_sync 同类）。
+    """
+    models = get_args(ComputeTaskParams)
+    # 两个模型若共用同一 task 键，dict 派生会静默少一项
+    assert len(pb._EHPC_SUBMITTERS) == len(models)  # pylint: disable=protected-access
+    for model in models:
+        submitter = pb._EHPC_SUBMITTERS[model.task]  # pylint: disable=protected-access
+        missing = set(model.model_fields) - set(inspect.signature(submitter).parameters)
+        assert not missing, (
+            f"submitter for {model.task!r} lacks params {sorted(missing)}: "
+            "payload model and submitter signature drifted"
+        )
 
 
 def test_dispatch_enqueues_validated_task(monkeypatch):

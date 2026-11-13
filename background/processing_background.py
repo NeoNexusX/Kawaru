@@ -16,8 +16,15 @@ from typing import get_args
 
 from api_helpers.admin_notify import notify_fc_trigger_failed
 from celery_runtime.state import get_celery_app
-from models.task_models import ComputeTaskParams
+from models.task_models import (
+    AlgorithmParams,
+    ClusteringParams,
+    ComputeTaskParams,
+    PreviewParams,
+    RawConvertParams,
+)
 from tools.ehpc_client import (
+    EhpcSubmissionBlocked,
     safe_error,
     submit_algorithm_job,
     submit_clustering_job,
@@ -38,12 +45,15 @@ celery_app = get_celery_app()
 # 任务标识字段（日志/告警用 run_id 或 file_id）：由载荷模型派生，与模型定义同源
 _ID_FIELDS = {model.task: model.id_field for model in get_args(ComputeTaskParams)}
 
-# 任务 → EHPC 提交器（当前四个计算任务全部走 E-HPC）
+# 任务 → EHPC 提交器（当前四个计算任务全部走 E-HPC）。
+# 键从载荷模型的 task ClassVar 派生（与 _ID_FIELDS 同源）：模型改名键随之
+# 变化，不再手工维护两份任务名单；提交器签名与模型字段的对齐由
+# test_submitters_cover_model_fields 在测试期校验
 _EHPC_SUBMITTERS = {
-    "raw_convert": submit_raw_convert_job,
-    "preview": submit_preview_job,
-    "algorithm": submit_algorithm_job,
-    "clustering": submit_clustering_job,
+    AlgorithmParams.task: submit_algorithm_job,
+    RawConvertParams.task: submit_raw_convert_job,
+    PreviewParams.task: submit_preview_job,
+    ClusteringParams.task: submit_clustering_job,
 }
 
 # 任务 → FC 端点 (url, token, timeout)：预留分支，当前无任务。
@@ -96,6 +106,10 @@ async def _execute(task: str, **kwargs) -> str | None:
     if submitter is not None:
         try:
             job_id = await submitter(**kwargs)
+        except EhpcSubmissionBlocked:
+            # 测试守卫（conftest 拦 _assume_role）：抛穿而非吞成告警——
+            # 普通异常路径会调用真实 notify_fc_trigger_failed，可能外发邮件
+            raise
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("trigger ehpc %s failed %s=%s error=%s",
                          task, _ID_FIELDS[task], identifier, safe_error(e))

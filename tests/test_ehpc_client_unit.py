@@ -75,6 +75,23 @@ def test_algorithm_args_limits():
     assert args[-2] == "--metadata-json"
 
 
+def test_create_job_round_trip(monkeypatch):
+    """真实 SDK from_map/to_map round-trip 必须严格相等。
+
+    _create_job 以严格相等作绊线；SDK 浮动约束（>=4.1.0）且单测不在 CI：
+    uv lock --upgrade 后须本地跑本测试，不等则人工核对差异，
+    再决定放宽绊线或适配新版本。
+    """
+    monkeypatch.setattr(ehpc, "OSS_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(ehpc, "OSS_INTERNAL_ENDPOINT", "https://oss-internal")
+    from alibabacloud_ehpcinstant20230701.models import CreateJobRequest
+
+    request = _build()
+    model = CreateJobRequest().from_map(request)
+    model.validate()
+    assert model.to_map() == request
+
+
 def test_extra_env_is_merged():
     container = _build(extra_env={"MEMORY_LIMIT_MB": "8192"})["Tasks"][0]["TaskSpec"]["TaskExecutor"][0]["Container"]
     env = {item["Name"]: item["Value"] for item in container["EnvironmentVars"]}

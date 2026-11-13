@@ -17,6 +17,9 @@ bootstrap()  # 初始化 Env + Config + Logger
 # 没有开关可关后，任何驱动 trigger/dispatch 的测试都会走到真实 CreateJob
 # （计费作业）。统一在源头 mock 掉 AssumeRole：_assume_role 被 mock 后
 # 提交链在签发凭证处中止，不会触达 INSTANT API。
+# 抛 EhpcSubmissionBlocked 而非 AssertionError：前者会被 _execute 单独
+# re-raise（普通异常会被吞成告警并调用真实 notify_fc_trigger_failed，
+# 可能外发邮件），守卫才能真正让测试响亮失败。
 # ------------------------------------------------------------------ #
 @pytest.fixture(autouse=True)
 def _block_ehpc_submission(monkeypatch):
@@ -28,7 +31,9 @@ def _block_ehpc_submission(monkeypatch):
 
 
 async def _raise_assume_role_blocked(*_args, **_kwargs):
-    raise AssertionError("tests must not submit real EHPC jobs; mock the submitter instead")
+    # 延迟导入：conftest 顶部须先 bootstrap()（ehpc_client 经 constants 读 config）
+    from tools.ehpc_client import EhpcSubmissionBlocked
+    raise EhpcSubmissionBlocked("tests must not submit real EHPC jobs; mock the submitter instead")
 
 # ------------------------------------------------------------------ #
 # 环境变量加载

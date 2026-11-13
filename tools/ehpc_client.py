@@ -45,6 +45,15 @@ from tools.logger import get_logger
 
 logger = get_logger("tools.ehpc_client")
 
+
+class EhpcSubmissionBlocked(RuntimeError):
+    """测试守卫专用：提交链被测试拦截（conftest 拦 _assume_role）。
+
+    _execute 对它单独 re-raise 而不吞：普通异常会被宽泛 except 转成
+    「触发失败」日志并调用真实 notify_fc_trigger_failed（可能外发邮件），
+    守卫异常若被同样吞掉，fixture 的 fail-fast 目的就形同虚设。
+    """
+
 #########################
 # 常量：INSTANT 容器限制（官方 SDK models 文档字符串）
 #########################
@@ -285,7 +294,12 @@ def _build_request(config, task_name: str, task, *, resources, target_id: int, a
 # 提交：CreateJob（含售罄回退）与任务入口
 #########################
 def _create_job(region: str, request: dict) -> str:
-    """同步提交 CreateJob 并返回 JobId；经官方 SDK model 校验，防字段被静默丢弃。"""
+    """同步提交 CreateJob 并返回 JobId；经官方 SDK model 校验，防字段被静默丢弃。
+
+    SDK 是浮动约束（pyproject >=4.1.0，实际版本由 uv.lock 冻结），from_map/to_map
+    严格相等作绊线。约定：uv lock --upgrade 后先本地跑 test_create_job_round_trip
+    （单测不在 CI），不等则人工核对差异，再决定放宽绊线或适配新版本。
+    """
     credential = CredentialClient(CredentialConfig(
         type="access_key",
         access_key_id=os.environ["OSS_ACCESS_KEY_ID"],
