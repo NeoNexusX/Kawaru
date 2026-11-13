@@ -1,6 +1,8 @@
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from models.task_models import ComputeTaskParams, PreviewMode
 
 
 class ServerSettings(BaseModel):
@@ -144,9 +146,10 @@ class OSSSettings(BaseModel):
     oss_default_timeout_seconds: int | None = Field(default=20, ge=5, description="默认超时时间，单位秒")
     oss_delete_object_timeout_seconds: int | None = Field(default=30, ge=5, description="OSS 删除单个对象轮询超时时间，单位秒")
     oss_delete_prefix_timeout_seconds: int | None = Field(default=300, ge=5, description="OSS 删除目录前缀轮询超时时间，单位秒")
-    # 中转下载（relay）专用内网 endpoint：仅当服务器与 OSS 同地域时可达，OSS→服务器这跳免费。
-    # 未配置时中转下载不可用（create_internal_oss_client 返回 None，relay 接口报错）。
-    oss_internal_endpoint: str | None = Field(default=None, description="OSS 内网 endpoint（中转下载专用，如 https://oss-cn-hangzhou-internal.aliyuncs.com）")
+    # OSS 内网 endpoint，两处消费：中转下载 relay（服务器与 OSS 同地域时 OSS→服务器免流）
+    # 与 E-HPC 作业容器的 OSS_ENDPOINT_URL（INSTANT 计算节点经内网访问 OSS）。
+    # ehpc 段必填后此键随之必填（启动即校验）。
+    oss_internal_endpoint: str = Field(min_length=1, description="OSS 内网 endpoint（中转下载与 E-HPC 容器访问共用，如 https://oss-cn-hangzhou-internal.aliyuncs.com）")
     relay_max_concurrency: int = Field(default=5, ge=1, description="中转下载最大并发数（保护服务器带宽）")
     relay_acquire_timeout_seconds: float = Field(default=10, gt=0, description="中转下载排队等待上限（秒），超时返回 429")
     relay_idle_timeout_seconds: float = Field(default=30, gt=0, description="中转下载空闲超时（秒）：客户端 X 秒不消费数据则中断传输")
@@ -272,7 +275,11 @@ class EhpcTaskSettings(BaseModel):
 
 
 class EhpcSettings(BaseModel):
-    """E-HPC INSTANT 配置。"""
+    """E-HPC INSTANT 配置。
+
+    E-HPC 是唯一计算后端：配置缺段/残段在启动时即失败，
+    不允许绿灯部署后在 Worker 侧逐任务告警才发现。
+    """
     model_config = ConfigDict(extra="forbid")
     region: str = Field(default="cn-hangzhou", description="INSTANT/OSS/VPC 所在地域")
     image: str = Field(default="", description="任务镜像地址（所有任务共用，建议固定 digest）")
@@ -282,9 +289,36 @@ class EhpcSettings(BaseModel):
     enable_external_ip: bool = Field(default=True, description="作业是否分配公网 IP（拉香港镜像/回调需要）")
     callback_enabled: bool = Field(default=True, description="是否向容器下发回调环境变量")
     callback_base_url: str | None = Field(default=None, description="回调地址前缀；留空用 server.public_base_url，按任务补 callback_path")
-    sts_duration_seconds: int = Field(default=10800, ge=900, le=43200, description="STS 有效期，需不超过角色最大会话时长")
-    resources: EhpcResourceSettings = Field(default_factory=EhpcResourceSettings, description="所有任务共用的资源与档位") # type: ignore
+    # 下发给作业容器的 STS 凭证有效期：需 ≤ RAM 角色「最大会话时长」
+    # （角色默认上限 3600；要超过 3600 须先在 RAM 控制台调高角色上限，上限 43200=12h）
+    sts_duration_seconds: int = Field(default=10800, ge=900, le=43200, description="STS 有效期（秒），上限 43200=12 小时")
+    # 不设默认值：default_factory 会因 tiers 至少一档而必然失败（缺 resources 时报错误导排查方向）
+    resources: EhpcResourceSettings = Field(description="所有任务共用的资源与档位")
     tasks: dict[str, EhpcTaskSettings] = Field(default_factory=dict, description="按任务名分组的入口命令与回调")
+
+    @model_validator(mode="after")
+    def _validate_ehpc(self) -> "EhpcSettings":
+        """启动即校验（原来全部拖到 Worker 提交任务时才逐个报错）：
+        1. 基础设施字段非空（image/vswitch/security_group）；
+        2. 四个计算任务的入口配置齐全——任务名单以载荷模型为单一真源
+           （get_args(ComputeTaskParams)），与提交器注册表同源；
+        3. preview 按 mode 选回调（上传的 storage_mode 决定 feature/tic，
+           两种都会发生），callbacks 键必须与 PreviewMode 完全一致：
+           缺一个则对应 mode 的上传在提交时才失败，拼错则静默无用。
+        """
+        for name in ("image", "vswitch_id", "security_group_id"):
+            if not getattr(self, name):
+                raise ValueError(f"ehpc.{name} is required")
+        missing = {model.task for model in get_args(ComputeTaskParams)} - set(self.tasks)
+        if missing:
+            raise ValueError(f"ehpc.tasks missing entries: {sorted(missing)}")
+        preview = self.tasks.get("preview")
+        if preview is not None and set(preview.callbacks) != set(get_args(PreviewMode)):
+            raise ValueError(
+                "ehpc.tasks.preview.callbacks keys must be exactly "
+                f"{sorted(get_args(PreviewMode))} (both feature/tic uploads occur)"
+            )
+        return self
 
 
 class Config(BaseModel):
@@ -297,7 +331,7 @@ class Config(BaseModel):
     celery: CelerySettings
     storage: StorageSettings
     oss: OSSSettings
-    ehpc: EhpcSettings | None = None
+    ehpc: EhpcSettings
     user: UserSettings
     token: TokenSettings
     admin_info: AdminInfo

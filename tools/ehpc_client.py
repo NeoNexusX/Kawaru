@@ -78,15 +78,13 @@ def safe_error(exc: Exception) -> str:
 
 
 def _settings():
-    """读取并校验 EHPC 配置；必填项缺失直接抛配置错误。"""
+    """读取 EHPC 配置并校验运行时凭证（环境变量）。
+
+    配置结构（段完整、基础设施字段非空、oss bucket/内网 endpoint）已在启动时
+    由 pydantic 与 check_oss_config 校验，这里只剩无法启动时校验的环境变量
+    （CI 可无 ACR 凭证启动，只在真正提交作业时要求）。
+    """
     config = get_config().ehpc
-    if config is None:
-        raise ValueError("ehpc config is missing")
-    for name in ("image", "vswitch_id", "security_group_id", "region"):
-        if not getattr(config, name):
-            raise ValueError(f"ehpc.{name} is required")
-    if not OSS_BUCKET_NAME or not OSS_INTERNAL_ENDPOINT:
-        raise ValueError("oss.bucket_name / oss.oss_internal_endpoint are required for ehpc")
     if not (os.getenv("OSS_ACCESS_KEY_ID") and os.getenv("OSS_ACCESS_KEY_SECRET")):
         raise ValueError("OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET are required")
     if config.private_registry and not (

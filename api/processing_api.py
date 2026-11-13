@@ -17,6 +17,7 @@ from api_services.processing_service import (
     get_process_run_by_id,
     get_user_runs,
     mark_clustering_run,
+    rollback_clustering_run,
     rollback_process_run,
     validate_process_request,
     validate_clustering_request,
@@ -349,7 +350,10 @@ async def create_clustering_task(
         raise
     except Exception as e:
         logger.exception("create clustering task failed run_id=%s", run_id)
-        await async_session.rollback()
+        # dispatch 失败发生在 mark(PROCESSING)+commit 之后，rollback 撤不回已提交的
+        # 状态：复位为未执行，用户可立即重试（不复位会被 PROCESSING 幂等早退挡住，
+        # 只能等 stale 兜底标 FAILED 后由运维置空重跑）
+        await rollback_clustering_run(async_session, run_id)
         raise internal_server_error_exception from e
 
 
