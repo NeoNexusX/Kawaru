@@ -388,7 +388,7 @@ class TestOss:
         if TestOss._uploaded_public_id is None:
             pytest.skip("nothing to clean up")
 
-        # 等 celery 后台任务（trigger_fc_feature_task 等）自然结束
+        # 等 celery 后台任务（dispatch 入队后的 E-HPC 提交）自然结束
         logger.info("waiting 20s for celery tasks to settle before cleanup...")
         await asyncio.sleep(20)
 

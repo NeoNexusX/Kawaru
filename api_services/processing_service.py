@@ -490,6 +490,33 @@ async def rollback_process_run(
                 logger.info("rolled back process run run_id=%s", _run_id)
 
 
+async def rollback_clustering_run(
+    async_session: AsyncSession,
+    run_id: int | None,
+) -> None:
+    """
+    聚类触发失败时的统一回滚：复位 clustering_status 至未执行（None）
+
+    与 rollback_process_run 删行不同：聚类状态是 run 行上的列，且 dispatch 失败
+    发生在标记 PROCESSING 并 commit 之后，async_session.rollback() 撤不回已提交
+    的状态。开新 session 复位为 None，用户可立即重试；不复位则被「已 processing」
+    幂等早退挡住，只能等 stale 兜底标 FAILED 后由运维置空重跑。
+    复位仅作用于仍处 PROCESSING 的行，失败点在标记/提交之前时是无害空操作。
+    """
+    await async_session.rollback()
+    if run_id is None:
+        return
+
+    async with AsyncSession(get_async_engine()) as cleanup_session:
+        record = await get_process_run_by_id(cleanup_session, run_id)
+        if record and record.clustering_status == ProcessingStatus.PROCESSING:
+            record.clustering_status = None
+            record.clustering_error_message = None
+            cleanup_session.add(record)
+            await cleanup_session.commit()
+            logger.info("rolled back clustering status run_id=%s", run_id)
+
+
 #########################
 # zarr 文件夹访问
 #########################
