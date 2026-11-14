@@ -92,16 +92,6 @@ ZARR_STS_CACHE_TTL_SECONDS = max(60, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS - 300
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
 OSS_DELETE_OBJECT_TIMEOUT_SECONDS = config.oss.oss_delete_object_timeout_seconds
 OSS_DELETE_PREFIX_TIMEOUT_SECONDS = config.oss.oss_delete_prefix_timeout_seconds
-FC_ALGORITHM_ENDPOINT = config.oss.fc_algorithm_endpoint
-FC_ALGORITHM_TIMEOUT_SECONDS = config.oss.fc_algorithm_timeout_seconds
-FC_TIC_ENDPOINT = config.oss.fc_tic_endpoint
-FC_TIC_TIMEOUT_SECONDS = config.oss.fc_tic_timeout_seconds
-FC_FEATURE_ENDPOINT = config.oss.fc_feature_endpoint
-FC_FEATURE_TIMEOUT_SECONDS = config.oss.fc_feature_timeout_seconds
-FC_RAW_CONVERT_ENDPOINT = config.oss.fc_raw_convert_endpoint
-FC_RAW_CONVERT_TIMEOUT_SECONDS = config.oss.fc_raw_convert_timeout_seconds
-FC_CLUSTERING_ENDPOINT = config.oss.fc_clustering_endpoint
-FC_CLUSTERING_TIMEOUT_SECONDS = config.oss.fc_clustering_timeout_seconds
 
 
 # 中转下载（relay）配置
@@ -138,16 +128,6 @@ __all__ = [
     "ZARR_STS_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
     "OSS_ORIGIN_STORAGE_ROOT",
-    "FC_ALGORITHM_ENDPOINT",
-    "FC_ALGORITHM_TIMEOUT_SECONDS",
-    "FC_TIC_ENDPOINT",
-    "FC_TIC_TIMEOUT_SECONDS",
-    "FC_FEATURE_ENDPOINT",
-    "FC_FEATURE_TIMEOUT_SECONDS",
-    "FC_RAW_CONVERT_ENDPOINT",
-    "FC_RAW_CONVERT_TIMEOUT_SECONDS",
-    "FC_CLUSTERING_ENDPOINT",
-    "FC_CLUSTERING_TIMEOUT_SECONDS",
     "OSS_INTERNAL_ENDPOINT",
     "RELAY_TOKEN_EXPIRE_SECONDS",
     "RELAY_MAX_CONCURRENCY",

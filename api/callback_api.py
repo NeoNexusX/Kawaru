@@ -17,13 +17,14 @@ from api_services.file_service import (
 )
 from api_services.experiment_service import create_origin_record, get_origin_imzml_by_file_id, update_origin
 from api_services.processing_service import get_process_run_by_id, mark_process_run, mark_clustering_run
-from background.processing_background import trigger_fc_tic_task, trigger_fc_feature_task
+from background.processing_background import dispatch
 from api_helpers.deletion_helper import run_is_deleting
 from models.callback_models import OssUploadCallback, AlgorithmCallback, TicCallback, UmapCallback, ClusteringCallback
 from models.config_models import Config
 from models.experiment_models import ExperimentStatus
 from models.file_models import FileInDB, FilePublic, FileStatus
 from models.processing_models import ProcessingStatus, ExperimentProcessRunInDB, ExperimentProcessRunCallbackResponse, RAW_CONVERT_MARKER
+from models.task_models import PreviewMode, PreviewParams
 from models.user_models import UserInDB
 from exceptions.file_exceptions import (
     file_content_missing_exception,
@@ -41,11 +42,11 @@ from tools.logger import get_logger
 
 logger = get_logger("api.callback_api")
 
-# FC 回调验证 Token（从环境变量读取，与 FC 控制台配置一致）
+# 计算后端回调验证 Token（FC 与 E-HPC 容器共用，从环境变量读取）
 FC_CALLBACK_TOKEN = os.environ["FC_CALLBACK_TOKEN"]
 
 
-# TODO: 针对此处每个api，需要验证签名，目前使用的是token验证，后续可以考虑使用签名验证，签名验证需要FC端配合
+# TODO: 针对此处每个api，需要验证签名，目前使用的是token验证，后续可以考虑使用签名验证，签名验证需要容器端配合
 
 async def get_expected_hash(
     file_id: int,
@@ -196,13 +197,20 @@ async def oss_upload_callback(
             logger.error("oss tag file persistent failed, file_id=%s", file_id)
             raise internal_server_error_exception
 
-        # 根据 storage_mode 分发到不同的 FC 函数
-        # continuous → fc-feature（UMAP 预览图，大内存）
-        # 其他模式   → fc-tic（TIC 预览图，轻量）
-        if source_file.storage_mode == "continuous":
-            trigger_fc_feature_task.delay(file_id=source_file.file_id, imzml_path=imzml_path, public_id=source_file.public_id) # type: ignore
-        else:
-            trigger_fc_tic_task.delay(file_id=source_file.file_id, imzml_path=imzml_path, public_id=source_file.public_id) # type: ignore
+        # 上传后预览图：continuous → feature 模式（UMAP/TIC/离子图），其他 → tic 模式（仅 TIC）
+        mode: PreviewMode = "feature" if source_file.storage_mode == "continuous" else "tic"
+        # 预览图目录约定 images/{public_id}/：public_id 为随机前缀，避免自增 file_id
+        # 形成 OSS 分区热点；前端可凭 public_id 自行拼接取图（删除兜底推导见
+        # composite_service，两处约定需保持一致）
+        image_dest = f"images/{source_file.public_id}/"
+        dispatch(PreviewParams(
+            file_id=source_file.file_id, # type: ignore
+            imzml_path=imzml_path,
+            image_dest=image_dest,
+            mode=mode,
+            # 按解压后实际大小选资源档；缺省会被 choose_resources 兜底到最大档
+            input_bytes=extracted_total_size,
+        ))
 
         return source_file
 
@@ -232,7 +240,7 @@ async def algorithm_callback(
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunInDB:
     """
-    FC 算法处理完成回调
+    E-HPC 算法处理完成回调
 
     根据处理结果更新 process_run 状态和用户配额。
     幂等：失败仅 PROCESSING 在途时落 FAILED（终态不被覆盖）；
@@ -259,7 +267,7 @@ async def algorithm_callback(
             logger.error("process run not found for algorithm callback run_id=%s", run_id)
             raise invalid_process_request_exception
 
-        # 删除流程中的 run：丢弃回调，并删掉 FC 刚写的输出对象防孤儿
+        # 删除流程中的 run：丢弃回调，并删掉容器刚写的输出对象防孤儿
         # （成功回调会无条件覆盖状态，不拦截会把 DELETING 翻转成 COMPLETED）
         if run_is_deleting(run_record.status):
             logger.warning(
@@ -279,7 +287,7 @@ async def algorithm_callback(
             await mark_process_run(
                 async_session, run_record,
                 status=ProcessingStatus.FAILED,
-                error_message=error_message or error_type or "FC algorithm processing failed",
+                error_message=error_message or error_type or "E-HPC algorithm processing failed",
             )
             await async_session.commit()
             await async_session.refresh(run_record)
@@ -427,7 +435,7 @@ async def tic_callback(
     async_session: AsyncSessionDep,
 ) -> FileInDB:
     """
-    FC TIC 图像生成回调（目录下仅 preview.jpg 一张）。
+    E-HPC TIC 图像生成回调（目录下仅 preview.jpg 一张）。
     """
     return await _handle_preview_callback(
         async_session, "tic",
@@ -441,7 +449,7 @@ async def umap_callback(
     async_session: AsyncSessionDep,
 ) -> FileInDB:
     """
-    FC UMAP 图生成完成回调（目录下为 preview.jpg / preview_2.jpg /
+    E-HPC UMAP 图生成完成回调（目录下为 preview.jpg / preview_2.jpg /
     preview_3.jpg 三张）。
     """
     return await _handle_preview_callback(
@@ -456,7 +464,7 @@ async def clustering_callback(
     async_session: AsyncSessionDep,
 ) -> ExperimentProcessRunInDB:
     """
-    FC 聚类分析完成回调。
+    E-HPC 聚类分析完成回调。
 
     聚类结果写回源 zarr，回调只更新 run 记录的聚类状态。
     """
@@ -485,7 +493,7 @@ async def clustering_callback(
             await mark_clustering_run(
                 async_session, run_record,
                 status=ProcessingStatus.FAILED,
-                error_message=error_message or error_type or "FC clustering processing failed",
+                error_message=error_message or error_type or "E-HPC clustering processing failed",
             )
             await async_session.commit()
             await async_session.refresh(run_record)
@@ -517,7 +525,7 @@ async def verify_fc_callback_token(
     x_fc_token: str | None = Header(None, alias="X-FC-Token"),
 ) -> None:
     """
-    验证 FC 回调请求的 Token。
+    验证计算后端（FC / E-HPC 容器）回调请求的 Token。
 
     从请求头 X-FC-Token 中读取 Token，与环境变量 FC_CALLBACK_TOKEN 比对。
     如果 Token 缺失或不匹配，抛出 401 异常。

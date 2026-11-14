@@ -82,12 +82,48 @@ oss:
   # 中转下载（relay）取源 endpoint：GitHub 托管 runner 不在阿里云内网，
   # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
   oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
-  # 以下 FC 函数端点测试用不到，留空（check_oss_config 不校验它们）
-  fc_algorithm_endpoint: ""
-  fc_tic_endpoint: ""
-  fc_feature_endpoint: ""
-  fc_raw_convert_endpoint: ""
-  fc_clustering_endpoint: ""
+
+# E-HPC 配置：配置模型要求段完整（E-HPC 是唯一计算后端，缺段/残段启动即失败）。
+# CI 不真正提交作业（conftest 拦 AssumeRole，集成测试标记不覆盖计算任务），
+# 基础设施字段填占位值即可。
+ehpc:
+  region: cn-hangzhou
+  image: registry.example.invalid/kawaru/sxo:ci
+  vswitch_id: vsw-ci-placeholder
+  security_group_id: sg-ci-placeholder
+  resources:
+    tiers:
+      - max_input_gib: 8
+        cores: 4
+        memory_gib: 4
+        system_disk_gib: 10
+        instance_types: []
+  tasks:
+    raw_convert:
+      command: ["python", "/app/imz_to_zarr.py"]
+      results_prefix: hpc-imz-to-zarr
+      callback_env: RAW_CONVERT_FC_CALLBACK_URL
+      callback_path: /callback/algorithm_callback
+    preview:
+      command: ["python", "/app/imzml_preview.py"]
+      results_prefix: hpc-preview
+      callbacks:
+        feature:
+          env: FEATURE_FC_CALLBACK_URL
+          path: /callback/umap_callback
+        tic:
+          env: TIC_FC_CALLBACK_URL
+          path: /callback/tic_callback
+    algorithm:
+      command: ["python", "/app/algorithm_processing.py"]
+      results_prefix: hpc-algorithm
+      callback_env: ALGORITHM_FC_CALLBACK_URL
+      callback_path: /callback/algorithm_callback
+    clustering:
+      command: ["python", "/app/clustering_umap_kmeans.py"]
+      results_prefix: hpc-clustering
+      callback_env: CLUSTERING_FC_CALLBACK_URL
+      callback_path: /callback/clustering_callback
 
 admin_info:
   username: kawaru

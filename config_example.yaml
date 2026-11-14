@@ -98,20 +98,10 @@ oss:
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
   # SI 注释库 CSV 的完整 OSS key（人工上传后填写；未配置时浏览可用、下载端点报未就绪）
-  oss_si_db_key: static/SI_DB.csv
+  oss_si_db_key: static/hmdb_4.csv
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
-  fc_algorithm_endpoint: https://algoritocessing-olclrzvpxk.cn-hangzhou-vpc.fcapp.run
-  fc_algorithm_timeout_seconds: 60
-  fc_tic_endpoint: https://tic-processing-mbftqczbun.cn-hangzhou-vpc.fcapp.run
-  fc_tic_timeout_seconds: 60
-  fc_feature_endpoint: https://umap-kmocessing-ptncayuqzz.cn-hangzhou-vpc.fcapp.run
-  fc_feature_timeout_seconds: 60
-  fc_raw_convert_endpoint: https://imz-to-zarr-xrujfuejtn.cn-hangzhou-vpc.fcapp.run
-  fc_raw_convert_timeout_seconds: 60
-  fc_clustering_endpoint: https://clusterp-kmeans-zsvrfnnprr.cn-hangzhou-vpc.fcapp.run
-  fc_clustering_timeout_seconds: 60
   # 中转下载专用内网 endpoint（服务器与 OSS 同地域时可达，OSS→服务器这跳免费）。
   # 本地开发机上内网域名不可达：改用 CONFIG_PATH 指向覆盖配置，把它临时设为公网
   # endpoint（https://oss-cn-hangzhou.aliyuncs.com）即可完整验证中转链路。
@@ -123,6 +113,70 @@ oss:
   # V1 签名不含 Host，只换域名不影响签名。测试服不配置则保持 OSS 域名。
   # oss_cdn_domain: https://cdn.neonexus.top
 
+# E-HPC INSTANT（算法预处理）。四个计算任务（raw_convert/preview/algorithm/
+# clustering）全部走 E-HPC，无运行时开关；未注册 EHPC 提交器的新增任务才走 FC。
+# 环境变量可临时覆盖 config，无需改本文件：EHPC_CALLBACK_ENABLED。
+# 凭证放 .env，不写在这里：
+#   OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET  提交作业、AssumeRole 用的 RAM AK
+#   ACR_PULL_USERNAME / ACR_PULL_PASSWORD      private_registry=true 时拉镜像用
+#   FC_CALLBACK_TOKEN                          callback_enabled=true 时下发给容器的回调鉴权 token
+ehpc:
+  region: cn-hangzhou               # 作业地域：INSTANT 服务、交换机/安全组、OSS 内网 endpoint 必须同地域
+  # 容器镜像。建议固定 digest（:tag 会漂移）；跨地域拉取（如香港 ACR → 杭州作业）必须用公网地址，不能带 -vpc
+  image: "crpi-<instance-id>.cn-hongkong.personal.cr.aliyuncs.com/kawaru/sxo@sha256:<digest>"
+  private_registry: true            # 镜像仓库需要认证；true 时读取 .env 的 ACR_PULL_USERNAME/PASSWORD
+  vswitch_id: vsw-<replace>         # 作业弹性网卡挂载的交换机（VPC 子网）；决定作业落在哪个可用区、能用到哪些规格的库存，需与 region 同地域
+  security_group_id: sg-<replace>   # 作业网卡的安全组，需与交换机同 VPC；回调用公网出口，出方向需放行后端回调端口
+  enable_external_ip: true          # 作业是否分配公网 IP：跨地域拉镜像、回调公网后端都依赖它
+  callback_enabled: true            # 是否向容器下发回调环境变量；本地调试（后端无法被公网访问）设 false 或用 EHPC_CALLBACK_ENABLED=false 覆盖
+  callback_base_url: ""             # 回调地址前缀；留空用 server.public_base_url，按任务的 callback_path 拼完整 URL
+  sts_duration_seconds: 10800       # 下发给容器的 STS 临时凭证有效期（秒），需 ≤ RAM 角色最大会话时长，上限 43200
+  # 所有任务共用的资源档位（统一算力）：按输入大小选档，input_bytes 缺失时用最后一档
+  resources:
+    fallback_any_type: true     # 售罄（SoldOut）时去掉 InstanceTypes 自动重提一次，按档位 cores/memory 自选
+    # 按输入大小（算法=imzml+ibd 字节数，聚类=源 zarr 的 output_size）升序选档
+    tiers:
+      - max_input_gib: 2        # ≤2G
+        cores: 2
+        memory_gib: 2
+        system_disk_gib: 10
+        instance_types: [ecs.c9a.large, ecs.c9ae.large, ecs.g9a.large]
+      - max_input_gib: 8        # 2–8G
+        cores: 4
+        memory_gib: 4
+        system_disk_gib: 30
+        instance_types: [ecs.c9a.xlarge, ecs.c9ae.xlarge, ecs.g9a.xlarge]
+      - max_input_gib: 20       # 8–20G
+        cores: 4
+        memory_gib: 8
+        system_disk_gib: 50
+        instance_types: [ecs.c9a.xlarge, ecs.c9ae.xlarge, ecs.g9ae.xlarge]
+  tasks:
+    raw_convert:
+      command: ["python", "/app/imz_to_zarr.py"]
+      results_prefix: hpc-imz-to-zarr
+      callback_env: RAW_CONVERT_FC_CALLBACK_URL
+      callback_path: /callback/algorithm_callback
+    preview:
+      command: ["python", "/app/imzml_preview.py"]
+      results_prefix: hpc-preview
+      callbacks:
+        feature:                    # UMAP/TIC/离子图
+          env: FEATURE_FC_CALLBACK_URL
+          path: /callback/umap_callback
+        tic:                        # 仅 TIC
+          env: TIC_FC_CALLBACK_URL
+          path: /callback/tic_callback
+    algorithm:
+      command: ["python", "/app/algorithm_processing.py"]
+      results_prefix: hpc-algorithm
+      callback_env: ALGORITHM_FC_CALLBACK_URL
+      callback_path: /callback/algorithm_callback
+    clustering:
+      command: ["python", "/app/clustering_umap_kmeans.py"]
+      results_prefix: hpc-clustering
+      callback_env: CLUSTERING_FC_CALLBACK_URL
+      callback_path: /callback/clustering_callback
 admin_info:
   username: kawaru
   institution: Xiamen University

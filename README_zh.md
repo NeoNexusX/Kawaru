@@ -85,7 +85,6 @@ cp .env_example .env
 | `SECRET_KEY` | 固定的 JWT 签名密钥。除临时测试栈外应显式配置；否则每次进程启动都会随机生成，重启后已有令牌会失效。 |
 | `SMTP_PASSWORD` | SMTP 登录密码（服务器 / 端口 / 账号 / 发件人在 `config.yaml` 的 `email:` 段配置） |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | 阿里云 OSS 凭证，以及用于签发受限上传/下载 STS 凭证的 RAM 角色 |
-| `OSS_FC_ALGORITHM_TOKEN` / `OSS_FC_TIC_TOKEN` / `OSS_FC_FEATURE_TOKEN` / `OSS_FC_RAW_CONVERT_TOKEN` / `OSS_FC_CLUSTERING_TOKEN` | worker 调用配置中各 FC 函数时使用的令牌 |
 | `FC_CALLBACK_TOKEN` | 所有 `/callback/*` 请求必须通过 `X-FC-Token` 携带的统一回调令牌 |
 | `CONFIG_PATH` / `REGION_PATH` | 应用配置文件和国家/地区校验数据集路径 |
 | `LOG_DIR` / `LOG_LEVEL` | 日志目录与级别 |
