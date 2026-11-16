@@ -69,6 +69,12 @@ def test_dispatch_enqueues_validated_task(monkeypatch):
     })]
 
 
+def test_model_requires_input_bytes():
+    """输入大小必填：缺失时 API 构造载荷即报错。"""
+    with pytest.raises(ValidationError, match="input_bytes"):
+        AlgorithmParams(run_id=1, imzml_path="a", config_json="{}", output_path="out/")
+
+
 def test_model_rejects_unknown_field():
     """拼错的参数名在 API 构造载荷时即报错（extra=forbid）。"""
     with pytest.raises(ValidationError, match="extra_forbidden"):
@@ -90,7 +96,8 @@ def test_dispatch_without_backend_raises(monkeypatch):
     calls = _capture_enqueue(monkeypatch)
 
     with pytest.raises(ValueError, match="no backend registered"):
-        pb.dispatch(_OrphanParams(run_id=1, imzml_path="a", config_json="{}", output_path="out/"))
+        pb.dispatch(_OrphanParams(run_id=1, imzml_path="a", config_json="{}",
+                                  output_path="out/", input_bytes=1))
     assert calls == []
 
 

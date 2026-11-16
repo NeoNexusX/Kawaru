@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [test]
   push:
-    branches: [feature_ehpc,test]
+    branches: [feature_ehpc_2,test]
   workflow_dispatch:
 
 concurrency:

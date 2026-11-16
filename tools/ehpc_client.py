@@ -14,6 +14,7 @@ E-HPC INSTANT 作业提交（四个计算任务：raw_convert / preview / algori
 容器环境变量（由 _job_env 注入；INSTANT 限制 20 个变量、单项 ≤256 字符）：
     OSS_BUCKET_NAME / OSS_ENDPOINT_URL / OSS_RESULTS_PREFIX（manifest 归档前缀）
     STS 临时凭证（OSS_TOKEN_n 分块）
+    INPUT_SIZE_BYTES（四个任务的输入总字节数，由载荷 input_bytes 注入）
     MEMORY_LIMIT_MB（仅 clustering，按选档内存注入）
     回调 URL + CALLBACK_TOKEN（可选，不设则不回调）：
         RAW_CONVERT_FC_CALLBACK_URL / ALGORITHM_FC_CALLBACK_URL / CLUSTERING_FC_CALLBACK_URL
@@ -353,6 +354,8 @@ async def _submit_job(config, task_name: str, *, target_id: int, id_field: str =
     """
     task = _task_config(config, task_name)
     resources = choose_resources(config.resources, input_bytes)
+    if input_bytes is not None:
+        extra_env = {**(extra_env or {}), "INPUT_SIZE_BYTES": str(input_bytes)}
     if memory_limit_env:
         extra_env = {**(extra_env or {}), "MEMORY_LIMIT_MB": str(resources.memory_gib * 1024)}
     policy = _session_policy(OSS_BUCKET_NAME, readable, writable)  # type: ignore[arg-type]
