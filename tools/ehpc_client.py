@@ -252,6 +252,15 @@ def _resource_spec(resources) -> dict:
     return resource
 
 
+def _job_name(task_name: str, target_id: int) -> str:
+    """EHPC INSTANT 的 JobName 实际只接受字母/数字/连字符（SDK 注释声称允许下划线，
+    与线上校验不符）；raw_convert 等内部任务名含下划线，须转为连字符。
+
+    TaskName 不做转换：SDK 明确允许下划线，且回调/配置键依赖内部任务名。
+    """
+    return f"{task_name.replace('_', '-')}-{target_id}"
+
+
 def _build_request(config, task_name: str, task, *, resources, target_id: int, args: list[str],
                    extra_env: dict[str, str] | None, credentials: dict,
                    callback_env: str | None = None, callback_path: str | None = None) -> dict:
@@ -261,7 +270,7 @@ def _build_request(config, task_name: str, task, *, resources, target_id: int, a
     callback_env/callback_path 用于按 mode 覆盖任务默认回调（preview）。
     """
     return {
-        "JobName": f"{task_name}-{target_id}",
+        "JobName": _job_name(task_name, target_id),
         "JobDescription": f"Kawaru {task_name} run {target_id}",
         "Tasks": [{
             "TaskName": task_name,
