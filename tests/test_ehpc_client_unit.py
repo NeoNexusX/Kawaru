@@ -34,14 +34,14 @@ def _config(**overrides):
     return SimpleNamespace(**base)
 
 
-def _build(config=None, task=None, args=None, extra_env=None):
+def _build(config=None, task=None, args=None, extra_env=None, task_name="algorithm"):
     # _build_request 接收的是选档后的 resources（choose_resources 的返回形态）
     resources = SimpleNamespace(
         cores=4, memory_gib=8, system_disk_gib=100,
         instance_types=[], fallback_any_type=True,
     )
     return ehpc._build_request(
-        config or _config(), "algorithm", task or _task(), resources=resources, target_id=7,
+        config or _config(), task_name, task or _task(), resources=resources, target_id=7,
         args=args if args is not None else ["--run-id", "7", "--imzml-path", "origin/a.imzML"],
         extra_env=extra_env,
         credentials={"AccessKeyId": "STS.x", "AccessKeySecret": "s", "SecurityToken": "t" * 300},
@@ -66,6 +66,19 @@ def test_build_request_basics(monkeypatch):
         "Vswitch": ["vsw-1"], "EnableExternalIpAddress": True,
     }
     assert "InstanceTypes" not in request["Tasks"][0]["TaskSpec"]["Resource"]
+
+
+def test_job_name_replaces_underscores(monkeypatch):
+    """INSTANT JobName 不收下划线，raw_convert 须转为 raw-convert（TaskName 不变）。"""
+    monkeypatch.setattr(ehpc, "OSS_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(ehpc, "OSS_INTERNAL_ENDPOINT", "https://oss-internal")
+
+    request = _build(task_name="raw_convert")
+
+    assert request["JobName"] == "raw-convert-7"
+    # TaskName/描述保留内部任务名：回调与配置键依赖它
+    assert request["Tasks"][0]["TaskName"] == "raw_convert"
+    assert request["JobDescription"] == "Kawaru raw_convert run 7"
 
 
 def test_algorithm_args_limits():
