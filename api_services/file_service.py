@@ -560,7 +560,7 @@ async def update_file_metadata(
 
     只改请求中出现的字段（exclude_unset）；可改范围见 FilePatch 注释。
     公开状态（is_public）不在修改范围，走 set_public 专用接口（公开不可逆）。
-    spectrum_mode / storage_mode 的合法取值由请求模型 Literal 约束（非法值 422）。
+    数值型仪器参数的取值范围（非负有限数）由请求模型约束（非法值 422）。
     """
     updates = patch.model_dump(exclude_unset=True)
 

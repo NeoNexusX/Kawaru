@@ -173,6 +173,39 @@ Kawaru 目前**仅支持 OSS 存储**。原有本地存储和后端分片上传�
 | 文件上传与访问 | `/files/preflight`、`/files/upload`、`/files/{public_id}/metadata`、`/files/{public_id}/download_raw`、`/files/{public_id}/download_raw_noauth`、`/files/{public_id}/download_relay` |
 | 处理任务 | `POST /processes`、`POST /processes/raw-convert`、`POST /processes/{run_id}/clustering`、`GET /processes/{run_id}/zarr`、`GET /processes/mine`、`DELETE /processes/{run_id}` |
 | FC 回调 | `/callback/oss_upload_callback`、`/callback/algorithm_callback`、`/callback/tic_callback`、`/callback/umap_callback`、`/callback/clustering_callback` |
+| 访问统计 | `GET /stats/visits`（当天/当月/累计）、`GET /stats/visits/history`（最近 90 天内的日趋势） |
+
+### 历史访问统计（前端接入）
+
+`GET /stats/visits/history?days=90`，免登录。`days` 默认 30，范围 1～90；
+可传 `end_date=YYYY-MM-DD`，默认为 UTC 当天。起止日期均包含在结果内，
+整个区间必须在 `[UTC 今天 - 89 天, UTC 今天]` 内，越界返回 400，不截断。
+参数格式或 `days` 取值错误返回 422，Redis 不可用返回 503，计数损坏返回 500。
+
+例如 `GET /stats/visits/history?days=2&end_date=2026-11-17` 的响应如下
+（假设 UTC 当天为 2026-11-17，数值仅作演示）：
+
+```json
+{
+  "timezone": "UTC",
+  "start_date": "2026-11-16",
+  "end_date": "2026-11-17",
+  "days": 2,
+  "range_total": 60,
+  "missing_days": 1,
+  "items": [
+    {"date": "2026-11-16", "count": 0, "missing": true, "is_partial": false},
+    {"date": "2026-11-17", "count": 60, "missing": false, "is_partial": true}
+  ]
+}
+```
+
+- `items` 按日期升序，固定返回 `days` 条；前端可直接用 `date` / `count` 绘图。
+- `missing=true` 表示 Redis 没有该日计数，补零不代表确认零访问；现有数据无法区分无访问、未采集或丢失。
+- `is_partial=true` 表示 UTC 当天尚未结束，前端提示“今日截至当前”；日期保持 UTC，不按浏览器时区重新划分。
+- `range_total` 是查询区间计数之和，不是 `/stats/visits` 的历史累计 `total`。
+- 指标为接入 `count_visit` 的接口请求次数，不是独立访客 UV 或页面 PV。历史查询本身不增加计数或延长 TTL。
+- 前端提供近 7 / 30 / 90 天切换即可；503 展示“统计暂不可用”，不要展示成全零。
 
 ## 项目结构
 
