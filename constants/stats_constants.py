@@ -32,3 +32,6 @@ VISIT_STATS_KEY_PREFIX = "stats"
 # 访问统计 TTL（秒）
 VISIT_DAILY_TTL = 90 * 86400       # 90 天
 VISIT_MONTHLY_TTL = 365 * 86400    # 365 天
+
+# 含 UTC 当天的可查询自然日数，避免触及已可能过期的更早日桶。
+VISIT_HISTORY_MAX_DAYS = VISIT_DAILY_TTL // 86400

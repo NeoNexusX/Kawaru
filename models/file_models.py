@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from pydantic import FiniteFloat
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, Integer, BigInteger, Float
 from tools import generate_public_id, utc_time
@@ -82,10 +82,12 @@ class FileCreate(FileBase):
 class FilePatch(SQLModel):
     """修改文件元数据的请求模型（部分更新，只改请求中出现的字段）
 
-    可改范围：样本属性 + 谱图/存储模式。
+    可改范围：样本属性 + 仪器参数（极性/电离源/分析器/像素尺寸/分辨率/m/z）。
     公开状态（is_public）不在修改范围：仅允许 False→True 的单向变更，
     走 set_public 专用接口。
-    禁改：experiment_type（定位实验表，改动会断裂 origin 关联）、filename
+    禁改：spectrum_mode / storage_mode（描述 imzML 文件自身的数据格式；上传完成回调
+    按 storage_mode 选择预览模式，改动会与实际文件及已生成的预览不一致）、
+    experiment_type（定位实验表，改动会断裂 origin 关联）、filename
     （影响下载文件名与秒传复用判定，需与前端单独对齐）及一切系统字段
     （size、path、status、file_verify_code、storage_type 等）。
     """
@@ -98,8 +100,16 @@ class FilePatch(SQLModel):
     maldi_matrix: str | None = Field(default=None, max_length=sample_config.max_maldi_matrix_length)
     maldi_matrix_application: str | None = Field(default=None, max_length=sample_config.max_maldi_matrix_application_length)
     solvent: str | None = Field(default=None, max_length=sample_config.max_solvent_length)
-    spectrum_mode: Literal["profile", "centroid"] | None = Field(default=None, description="谱图模式")
-    storage_mode: Literal["continuous", "processed"] | None = Field(default=None, description="存储模式")
+    # 仪器参数
+    polarity: str | None = Field(default=None, max_length=sample_config.max_polarity_length)
+    ionisation_source: str | None = Field(default=None, max_length=sample_config.max_ionisation_source_length)
+    analyzer: str | None = Field(default=None, max_length=sample_config.max_analyzer_length)
+    # 数值型仪器参数须为非负有限数（0 即未填写，与入库默认值一致）。
+    # 拒绝 NaN/Infinity：请求体 JSON 解析会接受这两个字面量，但数据库存不了
+    pixel_size_horizontal: FiniteFloat | None = Field(default=None, ge=0)
+    pixel_size_vertical: FiniteFloat | None = Field(default=None, ge=0)
+    resolving_power: FiniteFloat | None = Field(default=None, ge=0)
+    mz: FiniteFloat | None = Field(default=None, ge=0)
 
 
 class FilePublic(FileBase):

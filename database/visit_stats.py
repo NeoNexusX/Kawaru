@@ -1,12 +1,18 @@
 """
 访问统计 - Redis 原子计数操作
 """
+from datetime import date, timedelta
+
 from fastapi import BackgroundTasks
 
-from tools.logger import get_logger
-
+from constants.stats_constants import (
+    VISIT_DAILY_TTL,
+    VISIT_HISTORY_MAX_DAYS,
+    VISIT_MONTHLY_TTL,
+    VISIT_STATS_KEY_PREFIX,
+)
 from database.redis_client import redis_client
-from constants.stats_constants import VISIT_STATS_KEY_PREFIX, VISIT_DAILY_TTL, VISIT_MONTHLY_TTL
+from tools.logger import get_logger
 from tools.time_tools import utc_time
 
 logger = get_logger("database")
@@ -61,3 +67,28 @@ async def get_visit_stats() -> dict[str, int]:
         "monthly": int(monthly_val or 0),
         "total": int(total_val or 0),
     }
+
+
+async def get_visit_history_counts(start_date: date, days: int) -> list[int | None]:
+    """一次批量读取连续日计数；None 保留缺失语义，读取不续期。
+
+    日期保留窗口由 API 层按同一个 UTC 日期快照校验；这里限制批量大小。
+    空串、负数及非整数字符串均视为损坏数据，不能作为缺失或零值处理。
+    """
+    if not 1 <= days <= VISIT_HISTORY_MAX_DAYS:
+        raise ValueError("Visit history days out of range")
+
+    keys = [
+        f"{VISIT_STATS_KEY_PREFIX}:all:daily:{(start_date + timedelta(days=offset)).isoformat()}"
+        for offset in range(days)
+    ]
+    values = await redis_client.mget(keys)
+    counts: list[int | None] = []
+    for key, value in zip(keys, values, strict=True):
+        if value is None:
+            counts.append(None)
+        elif not value.isascii() or not value.isdecimal():
+            raise ValueError(f"Invalid visit count for {key}")
+        else:
+            counts.append(int(value))
+    return counts
