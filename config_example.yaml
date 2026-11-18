@@ -6,8 +6,9 @@ server:
   name: SpatialXomics
   port: 8000
   host: 0.0.0.0
-  # 对外 API 公网前缀，用于拼接中转下载 URL；留空则回退 request.base_url 推导
-  public_base_url: ""
+  # 对外 API 公网前缀，用于拼接中转下载 URL；必须与反向代理暴露后端的路径一致
+  # （反代把 /api 前缀转发到本服务时填 https://<域名>/api，不要只填域名）
+  public_base_url: "https://sxo.neonexus.top/api"
 
 cors:
   allow_origins: ["*"]            # dev：按需收紧到前端域名
