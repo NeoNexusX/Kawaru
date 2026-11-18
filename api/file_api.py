@@ -372,8 +372,9 @@ async def patch_file_metadata(
     【文件元数据修改接口】
 
     功能:部分更新文件元数据,只改请求中出现的字段
-    可改:样本属性、spectrum_mode、storage_mode
-    禁改:is_public(走 set_public 专用接口,公开不可逆)、experiment_type、filename 及系统字段
+    可改:样本属性、仪器参数(polarity/ionisation_source/analyzer/像素尺寸/resolving_power/mz)
+    禁改:is_public(走 set_public 专用接口,公开不可逆)、spectrum_mode/storage_mode(描述文件自身格式)、
+    experiment_type、filename 及系统字段
 
     权限:任一持有者即可修改(UserFileLink 存在记录即持有,admin 旁路),
     与现有 assert_file_owner 语义一致——共享文件的任一持有者修改,其余持有者可见
@@ -384,8 +385,8 @@ async def patch_file_metadata(
     3. 部分更新元数据
 
     注意:
-    - spectrum_mode/storage_mode 非法取值由请求模型约束,直接返回 422
-    - 请求中出现 is_public 等白名单外字段会被静默忽略(不报错、不生效)
+    - 数值型仪器参数须为非负有限数(0 即未填写),否则由请求模型直接返回 422
+    - 请求中出现 is_public、spectrum_mode 等白名单外字段会被静默忽略(不报错、不生效)
     """
     file_record = await get_file_record_by_public_id(public_id, async_session)
     if not await assert_file_owner(async_session, file_record, current_user):

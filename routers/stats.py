@@ -4,12 +4,14 @@
 from fastapi import APIRouter
 
 from api.stats_api import (
-    ProcessingStatsDep,
     ClassificationStatsDep,
-    UserClassificationStatsDep,
-    VisitStatsDep,
     OverviewStatsDep,
+    ProcessingStatsDep,
+    UserClassificationStatsDep,
+    VisitHistoryDep,
+    VisitStatsDep,
 )
+from models.stats_models import VisitHistoryResponse
 
 stats_router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -41,4 +43,23 @@ async def get_user_classification_stats(result: UserClassificationStatsDep):
 @stats_router.get("/visits", response_model=dict[str, int])
 async def get_visit_stats(result: VisitStatsDep):
     """获取全站访问统计（当日/当月/总计）"""
+    return result
+
+
+@stats_router.get(
+    "/visits/history",
+    response_model=VisitHistoryResponse,
+    responses={
+        400: {"description": "查询区间超出最近 90 个 UTC 自然日（含当天）"},
+        500: {"description": "统计数据损坏或内部错误"},
+        503: {"description": "Redis 统计暂不可用，请稍后重试"},
+    },
+)
+async def get_visit_history(result: VisitHistoryDep) -> VisitHistoryResponse:
+    """获取历史访问请求次数，免登录，按 UTC 日期升序返回。
+
+    仅统计接入 count_visit 的接口请求，不代表独立访客数 UV 或页面 PV。
+    缺少计数的日期补 0 并标记 missing；UTC 当天标记 is_partial。
+    读取不增加访问计数，不刷新 Redis TTL。
+    """
     return result
