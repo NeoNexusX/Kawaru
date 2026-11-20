@@ -1,15 +1,17 @@
 #########################
 # Collection Models - 文件集合（Collection）数据模型
 # 两张表：
-#   DataCollectionInDB  集合主表（含学术信息与样本/仪器汇总多值字段）
+#   DataCollectionInDB  集合主表（含学术信息与样本/仪器多值字段）
 #   CollectionMember    集合-文件链接表（position 表达集合内顺序）
 # 写法参照 models/link_models.py 的 UserFileLink（联合主键 + ondelete="CASCADE"）
 #########################
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from sqlalchemy import JSON, Column, Text
+from pydantic import StringConstraints, field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
 from models.file_models import FilePublic
@@ -46,7 +48,7 @@ class DataCollectionInDB(SQLModel, table=True):
     doi: list[str] = Field(
         default_factory=list,
         sa_column=Column(JSON, nullable=False, default=list),
-        description="DOI 列表；JSON 列无法建唯一索引，唯一性由应用层校验（任一 DOI 不得属于其他集合）",
+        description="DOI 列表；允许跨集合重复，不校验格式/唯一性",
     )
     access: list[str] = Field(
         default_factory=list,
@@ -58,14 +60,16 @@ class DataCollectionInDB(SQLModel, table=True):
     abstract: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="摘要")
     cite_information: str = Field(default="", sa_column=Column(Text, nullable=False, default=""), description="引用信息")
 
-    # 样本信息汇总（多值 → JSON 列，成员文件取值的汇总，与 FileBase 的单值字段只对齐清单不复用代码）
+    # 样本信息（多值 → JSON 列，由用户/前端填写，后端不自动汇总；
+    # 与 FileBase 的单值字段只对齐清单不复用代码）
     organism: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     organism_part: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     sample_stabilization: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     sample_growth_conditions: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     tissue_modification: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
 
-    # 仪器信息汇总（多值 → JSON 列；数值型仪器参数不汇总，需要时由成员文件实时聚合）
+    # 仪器信息（多值 → JSON 列，由用户/前端填写，后端不自动汇总；
+    # 数值型仪器参数不落库，需要时由成员文件实时聚合）
     polarity: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     ionisation_source: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     analyzer: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
@@ -100,10 +104,49 @@ class CollectionMember(SQLModel, table=True):
 #########################
 # 请求 / 响应模型
 #########################
-class CollectionCreate(SQLModel):
+COLLECTION_LIST_FIELDS = (
+    "member_type",
+    "collection_type",
+    "doi",
+    "access",
+    "organism",
+    "organism_part",
+    "sample_stabilization",
+    "sample_growth_conditions",
+    "tissue_modification",
+    "polarity",
+    "ionisation_source",
+    "analyzer",
+)
+
+
+class _CollectionListNormalizer:
+    """列表字段统一归一化：去首尾空白、丢弃空串、保序去重。
+
+    非列表/非字符串元素原样返回，交给后续 list[str] 校验报 422。
+    """
+
+    @field_validator(*COLLECTION_LIST_FIELDS, mode="before")
+    @classmethod
+    def _normalize_list_items(cls, value):
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                return value
+            text = item.strip()
+            if text:
+                normalized.append(text)
+        return list(dict.fromkeys(normalized))
+
+
+class CollectionCreate(_CollectionListNormalizer, SQLModel):
     """创建集合请求：元数据 + 初始成员（file_public_ids 数组顺序即初始 position 1..n）"""
 
-    name: str = Field(max_length=128)
+    name: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=128,
+    )]
     description: str = Field(default="", max_length=512)
     member_type: list[str] = Field(default_factory=list)
     collection_type: list[str] = Field(default_factory=list)
@@ -112,8 +155,8 @@ class CollectionCreate(SQLModel):
     access: list[str] = Field(default_factory=list)
     journal_name: str = Field(default="", max_length=255)
     publish_time: datetime | None = Field(default=None, description="文章发表时间")
-    abstract: str = Field(default="")
-    cite_information: str = Field(default="")
+    abstract: str = Field(default="", max_length=16000)
+    cite_information: str = Field(default="", max_length=16000)
     organism: list[str] = Field(default_factory=list)
     organism_part: list[str] = Field(default_factory=list)
     sample_stabilization: list[str] = Field(default_factory=list)
@@ -125,10 +168,12 @@ class CollectionCreate(SQLModel):
     file_public_ids: list[str] = Field(default_factory=list, description="初始成员文件 public_id，数组顺序即初始顺序")
 
 
-class CollectionPatch(SQLModel):
+class CollectionPatch(_CollectionListNormalizer, SQLModel):
     """部分更新集合元数据（仅 owner；只改请求中出现的字段；成员不在 PATCH 中修改）"""
 
-    name: str | None = Field(default=None, max_length=128)
+    name: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=128,
+    )] | None = None
     description: str | None = Field(default=None, max_length=512)
     member_type: list[str] | None = Field(default=None)
     collection_type: list[str] | None = Field(default=None)
@@ -137,8 +182,8 @@ class CollectionPatch(SQLModel):
     access: list[str] | None = Field(default=None)
     journal_name: str | None = Field(default=None, max_length=255)
     publish_time: datetime | None = Field(default=None, description="文章发表时间")
-    abstract: str | None = Field(default=None)
-    cite_information: str | None = Field(default=None)
+    abstract: str | None = Field(default=None, max_length=16000)
+    cite_information: str | None = Field(default=None, max_length=16000)
     organism: list[str] | None = Field(default=None)
     organism_part: list[str] | None = Field(default=None)
     sample_stabilization: list[str] | None = Field(default=None)
@@ -147,6 +192,14 @@ class CollectionPatch(SQLModel):
     polarity: list[str] | None = Field(default=None)
     ionisation_source: list[str] | None = Field(default=None)
     analyzer: list[str] | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _reject_explicit_null(self) -> "CollectionPatch":
+        """非空列不接受显式 null（字段缺席即保持原值）；publish_time 可空，允许清空。"""
+        for field in self.model_fields_set - {"publish_time"}:
+            if getattr(self, field) is None:
+                raise ValueError(f"{field} must not be null")
+        return self
 
 
 class CollectionMembersOperation(SQLModel):

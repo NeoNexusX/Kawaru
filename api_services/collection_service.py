@@ -215,6 +215,8 @@ async def update_collection(
 ) -> None:
     """部分更新集合元数据（只改请求中出现的字段；成员不在 PATCH 中修改）"""
     updates = patch.model_dump(exclude_unset=True)
+    if not updates:
+        return
 
     for field, value in updates.items():
         setattr(collection, field, value)
@@ -289,8 +291,8 @@ async def build_collection_filters(
     三类字段的匹配方式（字段分组见 constants/collection_constants.py）：
     - 文本字段（name/title/journal_name）：OR 连接的 LIKE，大小写由列排序规则
       （utf8mb4_unicode_ci）保证不敏感
-    - 枚举字段（member_type/collection_type）：IN，同上不敏感
-    - JSON 数组字段（organism 等）：元素成员判断——集合内任一成员含该值即命中。
+    - JSON 数组字段（member_type/collection_type/organism 等）：元素成员判断——
+      集合含任一选中值即命中。
       用 JSON_OVERLAPS 判交集（多值天然 OR 语义），并强制 LOWER 两侧：
       JSON 值比较本身大小写敏感（与普通列排序规则不一致），故统一降为小写后比较。
 
