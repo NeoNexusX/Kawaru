@@ -1,7 +1,6 @@
 """
 Processing API — API 入口层
 """
-import json
 from typing import Annotated
 
 from fastapi import Depends, Query
@@ -25,10 +24,8 @@ from api_services.processing_service import (
 from api_helpers.processing_helper import assert_run_ownership
 from api.user_api import token_authen
 from database.db import AsyncSessionDep
-from database.redis_client import redis_client
 from exceptions.experiment_exceptions import invalid_process_request_exception
 from exceptions.common_exceptions import internal_server_error_exception
-from constants.file_constants import OSS_BUCKET_NAME, OSS_REGION_ID, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS, ZARR_STS_CACHE_TTL_SECONDS
 from models.file_models import ZarrFolderAccess
 from models.user_models import UserInDB
 from models.filter_models import ListDataResponse, PaginationMeta, RunFilter
@@ -273,37 +270,17 @@ async def get_zarr_folder_access(
     """
     【zarr 文件夹访问接口】
 
-    返回文件夹路径和 OSS STS Token，前端凭此通过 OSS SDK 直连读取，
-    无需逐个文件签名，支持 Range 请求和 zarr 随机分块读取。
+    返回 zarr 结果根目录的 CDN URL（尾带 /），前端按 zarr 布局自行拼接
+    zarr.json、各 chunk 等对象路径后直接读取，无需 OSS STS 凭据。
 
     聚类结果写回算法处理结果 zarr 内部，统一返回 run_record.out_path。
     """
     run_record = await assert_zarr_folder_access(async_session, run_id, current_user)
 
     target_path = run_record.out_path
+    zarr_url = OssStorage.prepare_zarr_public_url(target_path)  # type: ignore
 
-    # Redis 缓存：同一 run_id 复用同一个 STS Token
-    cache_key = f"zarr_sts:{run_id}"
-    cached = await redis_client.get(cache_key)  # type: ignore
-    if cached:
-        return ZarrFolderAccess(**json.loads(cached))
-
-    expires = OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS
-    sts_token = await OssStorage.get_zarr_read_sts_token(target_path, expires)  # type: ignore
-    if sts_token is None:
-        raise internal_server_error_exception
-
-    access = ZarrFolderAccess(
-        folder_path=target_path,  # type: ignore
-        bucket=OSS_BUCKET_NAME,           # type: ignore
-        region=OSS_REGION_ID,             # type: ignore
-        sts_token=sts_token,
-        expires_in=expires,
-    )
-
-    await redis_client.set(cache_key, access.model_dump_json(), ex=ZARR_STS_CACHE_TTL_SECONDS)  # type: ignore
-
-    return access
+    return ZarrFolderAccess(zarr_url=zarr_url)
 
 
 async def create_clustering_task(

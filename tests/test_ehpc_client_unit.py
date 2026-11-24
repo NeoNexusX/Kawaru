@@ -177,6 +177,43 @@ async def test_submit_clustering_job_contract(monkeypatch):
     assert captured.get("extra_env") is None
 
 
+async def test_input_size_env_injected(monkeypatch):
+    """四个任务统一把输入总字节数注入容器环境变量 INPUT_SIZE_BYTES。"""
+    captured = {}
+
+    async def fake_assume_role(*_args, **_kwargs):
+        return {"AccessKeyId": "STS.x", "AccessKeySecret": "s", "SecurityToken": "t"}
+
+    def fake_create_job(_region, request):
+        captured.update(request)
+        return "job-1"
+
+    clustering_task = _task(
+        command=["python", "/app/clustering_umap_kmeans.py"],
+        results_prefix="hpc-clustering",
+        callback_env="CLUSTERING_FC_CALLBACK_URL",
+        callback_path="/callback/clustering_callback",
+    )
+    monkeypatch.setattr(ehpc, "OSS_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(ehpc, "OSS_INTERNAL_ENDPOINT", "https://oss-internal")
+    monkeypatch.setattr(ehpc, "_settings",
+                        lambda: _config(tasks={"clustering": clustering_task},
+                                        sts_duration_seconds=3600))
+    monkeypatch.setattr(ehpc, "choose_resources", lambda *_: SimpleNamespace(
+        cores=4, memory_gib=8, system_disk_gib=100,
+        instance_types=[], fallback_any_type=True,
+    ))
+    monkeypatch.setattr(ehpc, "_assume_role", fake_assume_role)
+    monkeypatch.setattr(ehpc, "_create_job", fake_create_job)
+
+    await ehpc.submit_clustering_job(run_id=7, source_zarr_path="processed/run_7.zarr",
+                                     input_bytes=123)
+
+    container = captured["Tasks"][0]["TaskSpec"]["TaskExecutor"][0]["Container"]
+    env = {item["Name"]: item["Value"] for item in container["EnvironmentVars"]}
+    assert env["INPUT_SIZE_BYTES"] == "123"
+
+
 def _tier(max_input_gib, cores, memory_gib, system_disk_gib, instance_types=()):
     return SimpleNamespace(
         max_input_gib=max_input_gib, cores=cores, memory_gib=memory_gib,

@@ -43,6 +43,7 @@ from constants.file_constants import (
     OSS_DELETE_PREFIX_TIMEOUT_SECONDS,
     OSS_REGION_ID,
     OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS,
+    OSS_ZARR_CDN_DOMAIN,
     OSS_ZIP_STORAGE_ROOT,
 )
 from exceptions.oss_exceptions import oss_client_create_failed_exception, oss_timeout_exception
@@ -162,40 +163,22 @@ class OssStorage:
         return _presign_get_url(file_path, expires)
 
     @staticmethod
-    async def get_zarr_read_sts_token(
-        folder_path: str,
-        expires: int = 3600,
-    ) -> OssStsToken | None:
-        """获取 zarr 文件夹只读 STS Token（如 "processed/run_a1b2c3_42.zarr"）；超时返回 None。"""
-        folder = folder_path.rstrip("/")
-        policy = {
-            "Version": "1",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["oss:GetObject"],
-                    "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}/{folder}/*"]
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["oss:ListObjects"],
-                    "Resource": [f"acs:oss:*:*:{OSS_BUCKET_NAME}"],
-                    "Condition": {
-                        "StringLike": {
-                            "oss:Prefix": [f"{folder}/*"]
-                        }
-                    }
-                }
-            ]
-        }
-        code = hashlib.md5(folder.encode()).hexdigest()[:8]
-        role_session_name = f"zarr-read-{code}-{datetime.now().timestamp()}"
+    def prepare_zarr_public_url(folder_path: str) -> str:
+        """生成 zarr 结果目录的公开读取根 URL（尾带 /）。
 
-        result = await _wait_bounded(
-            _assume_role(policy, role_session_name, expires),
-            None, "get zarr read sts token", folder_path,
-        )
-        return OssStsToken(**result) if result is not None else None
+        优先使用 zarr 专用 CDN 域名（测试服/正式服可配置不同二级域名），
+        未配置时回退通用 CDN 域名，再回退 OSS 公网域名。
+        前端拿到根 URL 后按 Zarr 布局自行拼接对象路径（如 zarr.json、chunk key）。
+        """
+        root = (folder_path or "").strip().strip("/")
+        if not root:
+            raise ValueError("zarr folder path is empty")
+
+        if OSS_ZARR_CDN_DOMAIN:
+            return f"{OSS_ZARR_CDN_DOMAIN.rstrip('/')}/{root}/"
+
+        logger.warning("zarr cdn domain not configured, falling back to OSS endpoint: %s", folder_path)
+        return f"https://{OSS_BUCKET_NAME}.{OSS_REGION_ID}.aliyuncs.com/{root}/"
 
 
 #########################

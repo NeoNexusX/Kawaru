@@ -61,8 +61,8 @@ _EHPC_SUBMITTERS = {
 # .env 补 token；事件体由入队载荷剔除 _FC_HIDDEN_KWARGS 得到。
 _FC_ENDPOINTS: dict[str, tuple[str | None, str | None, float | int | None]] = {}
 
-# 仅用于 EHPC 选资源档位的参数，不进 FC 事件体。
-# 载荷在 API 构造模型时已归一化（metadata）、入队时已剔除 None，这里只剩这一条规则。
+# EHPC 会注入容器环境变量 INPUT_SIZE_BYTES（选档之外也下发）；
+# FC 事件体不透出，将来 FC 任务需要时再移出。
 _FC_HIDDEN_KWARGS = ("input_bytes",)
 
 

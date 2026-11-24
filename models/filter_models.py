@@ -90,10 +90,10 @@ class RunFilter(MultiValueFilter):
 class CollectionFilter(MultiValueFilter):
     """集合筛选模型（每个字段可传单值或数组；同字段多值 OR，不同字段之间 AND）
 
-    匹配方式分三类：
+    匹配方式分两类：
     - name / title / journal_name / owner_username：模糊匹配（LIKE %v%）
-    - member_type / collection_type：精确匹配（IN）
-    - organism 等 JSON 数组字段：元素成员判断（集合内任一成员含该值），大小写不敏感
+    - member_type / collection_type / organism 等 JSON 数组字段：
+      元素成员判断（集合含任一选中值即命中），大小写不敏感
 
     不含 doi / access（标识符类字段，不参与筛选）。
     """
@@ -102,10 +102,9 @@ class CollectionFilter(MultiValueFilter):
     title: list[str] | None = Field(default=None, description="数据集标题（模糊匹配）")
     journal_name: list[str] | None = Field(default=None, description="期刊名（模糊匹配）")
     owner_username: list[str] | None = Field(default=None, description="集合 owner 用户名（模糊匹配）")
-    # 标量-精确
+    # JSON 数组（多值，元素成员判断；member_type/collection_type 已转为 JSON 列）
     member_type: list[str] | None = Field(default=None, description="集合包含的数据类型")
     collection_type: list[str] | None = Field(default=None, description="集合类型")
-    # JSON 数组（成员文件取值汇总，元素成员判断）
     organism: list[str] | None = Field(default=None, description="样本所属物种")
     organism_part: list[str] | None = Field(default=None, description="样本来源组织")
     sample_stabilization: list[str] | None = Field(default=None, description="样本稳定方式")
