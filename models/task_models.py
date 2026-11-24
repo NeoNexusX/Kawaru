@@ -16,9 +16,9 @@ class _TaskParams(BaseModel):
     task: ClassVar[str]
     id_field: ClassVar[str]
 
-    input_bytes: int | None = Field(
-        default=None, ge=0,
-        description="输入总字节数；EHPC 按它选资源档位，FC 事件体不透出",
+    input_bytes: int = Field(
+        ge=0,
+        description="输入总字节数（必填）；EHPC 选资源档位并注入容器 INPUT_SIZE_BYTES",
     )
 
 

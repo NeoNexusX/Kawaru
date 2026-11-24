@@ -45,7 +45,7 @@ async def list_mine(result: ListMyRunsDep):
 
 @processing_router.get("/{run_id}/zarr", response_model=ZarrFolderAccess)
 async def get_zarr_folder(result: ZarrFolderDep):
-    """获取 zarr 文件夹访问凭证（OSS STS Token）"""
+    """获取 zarr 结果根目录的 CDN URL"""
     return result
 
 

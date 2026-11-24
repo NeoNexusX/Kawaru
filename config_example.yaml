@@ -6,8 +6,9 @@ server:
   name: SpatialXomics
   port: 8000
   host: 0.0.0.0
-  # 对外 API 公网前缀，用于拼接中转下载 URL；留空则回退 request.base_url 推导
-  public_base_url: ""
+  # 对外 API 公网前缀，用于拼接中转下载 URL；必须与反向代理暴露后端的路径一致
+  # （反代把 /api 前缀转发到本服务时填 https://<域名>/api，不要只填域名）
+  public_base_url: "https://sxo.neonexus.top/api"
 
 cors:
   allow_origins: ["*"]            # dev：按需收紧到前端域名
@@ -92,7 +93,7 @@ oss:
   # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 480 = 8 小时，
   # 且必须 <= 阿里云 RAM 角色「最大会话时长」（控制台：RAM 访问管理 → 角色 → 编辑最大会话时长）
   oss_upload_sts_token_expire_minutes: 480
-  # 下载（zarr 只读）STS Token 有效期（分钟），上限同上
+  # 历史下载（zarr 只读）STS 有效期（分钟）：zarr 已改为 CDN 根 URL，不再签发下载 STS
   oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
@@ -112,6 +113,9 @@ oss:
   # 浏览器直连下载（download_raw 预签名 URL）的 CDN 域名，仅正式服配置；
   # V1 签名不含 Host，只换域名不影响签名。测试服不配置则保持 OSS 域名。
   # oss_cdn_domain: https://cdn.neonexus.top
+  # zarr 结果目录直读的 CDN 域名（正式服如 https://cdn.neonexus.top）；
+  # 未配置时回退 oss_cdn_domain，仍未配置则返回 OSS 公网域名。
+  # oss_zarr_cdn_domain: https://cdn.neonexus.top
 
 # E-HPC INSTANT（算法预处理）。四个计算任务（raw_convert/preview/algorithm/
 # clustering）全部走 E-HPC，无运行时开关；未注册 EHPC 提交器的新增任务才走 FC。
@@ -187,9 +191,9 @@ admin_info:
   orcid: admin
   homepage: admin
   email: admin@example.com
-  max_total_file_size: 100
-  max_file_count: 20
-  max_processing_size: 200
+  max_total_file_size: 50
+  max_file_count: 50
+  max_processing_size: 50
   max_download_count: 50
 
 user:

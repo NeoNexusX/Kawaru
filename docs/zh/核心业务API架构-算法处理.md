@@ -9,10 +9,10 @@
 - 校验处理配额、文件归属和文件状态。
 - 创建运行记录（run）并异步触发 FC。
 - 接收 FC 回调，维护 run 状态并累加处理配额。
-- 签发只读凭证，让前端直读 zarr 结果。
+- 返回 zarr 根目录的 CDN URL，让前端直读 zarr 结果。
 - 巡检超时任务，清理已删除的结果对象。
 
-结果以 zarr 分块格式存储，每个 run 一个独立目录。前端通过 OSS SDK 随机读取分块，用于渲染质谱图像和交互式分析。
+结果以 zarr 分块格式存储，每个 run 一个独立目录。前端通过 CDN 根 URL 随机读取分块，用于渲染质谱图像和交互式分析。
 
 ## 2. 整体架构
 
@@ -25,13 +25,14 @@ flowchart LR
     Worker -- 触发处理 --> FC[处理 FC]
     FC --> OSS[(OSS)]
     FC -- 结果回调 --> API
-    Frontend -- STS 直读 zarr --> OSS
+    Frontend -- CDN 直读 zarr --> CDN[(CDN)]
+    CDN -- 回源 --> OSS
 ```
 
 | 模块 | 职责 |
 |---|---|
 | 前端 | 提交任务、轮询状态、直读 zarr 可视化 |
-| FastAPI | 配额与归属校验、run 记录、回调处理、只读凭证签发 |
+| FastAPI | 配额与归属校验、run 记录、回调处理、zarr 根 URL 签发 |
 | Celery | 异步触发 FC、超时巡检 |
 | 处理 FC | 执行转换与算法、写 zarr、回调结果 |
 | OSS | 保存 zarr 结果 |
@@ -45,7 +46,7 @@ flowchart LR
 | `POST /processes/raw-convert` | 前端 | 创建 imzML 直转 zarr 任务 |
 | `POST /processes/{run_id}/clustering` | 前端 | 对已完成的 run 发起聚类分析 |
 | `POST /processes/mine` | 前端 | 分页查询当前用户的运行记录（body 传 RunFilter，支持文件名/算法参数模糊搜索） |
-| `GET /processes/{run_id}/zarr` | 前端 | 获取 zarr 结果目录的只读凭证 |
+| `GET /processes/{run_id}/zarr` | 前端 | 获取 zarr 结果根目录的 CDN URL |
 | `DELETE /processes/{run_id}` | 前端 | 删除运行记录并清理结果 |
 | `POST /callback/algorithm_callback` | 处理 FC | 报告算法处理或直转结果 |
 | `POST /callback/clustering_callback` | 处理 FC | 报告聚类结果 |
@@ -75,6 +76,7 @@ sequenceDiagram
     participant Worker as Celery Worker
     participant FC as 处理 FC
     participant OSS as OSS
+    participant CDN as CDN
 
     User->>FE: 选择文件和算法配置
     FE->>API: 创建处理任务
@@ -88,9 +90,10 @@ sequenceDiagram
     API->>DB: 校验结果，更新状态和配额
     FE->>API: 轮询运行状态
     API-->>FE: completed 或 failed
-    FE->>API: 获取 zarr 访问凭证
-    API-->>FE: 目录路径 + 只读 STS
-    FE->>OSS: 直读 zarr 渲染分析
+    FE->>API: 获取 zarr 根 URL
+    API-->>FE: zarr 根目录 CDN URL
+    FE->>CDN: 拼接对象路径并直读 zarr
+    CDN->>OSS: 回源（私有 Bucket）
 ```
 
 结合上图，几条关键规则：
@@ -127,7 +130,7 @@ stateDiagram-v2
 
 ## 6. 结果访问、删除与配额
 
-- 结果访问：`GET /processes/{run_id}/zarr` 返回结果目录和只读 STS 凭证，仅限 `completed` 的 run，权限为所有者、管理员或公开文件的直转 run；凭证有有效期并短期缓存。
+- 结果访问：`GET /processes/{run_id}/zarr` 返回 zarr 根目录的 CDN URL（尾带 `/`），仅限 `completed` 的 run，权限为所有者、管理员或公开文件的直转 run；前端按 zarr 布局自行拼接对象路径。
 - 删除 run：当前只允许 Run 创建者调用（没有管理员豁免）。接口先标记 deleting 并投递后台清理；Worker 删除 OSS 结果后退还配额并删除记录。删除直转 run 会同时解除文件与默认直转结果的关联。
 - 删除文件时，其全部运行记录和结果对象会一并清理。
 - 处理配额按“成功输出的累计大小”计：成功回调时累加，删除 run 时退还，和上传配额同属用户配额体系。
