@@ -191,9 +191,7 @@ class RawDownloadResponse(SQLModel):
 
 
 class ZarrFolderAccess(SQLModel):
-    """zarr 文件夹访问凭证 — 前端拿到后通过 OSS SDK 直连读取"""
-    folder_path: str = Field(description="OSS 上的 zarr 文件夹路径")
-    bucket: str = Field(description="OSS bucket 名称")
-    region: str = Field(description="OSS region")
-    sts_token: "OssStsToken" = Field(description="OSS 临时访问凭证")
-    expires_in: int = Field(description="STS Token 有效时间（秒）")
+    """zarr 结果目录访问信息 — 前端拿到根 URL 后自行拼接 zarr 对象路径读取"""
+    zarr_url: str = Field(
+        description="zarr 根目录的 CDN URL（尾带 /），如 https://cdn.example.com/processed/run_xxx.zarr/"
+    )

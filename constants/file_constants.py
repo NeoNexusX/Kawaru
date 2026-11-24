@@ -84,11 +84,12 @@ OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
 # 浏览器直连下载的 CDN 域名：正式服配置；测试服不配置（None）则预签名 URL 保持 OSS 域名
 OSS_CDN_DOMAIN = getattr(config.oss, "oss_cdn_domain", None)
+# zarr 结果目录直读 CDN 域名：后端只返回根 URL，前端按 zarr 布局自行拼接对象路径。
+# 测试服/正式服可配置不同二级域名（如 https://gdn.neonexus.top / https://cdn.neonexus.top）；
+# 未配置时回退 oss_cdn_domain，仍未配置则由 OssStorage 回退 OSS 公网域名。
+OSS_ZARR_CDN_DOMAIN = getattr(config.oss, "oss_zarr_cdn_domain", None) or OSS_CDN_DOMAIN
 # STS Token 有效期（单位秒；分钟值上限 240 需对齐阿里云 RAM 角色「最大会话时长」设置）
 OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_upload_sts_token_expire_minutes", 60)) * 60
-OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_download_sts_token_expire_minutes", 60)) * 60
-# zarr 读 STS 的 Redis 缓存过期时间（比 Token 早过期5分钟，确保缓存过期后旧 Token 仍有效）
-ZARR_STS_CACHE_TTL_SECONDS = max(60, OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS - 300)
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
 OSS_DELETE_OBJECT_TIMEOUT_SECONDS = config.oss.oss_delete_object_timeout_seconds
 OSS_DELETE_PREFIX_TIMEOUT_SECONDS = config.oss.oss_delete_prefix_timeout_seconds
@@ -124,8 +125,6 @@ __all__ = [
     "SIGNED_URL_EXPIRE_SECONDS",
     "DOWNLOAD_CACHE_TTL_SECONDS",
     "OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS",
-    "OSS_DOWNLOAD_STS_TOKEN_EXPIRE_SECONDS",
-    "ZARR_STS_CACHE_TTL_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
     "OSS_ORIGIN_STORAGE_ROOT",
     "OSS_INTERNAL_ENDPOINT",
@@ -139,4 +138,5 @@ __all__ = [
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
     "OSS_CDN_DOMAIN",
+    "OSS_ZARR_CDN_DOMAIN",
 ]
