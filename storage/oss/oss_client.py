@@ -72,28 +72,6 @@ def create_oss_client() -> oss_aio.AsyncClient | None:
     return oss_client
 
 
-def create_oss_sync_client() -> oss.Client | None:
-    """Create a synchronous OSS client."""
-    oss_client = None
-    logger = get_logger("oss_storage")
-    try:
-        oss_config = get_config().oss
-        access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
-        access_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET")
-        if not access_key_id or not access_key_secret:
-            raise ValueError("oss access_key_id or access_key_secret is empty")
-        credentials_provider = oss.credentials.EnvironmentVariableCredentialsProvider()
-        cfg = oss.config.load_default()
-        cfg.credentials_provider = credentials_provider
-        if not oss_config.region_id:
-            raise ValueError("oss region_id is empty")
-        cfg.region = oss_config.region_id
-        oss_client = oss.Client(cfg)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error("create oss client failed: %s", exc)
-    return oss_client
-
-
 def create_internal_oss_client() -> oss_aio.AsyncClient | None:
     """Create an async OSS client bound to the internal endpoint (relay download only).
 
@@ -172,8 +150,6 @@ def check_oss_config(config: OSSSettings):
         raise ValueError("oss oss_origin_storage_root is empty")
     if config.oss_upload_sts_token_expire_minutes is None:
         raise ValueError("oss oss_upload_sts_token_expire_minutes is empty")
-    if config.oss_download_sts_token_expire_minutes is None:
-        raise ValueError("oss oss_download_sts_token_expire_minutes is empty")
 
 
 def init_oss_summary(client: oss_aio.AsyncClient | None):

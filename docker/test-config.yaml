@@ -72,7 +72,6 @@ oss:
   region_id: cn-hangzhou
   bucket_name: kawaru-oss
   oss_upload_sts_token_expire_minutes: 15
-  oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
@@ -82,6 +81,9 @@ oss:
   # 中转下载（relay）取源 endpoint：GitHub 托管 runner 不在阿里云内网，
   # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
   oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
+  # 测试服 CDN（私有 Bucket 回源），RAW 下载与 zarr 读取共用；
+  # test_oss 经它下载并校验 MD5、attachment 响应头与 Range 分段
+  oss_cdn_domain: https://gdn.neonexus.top
 
 # E-HPC 配置：配置模型要求段完整（E-HPC 是唯一计算后端，缺段/残段启动即失败）。
 # CI 不真正提交作业（conftest 拦 AssumeRole，集成测试标记不覆盖计算任务），

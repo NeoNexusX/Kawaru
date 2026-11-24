@@ -5164,7 +5164,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <path data-edge-from="oss_storage" data-edge-to="broker" data-edge-label="delay()" data-edge-key="2" data-edge-id="storage-broker" data-composition-points="600,330;680,330" d="M 600 330 L 680 330" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="broker" data-edge-to="worker" data-edge-label="任务消费" data-edge-key="3" data-edge-id="broker-worker" data-composition-points="820,330;900,330" d="M 820 330 L 900 330" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="worker" data-edge-to="oss" data-edge-label="签名 / 检查 / 标签 / 删除" data-edge-key="4" data-edge-id="worker-oss" data-composition-points="970,360;970,384;986,384;986,476;965,476;965,500" d="M 970 360 L 970 376 Q 970 384 978 384 L 978 384 Q 986 384 986 392 L 986 468 Q 986 476 978 476 L 973 476 Q 965 476 965 484 L 965 500" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="client" data-edge-to="oss" data-edge-label="STS 上传 / 签名 URL 下载" data-edge-key="5" data-edge-id="client-oss" data-composition-points="105,360;105,384;876,384;876,530;900,530" d="M 105 360 L 105 376 Q 105 384 113 384 L 868 384 Q 876 384 876 392 L 876 522 Q 876 530 884 530 L 900 530" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="client" data-edge-to="oss" data-edge-label="STS 上传 / CDN 下载" data-edge-key="5" data-edge-id="client-oss" data-composition-points="105,360;105,384;876,384;876,530;900,530" d="M 105 360 L 105 376 Q 105 384 113 384 L 868 384 Q 876 384 876 392 L 876 522 Q 876 530 884 530 L 900 530" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Components -->
         <g id="node-client" data-node-id="client" data-node-label="用户端" tabindex="0" role="button" aria-label="聚焦用户端，Browser / API client, 架构组件" aria-pressed="false" data-node-kind="external" data-node-sublabel="Browser / API client" data-node-tag="HTTPS" data-node-context="架构组件">
@@ -5264,9 +5264,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="913" y="364" width="130" height="14" rx="3" class="c-mask"/>
           <text x="978" y="374" class="t-backend" font-size="8" text-anchor="middle">签名 / 检查 / 标签 / 删除</text>
         </g>
-        <g data-detail="context" data-edge-from="client" data-edge-to="oss" data-edge-label="STS 上传 / 签名 URL 下载" data-edge-key="5" data-edge-id="client-oss">
+        <g data-detail="context" data-edge-from="client" data-edge-to="oss" data-edge-label="STS 上传 / CDN 下载" data-edge-key="5" data-edge-id="client-oss">
           <rect x="427.9" y="364" width="125.19999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="490.5" y="374" class="t-messagebus" font-size="8" text-anchor="middle">STS 上传 / 签名 URL 下载</text>
+          <text x="490.5" y="374" class="t-messagebus" font-size="8" text-anchor="middle">STS 上传 / CDN 下载</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
@@ -5485,7 +5485,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>&bull; 上传：STS Token 直传（单对象范围）</li>
-          <li>&bull; 下载：预签名 URL / STS 读取凭证</li>
+          <li>&bull; 下载：RAW 免签 CDN 直链 / zarr CDN 根 URL（私有 Bucket 回源）</li>
           <li>&bull; 删除：Celery 异步删除（幂等）</li>
           <li>&bull; 标签：tag_oss_file（persistent 标记）</li>
           <li>&bull; 检查：check_file_exist / get_file_size</li>

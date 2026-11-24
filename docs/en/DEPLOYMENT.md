@@ -99,9 +99,10 @@ Application containers do not mount a business-file directory. Uploaded ZIPs, ex
 The service is OSS-only. Complete this checklist before the first deployment:
 
 - In `{dev,prod}-config.yaml`, set the OSS `region_id`, `bucket_name`, the object roots (`oss_zip_storage_root`, `oss_origin_storage_root`, `oss_processed_storage_root`), and the `ehpc:` section (image, vSwitch, security group, callbacks, resource tiers).
+- Set `oss_cdn_domain` (including `https://`) to the CDN for that environment's bucket. Raw downloads and Zarr reads share this domain, and both endpoints return 503 when it is missing. The CDN needs private-bucket origin fetch, access to `origin/` and `processed/`, the `response-content-disposition` parameter kept on origin requests, and Range origin fetch. On upgrade, remove the retired `oss_download_sts_token_expire_minutes` and `oss_zarr_cdn_domain` keys from `oss:`; config validation rejects them.
 - Upgrading a pre-E-HPC deployment: remove the retired `fc_*` keys from the `oss:` section. The config model rejects unknown keys, so leftovers fail app/worker startup (the pydantic error names each offending key).
 - In `.env`, set `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_ROLE_ARN`, and `FC_CALLBACK_TOKEN`; private registries also need `ACR_PULL_USERNAME` / `ACR_PULL_PASSWORD`.
-- Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue the generated path-scoped upload/download STS policies to clients and job-scoped STS credentials to E-HPC containers.
+- Grant the long-lived OSS identity only the permissions the backend needs (including assuming the configured role and managing/tagging its objects). Configure the RAM role so the application can issue path-scoped upload STS credentials to clients and job-scoped STS credentials to E-HPC containers.
 - Configure the OSS upload event to invoke the extraction FC function. Uploaded keys use `{oss_zip_storage_root}/{file_verify_code}/{file_id}.zip`; FC must parse `file_id` from the file name, write imZML/ibd below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and call `/callback/oss_upload_callback` with `file_id` and the same `FC_CALLBACK_TOKEN` in `X-FC-Token`.
 - Extraction is the only remaining FC compute function; algorithm, raw-convert, clustering, and preview run as E-HPC containers. Containers must also call their matching `/callback/*` route with `X-FC-Token`. Preview `feature` mode uses `/callback/umap_callback`, `tic` mode uses `/callback/tic_callback`, and `image_path` must be the preview directory key ending in `/` (e.g. `images/{public_id}/`), not a full object key. The callback URL must be reachable from the containers, and app/worker containers must have outbound access to OSS, STS, and the E-HPC API (the app process issues STS credentials directly).
 - Configure an OSS lifecycle rule to remove abandoned objects that never receive the `persistent=true` tag. Do not expire tagged source/extracted objects with that rule.
@@ -116,7 +117,7 @@ Default object placement is controlled by configuration rather than host directo
 | Clustering result | Written back into the run's Zarr; no second output directory |
 | TIC/UMAP preview | `images/{public_id}/` directory (the FC callback supplies this directory key ending in `/`; TIC writes `preview.jpg`, UMAP writes `preview.jpg`/`preview_2.jpg`/`preview_3.jpg`) |
 
-> A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, run one end-to-end smoke test: preflight → STS upload → extraction callback → RAW signed download. Also verify one relay download and one processing callback if those features are enabled for clients.
+> A healthy `/docs` endpoint only proves that the API and its backing services started. Before production traffic, test preflight, STS upload, the extraction callback, and a raw file download through the CDN. Also verify one relay download and one processing callback if those features are enabled for clients.
 
 ---
 

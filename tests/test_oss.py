@@ -4,17 +4,18 @@ OSS 测试集合（与本地上传测试区分开）
 TestOss.test_upload_to_oss              [oss]   preflight -> 拿 STS -> SDK 直传 OSS
 TestOss.test_file_metadata              [oss]   GET /files/{public_id}/metadata（需登录，不依赖回调）
 TestOss.test_simulate_fc_callback       [oss]   轮询 OSS 等待 FC 解压 → 模拟回调
-TestOss.test_raw_download_metadata      [oss]   GET /files/{file_id}/download_raw（回调后直接验证）
-TestOss.test_relay_download            [oss]   置公开 → 中转 URL（需登录）→ 经服务器透传下载（MD5 + Range + 401）
-TestOss.test_raw_download_metadata      [oss]   GET /files/{public_id}/download_raw（回调后直接验证）
+TestOss.test_raw_download_metadata      [oss]   GET /files/{public_id}/download_raw → 核对完整 CDN 链接 → 经 CDN 下载（MD5 + attachment 头 + Range）
+TestOss.test_relay_download             [oss]   置公开 → 中转 URL（需登录）→ 经服务器透传下载（MD5 + Range + 401）
 TestOss.test_cleanup_oss_upload         [oss]   等 20s celery 收尾 → 清理 OSS 文件 + DB 记录 + 临时 zip
+
+测试文件名带空格和 +（见 helpers/uploads.py），RAW 下载用例借它验证链接的路径编码。
 
 共用构件：
   - tests/helpers/uploads.py  build_preflight_payload / make_test_zip_to_local / TEST_FILENAME
   - tests/helpers/oss.py      upload_file_to_oss（STS 直传）/ parse_file_id_from_oss_path
 
 运行方式:
-    uv run pytest -m oss            # 本地或 CI（需真实 OSS、Bucket 事件与解包 FC）
+    uv run pytest -m oss            # 本地或 CI（需真实 OSS、Bucket 事件、解包 FC 与测试服 CDN）
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from httpx import AsyncClient
 
 from tools.cal_hash import compute_imzml_md5
 from storage.oss.oss_storage import OssStorage
-from constants.file_constants import OSS_ORIGIN_STORAGE_ROOT
+from constants.file_constants import OSS_CDN_DOMAIN, OSS_ORIGIN_STORAGE_ROOT
 from .conftest import logger
 from .helpers.oss import parse_file_id_from_oss_path, upload_file_to_oss
 from .helpers.uploads import (
@@ -54,6 +55,8 @@ class TestOss:
     _file_verify_code: str | None = None
     _imzml_hash: str | None = None
     _ibd_hash: str | None = None
+    # 回调写入的 origin 对象键（按下载文件名索引），RAW 下载用例据此核对 CDN 链接
+    _origin_paths: dict[str, str] = {}
 
     @pytest.mark.oss
     async def test_upload_to_oss(self, admin_login: Tuple[AsyncClient, str, str]):
@@ -177,7 +180,7 @@ class TestOss:
         auth = {"Authorization": f"{token_type.title()} {token}"}
         file_id = TestOss._uploaded_file_id
 
-        stem = Path(TEST_FILENAME).stem  # "test_oss_100MB_2"
+        stem = Path(TEST_FILENAME).stem  # 即 TEST_FILENAME，带空格和 +
         origin_root = OSS_ORIGIN_STORAGE_ROOT.rstrip("/")
         imzml_path = f"{origin_root}/{TestOss._file_verify_code}/{file_id}/{stem}.imzML"
         ibd_path = f"{origin_root}/{TestOss._file_verify_code}/{file_id}/{stem}.ibd"
@@ -234,15 +237,24 @@ class TestOss:
         assert body["public_id"] == TestOss._uploaded_public_id
         assert "file_id" not in body, "callback response must not expose file_id"
         assert body["status"] == "completed"
+        TestOss._origin_paths = {f"{stem}.imzML": imzml_path, f"{stem}.ibd": ibd_path}
         logger.info("callback registered, file_id=%s status=completed", file_id)
 
         logger.info("test_simulate_fc_callback passed: file_id=%s", file_id)
 
     @pytest.mark.oss
     async def test_raw_download_metadata(self, admin_login: Tuple[AsyncClient, str, str]):
-        """测试 GET /files/{public_id}/download_raw（回调后 DB 已更新，下载验证 MD5）"""
+        """GET /files/{public_id}/download_raw → 核对完整 CDN 链接 → 经 CDN 下载 imzML/ibd
+
+        覆盖链接的路径编码（文件名带空格和 +）、测试服 CDN 的私有 Bucket 回源、
+        response-content-disposition 透传与 Range 分段。
+        """
         if TestOss._uploaded_public_id is None:
             pytest.skip("no uploaded file to test raw download against")
+        assert OSS_CDN_DOMAIN and OSS_CDN_DOMAIN.startswith("https://"), (
+            "test-config 必须配置 https:// 开头的 oss.oss_cdn_domain，RAW 下载用例经 CDN 验证"
+        )
+        cdn_prefix = f"{OSS_CDN_DOMAIN.rstrip('/')}/"
 
         client, token, token_type = admin_login
         auth = {"Authorization": f"{token_type.title()} {token}"}
@@ -273,24 +285,49 @@ class TestOss:
         assert files[0]["filename"] == expected_ibd
         assert files[1]["filename"] == expected_imzml
 
-        # 下载并验证 MD5（hash 按 ibd → imzML 顺序匹配 sorted）
+        # 逐个文件经 CDN 完整下载：校验状态、attachment 头与 MD5；再用 Range 取前 1024 字节比对。
+        # hash 按 ibd → imzML 顺序匹配 sorted；CDN 请求不带登录头，链接本身免签
         import hashlib
         for f, expected_hash in zip(files, [TestOss._ibd_hash, TestOss._imzml_hash]):
             url = f["url"]
-            assert url.startswith("https://"), (
-                f"expected presigned OSS URL (https://), got '{url[:60]}...' for {f['filename']}"
+            # 完整链接 = CDN 域名 + 编码后的 origin 对象键 + attachment 参数（期望值手写编码，不复用 quote）
+            origin_key = TestOss._origin_paths[f["filename"]]
+            expected_url = (
+                f"{cdn_prefix}{origin_key.replace(' ', '%20').replace('+', '%2B')}"
+                "?response-content-disposition=attachment"
             )
+            assert url == expected_url, f"unexpected CDN link for {f['filename']}: {url!r}"
 
             h = hashlib.md5()
+            first_kb = b""
             async with client.stream("GET", url) as stream:
+                assert stream.status_code == 200, (
+                    f"CDN GET {f['filename']} -> {stream.status_code}"
+                    "（检查私有 Bucket 回源与 origin/ 路径放行）"
+                )
+                disposition = stream.headers.get("content-disposition", "")
+                assert "attachment" in disposition, (
+                    "CDN 响应缺少 attachment 头（检查回源是否保留 response-content-disposition）: "
+                    f"{disposition!r}"
+                )
                 async for chunk in stream.aiter_bytes(1024 * 1024):
+                    if len(first_kb) < 1024:
+                        first_kb += chunk[:1024 - len(first_kb)]
                     h.update(chunk)
             got_hash = h.hexdigest()
             assert got_hash == expected_hash, (
                 f"MD5 mismatch for {f['filename']}: expected={expected_hash} got={got_hash}"
             )
 
-            logger.info("downloaded %s size=%s hash=%s", f["filename"],
+            # 断点续传和多线程下载依赖 CDN 支持 Range
+            rng = await client.get(url, headers={"Range": "bytes=0-1023"})
+            assert rng.status_code == 206, f"expected 206 for range, got {rng.status_code}"
+            assert rng.headers.get("content-range", "").startswith("bytes 0-1023/"), (
+                f"bad content-range: {rng.headers.get('content-range')}"
+            )
+            assert rng.content == first_kb, f"range bytes differ from full download for {f['filename']}"
+
+            logger.info("downloaded %s via CDN size=%s hash=%s", f["filename"],
                         f.get("size"), got_hash)
 
         logger.info("test_raw_download_metadata passed: got %d files", len(body["files"]))
@@ -405,3 +442,4 @@ class TestOss:
         TestOss._file_verify_code = None
         TestOss._imzml_hash = None
         TestOss._ibd_hash = None
+        TestOss._origin_paths = {}

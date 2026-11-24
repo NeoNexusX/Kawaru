@@ -114,7 +114,7 @@ class StorageSettings(BaseModel):
     download_zip_ttl_minutes: int
     signed_url_ttl_minutes: int = Field(
         ge=6,
-        description="OSS 签名 URL 过期时间（分钟），必须 >= 6，以保证 Redis 缓存能比签名 URL 早 5 分钟过期",
+        description="中转下载 token 有效期（分钟），必须 >= 6，以保证 Redis 缓存比 token 早 5 分钟过期",
     )
     failed_experiment_ttl_minutes: int
     stale_process_run_timeout_minutes: int = Field(default=60, description="算法/转换 run 超过此时间无回调则标记失败")
@@ -134,9 +134,6 @@ class OSSSettings(BaseModel):
     # 上限需与阿里云 RAM 角色「最大会话时长」设置对齐（AssumeRole 不能超过该值）
     # 上传：480 分钟 = 8 小时（慢速大文件上传留足余量；RAM 角色最大会话时长上限 12 小时）
     oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=480)
-    # 历史下载（zarr 只读）STS 有效期：zarr 访问已改为 CDN 根 URL，当前不再使用该值；
-    # 配置项保留，避免存量配置因 extra=forbid 失效。
-    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")
@@ -154,14 +151,12 @@ class OSSSettings(BaseModel):
     relay_max_concurrency: int = Field(default=5, ge=1, description="中转下载最大并发数（保护服务器带宽）")
     relay_acquire_timeout_seconds: float = Field(default=10, gt=0, description="中转下载排队等待上限（秒），超时返回 429")
     relay_idle_timeout_seconds: float = Field(default=30, gt=0, description="中转下载空闲超时（秒）：客户端 X 秒不消费数据则中断传输")
-    # 浏览器直连下载（download_raw 的 imzML/ibd 预签名 URL）的 CDN 域名：仅替换 URL 域名，
-    # 签名参数不变（V1 签名不含 Host，回源 OSS 验签照常通过）。正式服配置，测试服不配置。
-    oss_cdn_domain: str | None = Field(default=None, description="浏览器直连下载的 CDN 域名（如 https://cdn.neonexus.top）；配置后预签名 URL 换用该域名，未配置保持 OSS 域名")
-    # zarr 结果目录公开读取的 CDN 域名：后端只返回根 URL，前端按 zarr 布局拼接对象路径。
-    # 测试服/正式服可配置不同二级域名；未配置时回退 oss_cdn_domain。
-    oss_zarr_cdn_domain: str | None = Field(
+    oss_cdn_domain: str | None = Field(
         default=None,
-        description="zarr 根目录直读的 CDN 域名（如 https://gdn.neonexus.top）；未配置回退 oss_cdn_domain",
+        description=(
+            "RAW 下载与 zarr 读取共用的 CDN 域名（带 https://，如 https://cdn.neonexus.top），"
+            "测试服与正式服各配各的；缺少配置时这两个接口返回 503"
+        ),
     )
 
 

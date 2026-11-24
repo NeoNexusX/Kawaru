@@ -28,8 +28,8 @@ from constants.file_constants import (
     ALLOWED_STORAGE_TYPES,
     MAX_SINGLE_FILE_SIZE_BYTES,
     OSS_BUCKET_NAME,
+    OSS_CDN_DOMAIN,
     OSS_REGION_ID,
-    SIGNED_URL_EXPIRE_SECONDS,
 )
 from exceptions import (
     duplicate_file_exception,
@@ -38,6 +38,7 @@ from exceptions import (
     file_persist_failed_exception,
     invalid_request_parameters_exception,
     invalid_user_for_file_list_sync_exception,
+    cdn_domain_unavailable_exception,
     user_file_limit_exception,
 )
 from exceptions.common_exceptions import internal_server_error_exception
@@ -572,15 +573,13 @@ async def update_file_metadata(
 async def update_download_stats(
     session: AsyncSession,
     file_record: FileInDB,
-    current_user: UserInDB | None = None,
+    current_user: UserInDB,
 ) -> None:
     """
     更新下载统计（原子操作，防止并发丢失更新）
 
     使用数据库级别的 UPDATE SET field = field + 1，
     避免 ORM read-modify-write 模式在高并发下的竞态条件。
-
-    current_user 为空时（免登录下载）只更新文件维度的统计，跳过用户已用下载次数。
     """
     now = utc_time()
     assert file_record.file_id is not None
@@ -595,8 +594,8 @@ async def update_download_stats(
         "last_downloaded_at", now, pk_column="file_id",
     )
 
-    # 原子递增用户已用下载次数（仅登录用户）
-    if current_user is not None and current_user.id is not None:
+    # 原子递增用户已用下载次数
+    if current_user.id is not None:
         await atomic_increment(
             session, UserInDB, current_user.id,
             "download_used",
@@ -827,22 +826,26 @@ async def prepare_download_raw_oss(
     file_record: FileInDB,
 ) -> list[OssDownloadFile]:
     """
-    直链下载：不打包，为 origin 的 imzML/ibd 各签一个预签名 URL。
+    为 origin 的 imzML/ibd 生成 CDN 直链。
 
-    - 复用 OssStorage.sign_download_url（零改动），下载名由 OSS 对象 basename 决定，
-      imzML/ibd 同 stem 配对天然保留。
+    - 下载名沿用 OSS 对象的文件名，保留 imzML/ibd 的同名配对。
     - 不触碰 file_record.path —— 避免被 cleanup_source_zips 误删 origin 永久文件。
     """
+    if not OSS_CDN_DOMAIN:
+        raise cdn_domain_unavailable_exception
+
     origin = await assert_origin_files_ready(session, file_record)
-
-    imzml_url = await OssStorage.sign_download_url(origin.imzml_path, expires=SIGNED_URL_EXPIRE_SECONDS)
-    ibd_url = await OssStorage.sign_download_url(origin.ibd_path, expires=SIGNED_URL_EXPIRE_SECONDS)
-    if not imzml_url or not ibd_url:
-        raise file_content_missing_exception
-
     return [
-        OssDownloadFile(filename=Path(origin.imzml_path).name, url=imzml_url, size=origin.imzml_size),
-        OssDownloadFile(filename=Path(origin.ibd_path).name, url=ibd_url, size=origin.ibd_size),
+        OssDownloadFile(
+            filename=Path(origin.imzml_path).name,
+            url=OssStorage.prepare_download_url(origin.imzml_path, OSS_CDN_DOMAIN),
+            size=origin.imzml_size,
+        ),
+        OssDownloadFile(
+            filename=Path(origin.ibd_path).name,
+            url=OssStorage.prepare_download_url(origin.ibd_path, OSS_CDN_DOMAIN),
+            size=origin.ibd_size,
+        ),
     ]
 
 

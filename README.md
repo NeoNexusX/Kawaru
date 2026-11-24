@@ -84,7 +84,7 @@ Core runtime variables are checked at startup, and OSS initialization/callback r
 | `REDIS_PASSWORD` | Redis password |
 | `SECRET_KEY` | Stable JWT signing key. Set it explicitly outside the disposable test stack; otherwise a random key is generated on every process start and existing tokens become invalid after restart. |
 | `SMTP_PASSWORD` | SMTP login password (server / port / account / sender are configured in `config.yaml` → `email:`) |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | Aliyun OSS credentials and the RAM role used to issue scoped upload/download STS credentials |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_ROLE_ARN` | Aliyun OSS credentials and the RAM role used to issue scoped upload STS credentials |
 | `FC_CALLBACK_TOKEN` | Shared token required in the `X-FC-Token` header of every `/callback/*` request |
 | `CONFIG_PATH` / `REGION_PATH` | Paths to the app config and country/region validation dataset |
 | `LOG_DIR` / `LOG_LEVEL` | Log directory and level |
@@ -162,7 +162,7 @@ Kawaru now supports **OSS storage only**. The former local-storage and backend c
 3. Upload the ZIP directly to OSS. The extraction FC function parses `file_id` from the key, writes the imZML/ibd pair below `{oss_origin_storage_root}/{file_verify_code}/{file_id}/`, and calls `POST /callback/oss_upload_callback` with `X-FC-Token` and `file_id`.
 4. On a successful callback, the backend stores all three object keys, commits them, and then tags the ZIP, imZML, and ibd objects with `persistent=true`. `storage_mode=continuous` dispatches the feature FC task and receives its result at `/callback/umap_callback`; other modes dispatch TIC and use `/callback/tic_callback`. Both callbacks store the preview directory key ending with `/`, normally `images/{public_id}/`; clients append `preview.jpg` to the `image_path` returned in file responses.
 5. Algorithm processing (`POST /processes`) and raw conversion (`POST /processes/raw-convert`) take the source file as `file_public_id`, return runs with `source_file_public_id`, and write `{oss_processed_storage_root}/run_{run_id}.zarr/`. Clustering (`POST /processes/{run_id}/clustering`) updates that same Zarr rather than creating a second output path. `GET /processes/{run_id}/zarr` returns the Zarr root directory's CDN URL after the base run completes; clients append object paths themselves.
-6. `GET /files/{public_id}/download_raw` returns signed imZML and ibd URLs; `GET /files/{public_id}/download_relay` returns backend URLs that stream the same two objects through the server. There is no ZIP download: the uploaded source ZIP is deleted by `cleanup_source_zips` after its retention period.
+6. `GET /files/{public_id}/download_raw` returns CDN links for the imZML and ibd files; `GET /files/{public_id}/download_relay` returns backend URLs that stream the same two objects through the server. There is no ZIP download: the uploaded source ZIP is deleted by `cleanup_source_zips` after its retention period.
 
 The configured object roots are `oss_zip_storage_root`, `oss_origin_storage_root`, and `oss_processed_storage_root`. Celery beat schedules stale-preflight cleanup, source-ZIP cleanup, failed-experiment cleanup, stale-processing-run marking, deleted-user cleanup, stale file/run deletion retries, and a heartbeat. Objects that never reach a callback and therefore never receive `persistent=true` still rely on the OSS lifecycle rule.
 
@@ -170,7 +170,7 @@ The configured object roots are `oss_zip_storage_root`, `oss_origin_storage_root
 
 | Area | Main routes |
 |------|-------------|
-| File upload and access | `/files/preflight`, `/files/upload`, `/files/{public_id}/metadata`, `/files/{public_id}/download_raw`, `/files/{public_id}/download_raw_noauth`, `/files/{public_id}/download_relay` |
+| File upload and access | `/files/preflight`, `/files/upload`, `/files/{public_id}/metadata`, `/files/{public_id}/download_raw`, `/files/{public_id}/download_relay` |
 | Processing runs | `POST /processes`, `POST /processes/raw-convert`, `POST /processes/{run_id}/clustering`, `GET /processes/{run_id}/zarr`, `GET /processes/mine`, `DELETE /processes/{run_id}` |
 | FC callbacks | `/callback/oss_upload_callback`, `/callback/algorithm_callback`, `/callback/tic_callback`, `/callback/umap_callback`, `/callback/clustering_callback` |
 

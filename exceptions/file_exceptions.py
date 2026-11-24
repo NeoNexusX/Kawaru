@@ -27,6 +27,12 @@ download_not_implemented_exception = HTTPException(
     detail=format_exception_detail("download for this storage type not implemented")
 )
 
+# 未配置 oss_cdn_domain：RAW 下载与 zarr 读取共用这一个 CDN 域名
+cdn_domain_unavailable_exception = HTTPException(
+    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    detail=format_exception_detail("CDN domain is not configured"),
+)
+
 # 当前存储类型不支持异常
 storage_type_not_allowed_exception = HTTPException(
     status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -82,6 +88,7 @@ __all__ = [
     "file_not_found_exception",
     "permission_denied_exception",
     "download_not_implemented_exception",
+    "cdn_domain_unavailable_exception",
     "storage_type_not_allowed_exception",
     "file_content_missing_exception",
     "file_persist_failed_exception",

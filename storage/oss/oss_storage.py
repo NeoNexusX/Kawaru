@@ -1,28 +1,26 @@
 #########################
 # OSS Storage - OSS 操作封装
-# 职责：上传/读取 STS、存在性检查、取大小、打标签、签名、删除
+# 职责：上传 STS、下载链接、存在性检查、取大小、打标签、删除
 # 全部在调用方进程内直接执行，不投递 Celery 任务、不轮询结果：
 # - 异步 OSS 客户端按调用创建、用完关闭（create_oss_client_context），
 #   API 进程与 Celery 任务（每个任务一个新事件循环）都能安全调用
-# - STS 走 SDK 原生异步接口 assume_role_async；签名为本地计算，不发网络请求
+# - 上传 STS 走 SDK 原生异步接口 assume_role_async
 #########################
 import asyncio
 import hashlib
 import json
 import os
-from datetime import datetime, timedelta
-from functools import cache
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, TypeVar
+from urllib.parse import quote
 
-import alibabacloud_oss_v2 as oss
 from alibabacloud_credentials.client import Client as CredentialClient
 from alibabacloud_credentials.models import Config as CredentialConfig
 from alibabacloud_oss_v2 import (
     DeleteMultipleObjectsRequest,
     DeleteObject,
     DeleteObjectRequest,
-    GetObjectRequest,
     HeadObjectRequest,
     ListObjectsV2Request,
     PutObjectTaggingRequest,
@@ -43,12 +41,12 @@ from constants.file_constants import (
     OSS_DELETE_PREFIX_TIMEOUT_SECONDS,
     OSS_REGION_ID,
     OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS,
-    OSS_ZARR_CDN_DOMAIN,
     OSS_ZIP_STORAGE_ROOT,
 )
-from exceptions.oss_exceptions import oss_client_create_failed_exception, oss_timeout_exception
+from exceptions.file_exceptions import cdn_domain_unavailable_exception
+from exceptions.oss_exceptions import oss_timeout_exception
 from models.auth import OssStsToken
-from storage.oss.oss_client import create_oss_client_context, create_oss_sync_client
+from storage.oss.oss_client import create_oss_client_context
 from tools.logger import get_logger
 
 logger = get_logger("storage")
@@ -155,30 +153,25 @@ class OssStorage:
         return await _wait_bounded(_put_object_tagging(file_path, tag), False, "tag oss file", file_path)
 
     @staticmethod
-    async def sign_download_url(file_path: str, expires: int) -> str | None:
-        """签名 OSS 文件下载 URL；失败返回 None。
-
-        presign 为纯本地签名计算，直接在当前协程内完成；保留 async 签名以兼容调用方的 await。
-        """
-        return _presign_get_url(file_path, expires)
+    def prepare_download_url(file_path: str, cdn_domain: str) -> str:
+        """返回 CDN 附件下载链接。"""
+        object_path = quote(file_path)
+        return f"{cdn_domain.rstrip('/')}/{object_path}?response-content-disposition=attachment"
 
     @staticmethod
     def prepare_zarr_public_url(folder_path: str) -> str:
-        """生成 zarr 结果目录的公开读取根 URL（尾带 /）。
+        """生成 zarr 结果目录的 CDN 根 URL（尾带 /），与 RAW 下载共用 OSS_CDN_DOMAIN。
 
-        优先使用 zarr 专用 CDN 域名（测试服/正式服可配置不同二级域名），
-        未配置时回退通用 CDN 域名，再回退 OSS 公网域名。
         前端拿到根 URL 后按 Zarr 布局自行拼接对象路径（如 zarr.json、chunk key）。
+        未配置 CDN 域名时与 RAW 下载一致返回 503：Bucket 私有，不带签名的 OSS 直链读不到。
         """
+        if not OSS_CDN_DOMAIN:
+            raise cdn_domain_unavailable_exception
+
         root = (folder_path or "").strip().strip("/")
         if not root:
             raise ValueError("zarr folder path is empty")
-
-        if OSS_ZARR_CDN_DOMAIN:
-            return f"{OSS_ZARR_CDN_DOMAIN.rstrip('/')}/{root}/"
-
-        logger.warning("zarr cdn domain not configured, falling back to OSS endpoint: %s", folder_path)
-        return f"https://{OSS_BUCKET_NAME}.{OSS_REGION_ID}.aliyuncs.com/{root}/"
+        return f"{OSS_CDN_DOMAIN.rstrip('/')}/{root}/"
 
 
 #########################
@@ -314,56 +307,6 @@ async def _head_object_size(file_path: str) -> int | None:
         except Exception as e: # pylint:disable = broad-exception-caught
             logger.error(f"failed to get oss file size: {e}")
             return None
-
-
-@cache
-def _presign_client() -> oss.Client:
-    """presign 专用同步客户端（进程内复用）：presign 只做本地签名，不使用 HTTP 传输层。
-
-    创建失败抛异常，不进缓存，下次调用重试。
-    """
-    client = create_oss_sync_client()
-    if client is None:
-        raise oss_client_create_failed_exception
-    return client
-
-
-def _presign_get_url(file_path: str, expires: int) -> str | None:
-    """
-    签名OSS文件下载URL
-
-    presign 为纯本地签名计算（SDK 内部使用 _nopHttpClient，不发网络请求），
-    在事件循环内同步执行即可，不需要线程或 Celery。
-
-    :param file_path: OSS文件路径（如"folder/file.zip")
-    :param expires: 过期时间（秒），由调用方传入
-
-    :return: str 签名后的URL
-    """
-    try:
-        # 获取bucket名称
-        bucket_name = OSS_BUCKET_NAME
-        if not bucket_name:
-            logger.error("oss bucket name not set")
-            return None
-
-        # 生成预签名的URL
-        pre_result = _presign_client().presign(
-            GetObjectRequest(
-                bucket=bucket_name,  # 指定存储空间名称
-                key=file_path,        # 指定对象键名
-                response_content_disposition="attachment",# 设置为强制下载
-            ),
-            expires=timedelta(seconds=expires),
-        )
-        # 配置 CDN 域名（正式服）时仅替换域名：V1 签名不含 Host，不影响 Signature；
-        # 未配置（测试服）则原样返回 OSS 域名。OSS_CDN_DOMAIN 需带协议（如 https://cdn.neonexus.top）
-        if OSS_CDN_DOMAIN:
-            return f"{OSS_CDN_DOMAIN.rstrip('/')}/{pre_result.url.split('/', 3)[3]}"
-        return pre_result.url
-    except Exception as e: # pylint:disable = broad-exception-caught
-        logger.error(f"failed to sign oss file: {e}")
-        return None
 
 
 async def _assume_role(policy: dict, role_session_name: str,

@@ -27,7 +27,9 @@ logger = get_logger("test.helpers.uploads")
 # ------------------------------------------------------------------ #
 # 测试文件参数，按需修改
 # ------------------------------------------------------------------ #
-TEST_FILENAME = "test_oss_100MB_2"
+# 带空格和 +：它会一路成为 zip 成员名和 origin 对象键，RAW 下载用例据此验证
+# CDN 链接的路径编码（%20、%2B）经真实 OSS 与 CDN 仍能下载
+TEST_FILENAME = "test oss+100MB_2"
 TEST_IMZML_SIZE = 5 * 1024 * 1024  # 调整此值控制 imzML 大小
 TEST_IBD_SIZE = 5 * 1024 * 1024    # 调整此值控制 ibd 大小
 

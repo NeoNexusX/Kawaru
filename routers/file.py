@@ -8,7 +8,6 @@ from api.file_api import (
     PatchFileMetadataDep,
     PreflightDep,
     RawDownloadDep,
-    RawDownloadNoauthDep,
     RelayDownloadDep,
     SetFilePublicDep,
     UploadFileDep,
@@ -39,13 +38,7 @@ async def list_user_files(files: ListFilesDep):
 
 @file_router.get("/{public_id}/download_raw", dependencies=[Depends(count_visit)])#直接下载两个文件
 async def download_file_raw(file_meta: RawDownloadDep):
-    """RAW 直链下载（需鉴权）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
-    return file_meta
-
-
-@file_router.get("/{public_id}/download_raw_noauth", dependencies=[Depends(count_visit)])#免登录下载两个文件
-async def download_file_raw_noauth(file_meta: RawDownloadNoauthDep):
-    """RAW 直链下载（免登录）——返回 imzML + ibd 两个预签名 URL，毫秒级、零轮询"""
+    """RAW 直链下载（需鉴权），返回 imzML 和 ibd 的下载链接。"""
     return file_meta
 
 

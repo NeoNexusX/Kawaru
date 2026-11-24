@@ -76,7 +76,7 @@ storage:
   min_upload_bandwidth_mbps: 10   # 最低上传带宽假设（Mbps），TTL 公式输入，不配置则不启用公式
   upload_ttl_safety_factor: 1.5   # TTL 安全余量系数（乘式）
   download_zip_ttl_minutes: 30
-  signed_url_ttl_minutes: 60
+  signed_url_ttl_minutes: 60      # 中转下载 token 有效期（分钟）
   failed_experiment_ttl_minutes: 30
   stale_process_run_timeout_minutes: 60
   stale_clustering_run_timeout_minutes: 120
@@ -93,8 +93,6 @@ oss:
   # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 480 = 8 小时，
   # 且必须 <= 阿里云 RAM 角色「最大会话时长」（控制台：RAM 访问管理 → 角色 → 编辑最大会话时长）
   oss_upload_sts_token_expire_minutes: 480
-  # 历史下载（zarr 只读）STS 有效期（分钟）：zarr 已改为 CDN 根 URL，不再签发下载 STS
-  oss_download_sts_token_expire_minutes: 60
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
   oss_processed_storage_root: processed/
@@ -110,12 +108,10 @@ oss:
   relay_max_concurrency: 10         # 中转下载最大并发数（保护服务器带宽）
   relay_acquire_timeout_seconds: 10 # 排队等待上限，超时返回 429
   relay_idle_timeout_seconds: 30    # 空闲超时：客户端 30s 不消费数据则中断
-  # 浏览器直连下载（download_raw 预签名 URL）的 CDN 域名，仅正式服配置；
-  # V1 签名不含 Host，只换域名不影响签名。测试服不配置则保持 OSS 域名。
-  # oss_cdn_domain: https://cdn.neonexus.top
-  # zarr 结果目录直读的 CDN 域名（正式服如 https://cdn.neonexus.top）；
-  # 未配置时回退 oss_cdn_domain，仍未配置则返回 OSS 公网域名。
-  # oss_zarr_cdn_domain: https://cdn.neonexus.top
+  # RAW 下载与 zarr 读取共用的 CDN 域名（须带 https://），接口返回免签 CDN 链接。
+  # 测试服用 https://gdn.neonexus.top，正式服用 https://cdn.neonexus.top。
+  # CDN 须开启私有 Bucket 回源并放行 origin/ 与 processed/。未配置时这两个接口返回 503。
+  oss_cdn_domain: https://gdn.neonexus.top
 
 # E-HPC INSTANT（算法预处理）。四个计算任务（raw_convert/preview/algorithm/
 # clustering）全部走 E-HPC，无运行时开关；未注册 EHPC 提交器的新增任务才走 FC。

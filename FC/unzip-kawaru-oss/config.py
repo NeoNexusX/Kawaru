@@ -107,7 +107,6 @@ class OSSSettings(BaseModel):
     # 上界必须与服务端 OSSSettings 一致（服务端为 le=480，config_example.yaml 即取 480）：
     # FC 侧更严会让服务端合法配置直接校验失败
     oss_upload_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=480)
-    oss_download_sts_token_expire_minutes: int | None = Field(default=None, ge=15, le=240)
     oss_zip_storage_root: str | None = None
     oss_origin_storage_root: str | None = None
     oss_processed_storage_root: str | None = Field(default=None, description="OSS算法处理结果存储根目录")

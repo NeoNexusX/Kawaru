@@ -68,26 +68,20 @@ STALE_DELETION_TIMEOUT_MINUTES = int(getattr(storage_config, "stale_deletion_tim
 RETRY_FILE_DELETIONS_INTERVAL_MINUTES = int(getattr(storage_config, "retry_file_deletions_interval_minutes", 15))
 RETRY_RUN_DELETIONS_INTERVAL_MINUTES = int(getattr(storage_config, "retry_run_deletions_interval_minutes", 15))
 
-# 签名URL过期时间 & Redis缓存过期时间
-# 要求 SIGNED_URL_EXPIRE_SECONDS >= 360（由 storage.signed_url_ttl_minutes >= 6 保证），
-# 这样 DOWNLOAD_CACHE_TTL_SECONDS 才能稳定比签名 URL 早 5 分钟过期，
-# 确保缓存过期后旧 URL 仍然有效。
-SIGNED_URL_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
-DOWNLOAD_CACHE_TTL_SECONDS = max(60, SIGNED_URL_EXPIRE_SECONDS - 300)
-assert SIGNED_URL_EXPIRE_SECONDS > DOWNLOAD_CACHE_TTL_SECONDS, (
-    "signed_url_ttl_minutes 必须保证签名 URL 过期时间严格大于 Redis 缓存 TTL"
+# 中转下载 URL 的缓存比 URL 内的 token 提前 5 分钟过期。
+RELAY_TOKEN_EXPIRE_SECONDS = int(getattr(storage_config, "signed_url_ttl_minutes", 60)) * 60
+DOWNLOAD_CACHE_TTL_SECONDS = max(60, RELAY_TOKEN_EXPIRE_SECONDS - 300)
+assert RELAY_TOKEN_EXPIRE_SECONDS > DOWNLOAD_CACHE_TTL_SECONDS, (
+    "signed_url_ttl_minutes 必须保证中转 token 有效期大于 Redis 缓存 TTL"
 )
 
 
 # OSS相关常量
 OSS_BUCKET_NAME = config.oss.bucket_name
 OSS_REGION_ID = config.oss.region_id
-# 浏览器直连下载的 CDN 域名：正式服配置；测试服不配置（None）则预签名 URL 保持 OSS 域名
+# RAW 下载与 zarr 读取共用的 CDN 域名，测试服与正式服各配各的
+# （如 https://gdn.neonexus.top / https://cdn.neonexus.top）；未配置时两个接口都返回 503。
 OSS_CDN_DOMAIN = getattr(config.oss, "oss_cdn_domain", None)
-# zarr 结果目录直读 CDN 域名：后端只返回根 URL，前端按 zarr 布局自行拼接对象路径。
-# 测试服/正式服可配置不同二级域名（如 https://gdn.neonexus.top / https://cdn.neonexus.top）；
-# 未配置时回退 oss_cdn_domain，仍未配置则由 OssStorage 回退 OSS 公网域名。
-OSS_ZARR_CDN_DOMAIN = getattr(config.oss, "oss_zarr_cdn_domain", None) or OSS_CDN_DOMAIN
 # STS Token 有效期（单位秒；分钟值上限 240 需对齐阿里云 RAM 角色「最大会话时长」设置）
 OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS = int(getattr(config.oss, "oss_upload_sts_token_expire_minutes", 60)) * 60
 OSS_DEFAULT_TIMEOUT_SECONDS = config.oss.oss_default_timeout_seconds
@@ -97,9 +91,6 @@ OSS_DELETE_PREFIX_TIMEOUT_SECONDS = config.oss.oss_delete_prefix_timeout_seconds
 
 # 中转下载（relay）配置
 OSS_INTERNAL_ENDPOINT = getattr(config.oss, "oss_internal_endpoint", None)
-# token 有效期与 RAW 直链签名 URL 对齐，保证与缓存 TTL 的既有不变式一致：
-# DOWNLOAD_CACHE_TTL_SECONDS 恒早于本值过期，缓存里返回的 URL 不会指向已失效的 token
-RELAY_TOKEN_EXPIRE_SECONDS = SIGNED_URL_EXPIRE_SECONDS
 RELAY_MAX_CONCURRENCY = int(getattr(config.oss, "relay_max_concurrency", 5))
 RELAY_ACQUIRE_TIMEOUT = float(getattr(config.oss, "relay_acquire_timeout_seconds", 10))
 RELAY_IDLE_TIMEOUT = float(getattr(config.oss, "relay_idle_timeout_seconds", 30))
@@ -122,7 +113,6 @@ __all__ = [
     "STALE_DELETION_TIMEOUT_MINUTES",
     "RETRY_FILE_DELETIONS_INTERVAL_MINUTES",
     "RETRY_RUN_DELETIONS_INTERVAL_MINUTES",
-    "SIGNED_URL_EXPIRE_SECONDS",
     "DOWNLOAD_CACHE_TTL_SECONDS",
     "OSS_UPLOAD_STS_TOKEN_EXPIRE_SECONDS",
     "OSS_ZIP_STORAGE_ROOT",
@@ -138,5 +128,4 @@ __all__ = [
     "OSS_REGION_ID",
     "OSS_BUCKET_NAME",
     "OSS_CDN_DOMAIN",
-    "OSS_ZARR_CDN_DOMAIN",
 ]

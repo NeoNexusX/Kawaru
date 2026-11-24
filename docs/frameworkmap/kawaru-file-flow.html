@@ -5175,7 +5175,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
         <!-- Edge paths -->
-        <path data-edge-from="download_api" data-edge-to="download" data-edge-label="预签名 URL / RAW 直链" data-edge-key="0" data-composition-points="724.4,454;724.4,438;784.4,438;784.4,326;844.4,326;844.4,310" d="M 724.4 454 L 724.4 438 L 784.4 438 L 784.4 326 L 844.4 326 L 844.4 310" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="download_api" data-edge-to="download" data-edge-label="CDN 直链" data-edge-key="0" data-composition-points="724.4,454;724.4,438;784.4,438;784.4,326;844.4,326;844.4,310" d="M 724.4 454 L 724.4 438 L 784.4 438 L 784.4 326 L 844.4 326 L 844.4 310" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="download_api" data-edge-to="fc_packup" data-edge-label="无可用 ZIP 时触发" data-edge-key="1" data-composition-points="724.4,506;724.4,747;844.4,747;844.4,1018" d="M 724.4 506 L 724.4 747 L 844.4 747 L 844.4 1018" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="download_req" data-edge-to="download_api" data-edge-label="下载请求" data-edge-key="2" data-composition-points="794.4,198;930,198;930,480;779.4,480" d="M 794.4 198 L 930 198 L 930 480 L 779.4 480" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="fc_decompress" data-edge-to="oss_callback" data-edge-label="回调通知" data-edge-key="3" data-composition-points="596.4,1018;596.4,506" d="M 596.4 1018 L 596.4 506" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
@@ -5215,8 +5215,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="724.4" y="210" class="t-muted" font-size="8" text-anchor="middle">GET /files/{id}/download</text>
         </g>
 
-        <g id="node-download" data-node-id="download" data-node-label="文件下载" tabindex="0" role="button" aria-label="Focus 文件下载, 重试后获预签名 URL, 用户端" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="重试后获预签名 URL" data-node-context="用户端">
-          <title>文件下载 · 重试后获预签名 URL · 用户端</title>
+        <g id="node-download" data-node-id="download" data-node-label="文件下载" tabindex="0" role="button" aria-label="Focus 文件下载, 浏览器经 CDN 下载, 用户端" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="浏览器经 CDN 下载" data-node-context="用户端">
+          <title>文件下载 · 浏览器经 CDN 下载 · 用户端</title>
           <rect x="779.4" y="258" width="130" height="52" rx="6" class="c-mask"/>
           <rect x="779.4" y="258" width="130" height="52" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(785.4 264) scale(0.6875)">
@@ -5226,7 +5226,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="844.4" y="279" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">文件下载</text>
-          <text data-detail="context" x="844.4" y="296" class="t-muted" font-size="8" text-anchor="middle">重试后获预签名 URL</text>
+          <text data-detail="context" x="844.4" y="296" class="t-muted" font-size="8" text-anchor="middle">浏览器经 CDN 下载</text>
         </g>
 
         <g id="node-preflight_api" data-node-id="preflight_api" data-node-label="预检处理" tabindex="0" role="button" aria-label="Focus 预检处理, 配额 + 秒传, Kawaru API" aria-pressed="false" data-node-kind="backend" data-node-sublabel="配额 + 秒传" data-node-context="Kawaru API">
@@ -5318,9 +5318,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
 
         <!-- Edge labels -->
-        <g data-detail="context" data-edge-from="download_api" data-edge-to="download" data-edge-label="预签名 URL / RAW 直链" data-edge-key="0">
-          <rect x="699" y="418" width="110.8" height="14" rx="3" class="c-mask"/>
-          <text x="754.4" y="428" class="t-muted" font-size="8" text-anchor="middle">预签名 URL / RAW 直链</text>
+        <g data-detail="context" data-edge-from="download_api" data-edge-to="download" data-edge-label="CDN 直链" data-edge-key="0">
+          <rect x="730.4" y="418" width="48" height="14" rx="3" class="c-mask"/>
+          <text x="754.4" y="428" class="t-muted" font-size="8" text-anchor="middle">CDN 直链</text>
         </g>
         <g data-detail="context" data-edge-from="download_api" data-edge-to="fc_packup" data-edge-label="无可用 ZIP 时触发" data-edge-key="1">
           <rect x="738.6" y="727" width="91.6" height="14" rx="3" class="c-mask"/>
@@ -5582,7 +5582,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>&bull; 标准下载：缺少可用 ZIP 时返回 &lt;PACKING&gt;</li>
           <li>&bull; FC 打包回调写 Redis，客户端重试后获取预签名 URL</li>
-          <li>&bull; RAW 下载直接签名 imzML + ibd，不触发打包</li>
+          <li>&bull; RAW 下载返回 imzML + ibd 的 CDN 直链，不触发打包</li>
           <li>&bull; 权限校验（公开/持有者/管理员）</li>
         </ul>
       </div>
