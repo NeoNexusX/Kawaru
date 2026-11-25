@@ -23,24 +23,40 @@ import os
 import asyncio
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 import chardet
 import oss2
 
 from helper import (
     LOGGER,
+    download_zip,
     extract_zip_and_compute_hash,
     get_expected_hash,
     oss_upload_callback,
     PROCESSED_DIR,
 )
 
-# 小于此阈值的 zip 文件会下载到 FC 本地硬盘 /tmp/，再解压 + 计算哈希
-FC_LOCAL_STORAGE_THRESHOLD_MB = int(os.environ.get("FC_LOCAL_STORAGE_THRESHOLD_MB", "8192"))
-# 超过此阈值的 zip 文件 FC 不处理，直接跳过
-FC_MAX_FILE_SIZE_MB = int(os.environ.get("FC_MAX_FILE_SIZE_MB", "20480"))
-# NAS 挂载路径，用于存放中等大小的 zip 文件（超过 /tmp/ 阈值但未超过最大限制）
-NAS_STORAGE_PATH = os.environ.get("NAS_STORAGE_PATH", "/home/app")
-    
+# 解压 FC 可调参数：直接改这里即可，不需要在 FC 控制台配置这些环境变量
+UNZIP_CONFIG = SimpleNamespace(
+    # 文件大小限制
+    max_file_size_mb=230400,              # 220 GiB + 5 GiB ZIP 余量
+    local_storage_threshold_mb=8192,      # ≤ 此值下载到 /tmp，否则下载到 NAS
+    nas_storage_path="/home/app",
+    # 读取 / 解压
+    chunk_buffer_size=4 * 1024 * 1024,    # 4 MiB
+    whole_object_max_size=16 * 1024 * 1024,
+    # OSS 分片上传
+    multipart_part_size=32 * 1024 * 1024, # 220 GiB 约 7040 片
+    upload_concurrency=16,
+    oss_max_parts=9000,                   # OSS 上限 10000，留 10% 余量
+    oss_max_part_size=5 * 1024 ** 3,
+    # OSS 多线程 Range 下载
+    download_concurrency=16,
+    download_part_size=32 * 1024 * 1024,
+    download_multiget_threshold=100 * 1024 * 1024,
+    download_stale_hours=48,
+    download_checkpoint_dirname=".fc-unzip-download-checkpoints",
+)
 
 # pylint: disable=invalid-name
 
@@ -150,7 +166,9 @@ async def _async_handler(event, context):
         raise RuntimeError(f"{object_name} filetype is not zip")
 
     # 获取实际文件大小（处理 symlink 后 object_name 可能已变，需重新获取大小）
-    zip_file_size_mb = bucket.head_object(object_name).content_length / 1024 / 1024
+    zip_head = bucket.head_object(object_name)
+    zip_file_size_bytes = zip_head.content_length
+    zip_file_size_mb = zip_file_size_bytes / 1024 / 1024
     LOGGER.info(f"{object_name} size = {zip_file_size_mb:.2f}MB")
 
     # 对象键约定为 data/{file_verify_code}/{file_id}.zip，从中解析业务标识；
@@ -166,24 +184,24 @@ async def _async_handler(event, context):
     tmp_zip_path = None  # 用于追踪 /tmp/ 或 NAS 下的临时文件，以便后续清理
     file_path = object_name
 
-    if zip_file_size_mb > FC_MAX_FILE_SIZE_MB:
+    if zip_file_size_mb > UNZIP_CONFIG.max_file_size_mb:
         # 超大文件：FC 不处理，回调通知后端后跳过
         LOGGER.warning(
-            f"zip file size {zip_file_size_mb:.2f}MB exceeds max limit {FC_MAX_FILE_SIZE_MB}MB, "
+            f"zip file size {zip_file_size_mb:.2f}MB exceeds max limit {UNZIP_CONFIG.max_file_size_mb}MB, "
             f"skipping: {object_name}"
         )
         await oss_upload_callback(
             file_id, None, False, None, None, None, None, None, "FileTooLarge"
         )
         return
-    elif zip_file_size_mb <= FC_LOCAL_STORAGE_THRESHOLD_MB:
+    elif zip_file_size_mb <= UNZIP_CONFIG.local_storage_threshold_mb:
         # 小文件：下载到 FC 本地硬盘 /tmp/，本地 SSD 读取更快
         tmp_zip_path = f"/tmp/{zip_name}"
         LOGGER.info(f"zip file under local threshold, downloading to local: {tmp_zip_path}")
     else:
         # 中等文件：下载到 NAS 挂载盘
-        os.makedirs(NAS_STORAGE_PATH, exist_ok=True)
-        tmp_zip_path = f"{NAS_STORAGE_PATH}/{zip_name}"
+        os.makedirs(UNZIP_CONFIG.nas_storage_path, exist_ok=True)
+        tmp_zip_path = f"{UNZIP_CONFIG.nas_storage_path}/{zip_name}"
         LOGGER.info(f"zip file between local threshold and max limit, downloading to NAS: {tmp_zip_path}")
 
     # 构建回调信息
@@ -193,14 +211,14 @@ async def _async_handler(event, context):
     imzml_key, ibd_key, imzml_size, ibd_size = None, None, None, None
 
     try:
-        # 下载 zip 文件到本地或 NAS（放在 try 块内，确保失败时能清理和回调）
-        bucket.get_object_to_file(object_name, tmp_zip_path)
+        # 下载 zip 文件到本地或 NAS（多线程 Range 下载，失败后 checkpoint 可续传）
+        download_zip(bucket, object_name, tmp_zip_path, zip_file_size_bytes, UNZIP_CONFIG)
         zip_file_path = tmp_zip_path
 
         # 解压并同时计算哈希，通过 OSS SDK 分片直传（数据只读取一遍，不落盘）
         LOGGER.info(f"start to decompress, compute hash and upload to OSS, zip = {object_name}") # pylint: disable=W1203
         imzml_key, ibd_key, file_verify_code, imzml_size, ibd_size = \
-            extract_zip_and_compute_hash(bucket, Path(zip_file_path), newKeyPrefix)
+            extract_zip_and_compute_hash(bucket, Path(zip_file_path), newKeyPrefix, UNZIP_CONFIG)
         LOGGER.info(f"decompress, hash and upload done, verifying against expected hash")
 
         expected_hash = await get_expected_hash(file_id)
