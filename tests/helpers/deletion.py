@@ -15,6 +15,7 @@ from sqlmodel import select
 
 from api_services.composite_service import collect_file_delete_snapshot
 from api_services.file_service import refund_storage_quota_for_file
+from api_services.processing_service import refund_processing_count_for_file
 from database.db import get_standalone_async_session
 from models.experiment_models import OriginImzMLInDB
 from models.file_models import FileInDB
@@ -49,6 +50,7 @@ async def sweep_file_rows_by_prefix(filename_prefix: str) -> int:
             if snapshot is not None:
                 paths.extend(snapshot.paths)
             await refund_storage_quota_for_file(session, row)
+            await refund_processing_count_for_file(session, row.file_id)
             await session.delete(row)
         await session.commit()
     if paths:
@@ -74,10 +76,10 @@ async def insert_completed_run(
     的时序一致。params_json 置 RAW_CONVERT_MARKER 并把 file.default_run_id 指向
     该 run（wire_default_run=True 时），供场景 ② 断言 finalize 清 default_run_id。
 
-    配额口径：真实链路中 processed 配额在 run 完成回调时计入用户 processed_file_size，
-    删 run 的 finalize 再减回（refund 是减法）。直插行没有完成回调，这里同步把
-    output_size 计入 user.processed_file_size 模拟该笔占用，否则 finalize 的退还
-    只会撞 GREATEST(x-output_size, 0) 下限、断言无从成立。
+    配额口径：真实链路中处理次数在 run 完成回调时 +1（直转不计），删 run 的
+    finalize 再 -1。直插行没有完成回调，非直转 run 这里同步把
+    processing_count_used +1 模拟该笔占用；直转 run 不占处理次数，不模拟。
+    否则 finalize 的退还只会撞 GREATEST(x-1, 0) 下限、断言无从成立。
 
     Returns:
         dict: run_id / out_path / keys（前缀下已上传的对象键列表）
@@ -115,12 +117,14 @@ async def insert_completed_run(
             file_row.default_run_id = run_id
             session.add(file_row)
 
-        # 模拟 run 完成回调的配额计入（finalize 退还时才能减回去，见 docstring）
-        user_row = (await session.exec(
-            select(UserInDB).where(UserInDB.id == user_id))).first()
-        assert user_row is not None, f"user row missing user_id={user_id}"
-        user_row.processed_file_size = (user_row.processed_file_size or 0) + output_size
-        session.add(user_row)
+        # 模拟 run 完成回调的处理次数计入：只有非直转 run 计 1 次；
+        # 直转 run 不占处理次数，finalize 也不会退还。
+        if not wire_default_run:
+            user_row = (await session.exec(
+                select(UserInDB).where(UserInDB.id == user_id))).first()
+            assert user_row is not None, f"user row missing user_id={user_id}"
+            user_row.processing_count_used = (user_row.processing_count_used or 0) + 1
+            session.add(user_row)
         await session.commit()
 
     keys = [f"{out_path}chunk_{i}" for i in range(object_count)]

@@ -138,7 +138,7 @@ admin_info:
   email: admin@example.com
   max_total_file_size: 200
   max_file_count: 20
-  max_processing_size: 200
+  max_processing_count: 50   # 最多处理次数
   max_download_count: 50
 
 user:

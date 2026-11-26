@@ -8,11 +8,11 @@ test_delete_run_flow  [deletion]  清扫残留 → 真实上传链（无 FC，�
 验证删除状态位改造（场景 2）的核心承诺：
   ★1 删除接口秒回（登记事务 + 投递，不等 OSS 删除）
   ★2 读侧拦截：runs 列表立即不再展示该 run；zarr 端点按不存在处理（404）
-  ★3 processed 配额在 finalize 才退（run 的用户可见语义与行同生共死，
+  ★3 处理次数配额在 finalize 才结算（run 的用户可见语义与行同生共死，
      行在则未退、行删则已退）
   ★4 run 行最终被 worker 删除（「要么都删除」DB 侧）
-  ★5 配额退还到位（finalize 把完成时计入的 output_size 减回，不重不漏；
-     直插 run 由夹具模拟该笔计入，见 helpers/deletion.insert_completed_run）
+  ★5 直转 run 不占处理次数：删除 raw_convert run 不改变 processing_count_used
+     （算法 run 的退还由场景 ④ test_deletion_failed_experiments 覆盖）
   ★6 finalize 清 default_run_id（raw_convert run 且仍被引用时）
   ★7 OSS out_path 前缀删净；文件本身（主 zip / origin）不受 run 删除影响
   附  重复删除即手动重试入口（DELETING 中重复调用幂等分支 200）
@@ -54,7 +54,7 @@ DELETION_RUN_FILENAME = "test_del_run_flow"
 # 小尺寸文件（256KB × 2）：上传与回调都快，删除流程本身与文件大小无关
 DELETION_IMZML_SIZE = 256 * 1024
 DELETION_IBD_SIZE = 256 * 1024
-# 直插 run 的输出大小（processed 配额断言口径）与前缀下对象数
+# 直插 run 的输出大小与前缀下对象数（处理次数配额按 run 计，不按大小）
 RUN_OUTPUT_SIZE = 4096
 RUN_OBJECT_COUNT = 8
 
@@ -94,7 +94,7 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
     )
     run_id, run_keys = run_info["run_id"], run_info["keys"]
 
-    # 3. 基线：直插 run 出现在 runs 列表；processed 配额基线
+    # 3. 基线：直插 run 出现在 runs 列表；处理次数配额基线
     rs = await client.post("/processes/mine", headers=auth, json={})
     assert rs.status_code == 200, rs.text
     assert run_id in [row["id"] for row in rs.json()["data"]], "inserted run must be listed before deletion"
@@ -114,10 +114,10 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
     )
     logger.info("★1 delete returned in %.3fs with status=deleted", elapsed)
 
-    # 5. ★3 processed 配额在 finalize 才退。
-    #    读序防竞态：先读配额、再复读行——退配额与删行在同一 finalize 事务提交，
+    # 5. ★3 处理次数配额在 finalize 才结算。
+    #    读序防竞态：先读配额、再复读行——结算与删行在同一 finalize 事务提交，
     #    复读仍是 DELETING ⟹ finalize 未提交 ⟹ 刚才的配额读数必是登记后的值。
-    #    复读行已不在（worker 极快收敛）则跳过该中途断言，最终态由 ★6 保证
+    #    复读行已不在（worker 极快收敛）则跳过该中途断言，最终态由 ★5 保证
     rs = await client.get("/users/quota", headers=auth)
     assert rs.status_code == 200, rs.text
     quota_mid = rs.json()
@@ -126,10 +126,10 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
             select(ExperimentProcessRunInDB).where(ExperimentProcessRunInDB.id == run_id)
         )).first()
     if row is not None and row.status == ProcessingStatus.DELETING:
-        assert quota_mid["total_processed_size_bytes"] == quota_before["total_processed_size_bytes"], (
-            "processed quota must NOT be refunded at registration time (finalize-only semantics)"
+        assert quota_mid["processing_count_used"] == quota_before["processing_count_used"], (
+            "processing count must NOT be refunded at registration time (finalize-only semantics)"
         )
-        logger.info("★3 processed quota not refunded while DELETING (finalize-only)")
+        logger.info("★3 processing count not refunded while DELETING (finalize-only)")
     else:
         logger.info("row already finalized before mid-flight quota check; ★3 skipped")
 
@@ -173,17 +173,18 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
     )
     logger.info("★4 run row finalized")
 
-    # 9. ★5 processed 配额已退（finalize 把完成时计入的 output_size 减回：
-    #    退配额与删行同事务，天然幂等；夹具已在 insert_completed_run 中模拟计入）
+    # 9. ★5 直转 run 不占处理次数，删除后 processing_count_used 不变。
+    #    （算法 run 的退 1 次由 test_deletion_failed_experiments 的文件删除路径覆盖）
     rs = await client.get("/users/quota", headers=auth)
     assert rs.status_code == 200, rs.text
     quota_after = rs.json()
-    assert quota_after["total_processed_size_bytes"] == quota_before["total_processed_size_bytes"] - RUN_OUTPUT_SIZE, (
-        f"processed quota not refunded exactly once: "
-        f"before={quota_before['total_processed_size_bytes']} "
-        f"after={quota_after['total_processed_size_bytes']} expected_delta=-{RUN_OUTPUT_SIZE}"
+    assert quota_after["processing_count_used"] == quota_before["processing_count_used"], (
+        "raw_convert run must not consume or refund processing count: "
+        f"before={quota_before['processing_count_used']} "
+        f"after={quota_after['processing_count_used']}"
     )
-    logger.info("★5 processed quota refunded: -%d", RUN_OUTPUT_SIZE)
+    logger.info("★5 raw_convert run did not change processing count (%s)",
+                quota_after["processing_count_used"])
 
     # 10. ★6 finalize 清 default_run_id；★7 文件本身不受 run 删除影响
     async with get_standalone_async_session() as session:

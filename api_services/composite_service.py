@@ -30,10 +30,11 @@ from api_services.experiment_service import (
     update_origin,
 )
 from api_services.processing_service import (
-    refund_processed_quota,
-    refund_processed_quota_for_file,
+    refund_processing_count,
+    refund_processing_count_for_file,
 )
 from api_helpers.deletion_helper import file_is_deleting, run_is_deleting
+from api_helpers.processing_helper import run_counts_toward_quota
 from constants.experiment_constants import SOURCE_FILE_PATH_CLEARED
 from exceptions.file_exceptions import file_not_found_exception
 from models.collection_models import CollectionMember
@@ -231,7 +232,7 @@ async def finalize_file_deletion(
     file_id: int,
 ) -> bool:
     """删除收尾（worker 在 OSS 全删成功后于独立事务中调用）：
-    退全部持有者的 storage 配额 + 全部 run 的 processed 配额（都必须在删行前读），
+    退全部持有者的 storage 配额 + 全部 run 的处理次数配额（都必须在删行前读），
     然后删 file 行（级联 origin / UserFileLink / run）。
 
     容忍行已不在：退配额与删行同事务，行不在则整个收尾跳过，配额不会重复退。
@@ -246,7 +247,7 @@ async def finalize_file_deletion(
         return True
 
     await refund_storage_quota_for_file(session, file_record)
-    await refund_processed_quota_for_file(session, file_id)
+    await refund_processing_count_for_file(session, file_id)
     await session.delete(file_record)
     logger.info("finalized file deletion file_id=%s", file_id)
     return True
@@ -336,14 +337,14 @@ async def finalize_run_deletion(
 ) -> bool:
     """
     删除收尾（② finalize，worker 在 OSS 全部删除成功后于独立事务中调用）：
-    清 default_run_id（若删的是 raw_convert run 且仍被引用）→ 退还 processed
-    配额 → 删 run 行，同一事务完成。
+    清 default_run_id（若删的是 raw_convert run 且仍被引用）→ 退还处理次数
+    → 删 run 行，同一事务完成。
 
     容忍行已不在（重复投递 / 兜底与 worker 并发时直接算成功：退配额与删行
     同事务，行不在则整个收尾跳过，配额不会重复退）。
 
     与文件级 finalize 并发时（两条链路同时收尾同一个 run），靠 run 行锁判定
-    「谁退这个 run 的配额」——见 refund_processed_quota_for_file。
+    「谁退这个 run 的配额」——见 refund_processing_count_for_file。
     """
     run_record = (await session.exec(
         select(ExperimentProcessRunInDB)
@@ -369,9 +370,13 @@ async def finalize_run_deletion(
                 run_record.source_file_id, run_record.id,
             )
 
-    # 退还用户已处理配额（原子操作；GREATEST 保证不低于 0）
-    if run_record.output_size and run_record.output_size > 0 and run_record.user_id is not None:
-        await refund_processed_quota(session, run_record.user_id, run_record.output_size)
+    # 退还用户处理次数（原子操作；GREATEST 保证不低于 0）。
+    # 与迁移回填使用同一谓词：直转 run 不占处理次数，不退还。
+    if (
+        run_record.user_id is not None
+        and run_counts_toward_quota(run_record.params_json, run_record.output_size)
+    ):
+        await refund_processing_count(session, run_record.user_id)
 
     await session.delete(run_record)
     logger.info("finalized run deletion run_id=%s", run_id)

@@ -122,7 +122,7 @@ async def get_user_quota(quota: UserQuotaDep):
 
     返回：
     - 上传相关: 单文件大小限额、已上传总大小、文件数、最大文件数、上传总大小限额
-    - 处理相关: 处理累计限额、已处理总大小、下载文件数量、最大下载文件数量
+    - 处理相关: 处理次数上限、已用处理次数、下载文件数量、最大下载文件数量
     """
     return quota
 
@@ -137,7 +137,7 @@ async def update_user_quota(result: UpdateUserQuotaDep):
     - Body: UserQuotaLimits（所有字段可选，只更新传入的非 None 字段）
       - max_total_file_size: 用户最大上传文件总大小（GB）
       - max_file_count: 用户最大上传总文件数
-      - max_processing_size: 用户最大可算法处理文件总大小（GB）
+      - max_processing_count: 用户最大可处理次数
       - max_download_count: 用户最大可下载文件次数
     返回：更新后四个限额值（UserQuotaLimits）
     """

@@ -10,7 +10,7 @@ test_cleanup_failed_experiments_flow  [deletion]  清扫残留 → 直插 file +
 验证删除状态位改造（场景 4，场景 1 的批量版）的核心承诺：
   ★1 force=True：失败产物整份删除；登记阶段不动配额
   ★2 文件行由 worker 收敛删除（级联 origin / run / link）
-  ★3 全部持有者的 storage 配额 + 全部 run 的 processed 配额都由 finalize 退还
+  ★3 全部持有者的 storage 配额 + 全部 run 的处理次数配额都由 finalize 退还
   ★4 OSS 全部对象删净（主文件 + origin + run 输出）
   ★5 分工：本任务只负责**发起**——已进入删除流程（DELETING/DELETE_FAILED）的失败 origin
      不再被扫到，登记后的重投归 retry_stale_file_deletions（见 ★6）
@@ -75,13 +75,13 @@ RUN_OBJECT_COUNT = 3
 
 
 async def _read_user_quota(user_id: int) -> tuple[int, int, int]:
-    """读用户 (file_count, total_file_size, processed_file_size)，配额断言用。"""
+    """读用户 (file_count, total_file_size, processing_count_used)，配额断言用。"""
     async with get_standalone_async_session() as session:
         row = (await session.exec(
             select(UserInDB).where(UserInDB.id == user_id)
         )).first()
     assert row is not None, f"user row missing user_id={user_id}"
-    return row.file_count, row.total_file_size, row.processed_file_size
+    return row.file_count, row.total_file_size, row.processing_count_used
 
 
 @pytest.mark.deletion
@@ -169,17 +169,18 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
         run_out = run.out_path
         run_id = run.id
 
-        # 配额写死已知值：storage 由登记退（★1），processed 由 finalize 退（★3）
+        # 配额写死已知值：storage 由登记退（★1），处理次数由 finalize 退（★3）。
+        # 该 run 是非直转的 COMPLETED run（output_size > 0），按新口径占用 1 次。
         user_a = (await session.exec(
             select(UserInDB).where(UserInDB.id == user_a_id))).first()
         user_b = (await session.exec(
             select(UserInDB).where(UserInDB.id == user_b_id))).first()
         user_a.file_count = 1
         user_a.total_file_size = FILE_SIZE
-        user_a.processed_file_size = RUN_OUTPUT_SIZE
+        user_a.processing_count_used = 1
         user_b.file_count = 1
         user_b.total_file_size = FILE_SIZE
-        user_b.processed_file_size = 0
+        user_b.processing_count_used = 0
         session.add(user_a)
         session.add(user_b)
         await session.commit()
@@ -286,16 +287,16 @@ async def test_cleanup_failed_experiments_flow(async_client: AsyncClient):
     )
     logger.info("★2 file row finalized")
 
-    # 7. ★3 两持有者的 storage 配额与 processed 配额都由 finalize 退还
+    # 7. ★3 两持有者的 storage 配额与处理次数配额都由 finalize 退还
     for name, user_id in ((name_a, user_a_id), (name_b, user_b_id)):
         file_count, total_size, _ = await _read_user_quota(user_id)
         assert file_count == 0, f"{name}: file_count not refunded at finalize: {file_count}"
         assert total_size == 0, f"{name}: total_file_size not refunded at finalize: {total_size}"
     _, _, processed_a = await _read_user_quota(user_a_id)
     _, _, processed_b = await _read_user_quota(user_b_id)
-    assert processed_a == 0, f"processed quota not refunded via finalize: {processed_a}"
-    assert processed_b == 0, f"user_b processed quota changed unexpectedly: {processed_b}"
-    logger.info("★3 storage + processed quota both refunded via finalize")
+    assert processed_a == 0, f"processing count not refunded via finalize: {processed_a}"
+    assert processed_b == 0, f"user_b processing count changed unexpectedly: {processed_b}"
+    logger.info("★3 storage + processing count both refunded via finalize")
 
     # 8. 行级联：origin / run 都没了；用户仍在（只 unlink 不删用户）
     async with get_standalone_async_session() as session:

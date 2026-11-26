@@ -189,7 +189,7 @@ admin_info:
   email: admin@example.com
   max_total_file_size: 220   # GB，不小于单文件上限 220 GB
   max_file_count: 50
-  max_processing_size: 50
+  max_processing_count: 50   # 最多处理次数
   max_download_count: 50
 
 user:

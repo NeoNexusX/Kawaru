@@ -329,15 +329,19 @@ async def algorithm_callback(
             output_size=output_size,
         )
 
-        # 累加用户处理配额（原子操作，防止并发丢失更新）
+        # 累加用户处理次数（原子操作，防止并发丢失更新）
+        # 只有算法预处理成功完成才 +1；直转（raw_convert）不占用处理次数。
         # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
-        # 改用 UPDATE SET processed_file_size = processed_file_size + N
+        # 改用 UPDATE SET processing_count_used = processing_count_used + 1
         # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
         # 幂等：重复成功回调已在上方早返回，走到这里的一定是首次完成，直接累加。
-        if run_record.user_id is not None:
+        if (
+            run_record.user_id is not None
+            and run_record.params_json != RAW_CONVERT_MARKER
+        ):
             await atomic_increment(
                 async_session, UserInDB, run_record.user_id,
-                "processed_file_size", output_size,
+                "processing_count_used", 1,
             )
 
         # raw_convert 成功回调：写入 fileindb.default_run_id

@@ -19,7 +19,7 @@
 
 | 问题 | 位置 | 后果 |
 | --- | --- | --- |
-| algorithm 回调无状态检查，重复成功回调重复累加配额 | `callback_api.py` atomic_increment | 用户 processed_file_size 双计，实际资损 |
+| algorithm 回调无状态检查，重复成功回调重复累加配额 | `callback_api.py` atomic_increment | 用户 processing_count_used 双计，实际资损 |
 | tic/umap 失败分支吞掉：仅打日志即返回 200 | `callback_api.py` | 预览失败不可见、无状态、无重派，image_path 永远为 NULL |
 | 落库前不验证 OSS 对象存在 | 全部回调 | COMPLETED 但下载 404（信 FC 说什么是什么） |
 
