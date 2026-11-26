@@ -7,6 +7,8 @@
 #   docker compose -f docker/docker-compose.test.yml -p kawaru-test down -v
 name: kawaru-test
 
+x-test-config: &test-config ./test-config.yaml:/app/docker/test-config.yaml:ro
+
 # ---------- 共享环境变量（YAML anchor，避免三份重复） ----------
 # 注意：env 定义为 list-of-strings 形式，方便 YAML alias 整体复用；
 # 如果某个 service 需要追加变量，用 compose 的 env_file 或单独 environment 覆盖。
@@ -67,6 +69,8 @@ services:
       mariadb:
         condition: service_healthy
     environment: *common-env
+    volumes:
+      - *test-config
     command: ["python", "-m", "database.migration", "upgrade"]
 
   app:
@@ -85,6 +89,7 @@ services:
     ports:
       - "9001:9001"
     volumes:
+      - *test-config
       - kawaru-logs:/app/kawaru_logs   # 与 celery-worker 共享日志目录：tests/helpers/totp.py 在 app 容器内读 background.log 抓验证码，但 worker 把日志写在自己容器里，必须挂同一卷才能跨容器读到
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9001/docs"]
@@ -104,6 +109,7 @@ services:
         condition: service_healthy           # 等 app 先启动完成（建表 + 创建 admin）
     environment: *common-env
     volumes:
+      - *test-config
       - kawaru-logs:/app/kawaru_logs       # 与 app 共享日志（tests/helpers/totp.py 需读 worker 写的 background.log）
     command:
       - "python"
@@ -138,6 +144,7 @@ services:
         condition: service_healthy
     environment: *common-env
     volumes:
+      - *test-config
       - kawaru-logs:/app/kawaru_logs       # 共享日志目录，便于排查（beat 不写验证码，但日志统一处更好）
     command:
       - "python"

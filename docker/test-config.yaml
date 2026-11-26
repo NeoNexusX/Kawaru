@@ -77,7 +77,8 @@ oss:
   oss_upload_sts_token_expire_minutes: 15
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
-  oss_processed_storage_root: processed/
+  # 测试产物与 dev 的 processed/run_*.zarr/ 分开；CI 会再按运行编号细分。
+  oss_processed_storage_root: processed/ci/
   oss_default_timeout_seconds: 20
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300

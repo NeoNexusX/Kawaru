@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [test]
   push:
-    branches: [feature_bear,test]
+    branches: [test]
   workflow_dispatch:
 
 concurrency:
@@ -173,6 +173,12 @@ jobs:
 
       - name: Pull test image
         run: docker pull "$KAWARU_IMAGE"
+
+      - name: Set OSS output prefix for this test run
+        run: |
+          sed "s|^  oss_processed_storage_root: .*|  oss_processed_storage_root: processed/ci/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/|" \
+            docker/test-config.yaml > "$RUNNER_TEMP/kawaru-test-config.yaml"
+          mv "$RUNNER_TEMP/kawaru-test-config.yaml" docker/test-config.yaml
 
       - name: Start stack & wait healthy (compose, no build)
         # app/mariadb/redis 带 healthcheck；celery-worker/celery-beat 无 healthcheck，--wait 只要求其已启动。使用 GHCR 预构建镜像，不在此构建
