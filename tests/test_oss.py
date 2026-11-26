@@ -342,7 +342,7 @@ class TestOss:
 
         说明：中转由后端走【内网 endpoint】拉取 OSS，本地开发机不可达内网域名，
         需用 CONFIG_PATH 指向覆盖配置，把 oss_internal_endpoint 临时改为公网 endpoint
-        （https://oss-cn-hangzhou.aliyuncs.com）；服务器上则用内网值直测。
+        （https://oss-cn-hongkong.aliyuncs.com）；服务器上则用内网值直测。
         """
         if TestOss._uploaded_file_id is None:
             pytest.skip("no uploaded file to test relay download against")
