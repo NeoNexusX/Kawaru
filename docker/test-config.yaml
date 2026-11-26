@@ -69,8 +69,11 @@ storage:
   failed_experiment_ttl_minutes: 30
 
 oss:
-  region_id: cn-hangzhou
-  bucket_name: kawaru-oss
+  # 香港测试服（dev）。桶必须与两处对齐，缺一则 test_oss 失败：
+  #   1) GitHub Secrets 的 OSS_ACCESS_KEY_* / OSS_ROLE_ARN 须是本桶所在账号的 dev 身份；
+  #   2) 下面 oss_cdn_domain 回源的就是本桶。
+  region_id: cn-hongkong
+  bucket_name: test-dev-oss
   oss_upload_sts_token_expire_minutes: 15
   oss_zip_storage_root: data/
   oss_origin_storage_root: origin/
@@ -79,9 +82,10 @@ oss:
   oss_delete_object_timeout_seconds: 30
   oss_delete_prefix_timeout_seconds: 300
   # 中转下载（relay）取源 endpoint：GitHub 托管 runner 不在阿里云内网，
-  # 内网 endpoint 不可达（connect timeout），CI 必须走公网；生产配置才用内网值
-  oss_internal_endpoint: https://oss-cn-hangzhou.aliyuncs.com
-  # 测试服 CDN（私有 Bucket 回源），RAW 下载与 zarr 读取共用；
+  # 内网 endpoint 不可达（connect timeout），CI 必须走公网；部署在服务器上才用内网值
+  oss_internal_endpoint: https://oss-cn-hongkong.aliyuncs.com
+  # 测试服 CDN（私有 Bucket 回源）：gdn.neonexus.top 的源站是 test-dev-oss，
+  # 与上面 bucket_name 不是同一个桶时 RAW 下载 / zarr 读取一律 404。
   # test_oss 经它下载并校验 MD5、attachment 响应头与 Range 分段
   oss_cdn_domain: https://gdn.neonexus.top
 
@@ -89,7 +93,7 @@ oss:
 # CI 不真正提交作业（conftest 拦 AssumeRole，集成测试标记不覆盖计算任务），
 # 基础设施字段填占位值即可。
 ehpc:
-  region: cn-hangzhou
+  region: cn-hongkong
   image: registry.example.invalid/kawaru/sxo:ci
   vswitch_id: vsw-ci-placeholder
   security_group_id: sg-ci-placeholder
@@ -138,7 +142,7 @@ admin_info:
   email: admin@example.com
   max_total_file_size: 200
   max_file_count: 20
-  max_processing_size: 200
+  max_processing_count: 50   # 最多处理次数
   max_download_count: 50
 
 user:

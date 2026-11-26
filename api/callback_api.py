@@ -329,19 +329,8 @@ async def algorithm_callback(
             output_size=output_size,
         )
 
-        # 累加用户处理配额（原子操作，防止并发丢失更新）
-        # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
-        # 改用 UPDATE SET processed_file_size = processed_file_size + N
-        # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
-        # 幂等：重复成功回调已在上方早返回，走到这里的一定是首次完成，直接累加。
-        if run_record.user_id is not None:
-            await atomic_increment(
-                async_session, UserInDB, run_record.user_id,
-                "processed_file_size", output_size,
-            )
-
-        # raw_convert 成功回调：写入 fileindb.default_run_id
         if run_record.params_json == RAW_CONVERT_MARKER:
+            # raw_convert 成功回调：写入 fileindb.default_run_id；直转不占用处理次数
             file_record = (
                 await async_session.exec(
                     select(FileInDB).where(
@@ -356,6 +345,17 @@ async def algorithm_callback(
                     "set default_run_id=%s for file_id=%s",
                     run_record.id, run_record.source_file_id,
                 )
+        elif run_record.user_id is not None:
+            # 算法预处理成功完成：累加用户处理次数（原子操作，防止并发丢失更新）。
+            # 同一用户的多个算法任务可能几乎同时完成，FC 回调几乎同时到达；
+            # 用 UPDATE SET processing_count_used = processing_count_used + 1
+            # 由数据库引擎在排他行锁内进行 current read，保证累加结果不丢失。
+            # 幂等：重复成功回调已在上方早返回，走到这里的一定是首次完成，直接累加。
+            # （口径同 run_counts_toward_quota；output_size > 0 已在上方校验）
+            await atomic_increment(
+                async_session, UserInDB, run_record.user_id,
+                "processing_count_used", 1,
+            )
 
         await async_session.commit()
         await async_session.refresh(run_record)

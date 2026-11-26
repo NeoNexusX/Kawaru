@@ -32,6 +32,7 @@ from api_helpers.deletion_helper import (
 from api_helpers.processing_helper import (
     assert_origin_ready,
     check_processing_quota,
+    run_counts_toward_quota,
     validate_algorithms_config,
 )
 from exceptions.experiment_exceptions import (
@@ -123,34 +124,34 @@ async def create_raw_convert_run(
 #########################
 
 
-async def refund_processed_quota(
+async def refund_processing_count(
     async_session: AsyncSession,
     user_id: int,
-    output_size: int,
 ) -> None:
     """
-    退还单个 run 占用的用户处理配额
+    退还单个 run 占用的 1 次处理配额
 
-    原子操作（UPDATE SET processed_file_size = GREATEST(processed_file_size - N, 0)），
+    原子操作（UPDATE SET processing_count_used = GREATEST(processing_count_used - 1, 0)），
     防止并发丢失更新；GREATEST 保证结果不低于 0。
     """
     await atomic_decrement(
         async_session, UserInDB, user_id,
-        "processed_file_size", output_size,
+        "processing_count_used", 1,
     )
 
 
-async def refund_processed_quota_for_file(
+async def refund_processing_count_for_file(
     async_session: AsyncSession,
     file_id: int,
 ) -> int:
     """
-    退还指定文件所有 process_run 占用的处理配额（文件级删除路径专用）。
+    退还指定文件所有 process_run 占用的处理次数（文件级删除路径专用）。
 
-    finalize_file_deletion / cleanup_failed_experiments 删除文件记录时，
-    run 行由 FK 级联删除、out_path 物理清理；若不在删除前按行退还，
-    user_id / output_size 随行消失，processed_file_size 将永久虚占。
-    必须在 session.delete(file_record) 之前调用。
+    只退“非直转且 output_size > 0”的 run——与迁移回填 processing_count_used
+    使用同一谓词。finalize_file_deletion / cleanup_failed_experiments 删除
+    文件记录时，run 行由 FK 级联删除、out_path 物理清理；若不在删除前按行
+    退还，processing_count_used 将永久虚占。必须在 session.delete(file_record)
+    之前调用。
 
     加锁读不可省：run 行还有另一条删除路径 finalize_run_deletion（只锁 run 行），
     普通 SELECT 会读到「对方已退配额但尚未提交」的行 → 同一 run 的配额退两次。
@@ -158,7 +159,7 @@ async def refund_processed_quota_for_file(
     DELETE 相反，实测死锁（MariaDB 1213）。
 
     Returns:
-        实际退还配额的 run 数量
+        实际退还次数的 run 数量
     """
     run_ids = (await async_session.exec(
         select(ExperimentProcessRunInDB.id).where(
@@ -169,20 +170,24 @@ async def refund_processed_quota_for_file(
         return 0
 
     runs = (await async_session.exec(
-        select(ExperimentProcessRunInDB.user_id, ExperimentProcessRunInDB.output_size)
+        select(
+            ExperimentProcessRunInDB.user_id,
+            ExperimentProcessRunInDB.params_json,
+            ExperimentProcessRunInDB.output_size,
+        )
         .where(ExperimentProcessRunInDB.id.in_(run_ids))  # type: ignore # pylint: disable=no-member
         .with_for_update()
     )).all()
 
     refunded = 0
-    for run_user_id, output_size in runs:
-        if run_user_id is None or not output_size or output_size <= 0:
+    for run_user_id, params_json, output_size in runs:
+        if run_user_id is None or not run_counts_toward_quota(params_json, output_size):
             continue
-        await refund_processed_quota(async_session, run_user_id, output_size)
+        await refund_processing_count(async_session, run_user_id)
         refunded += 1
 
     if refunded:
-        logger.info("refunded processed quota for file_id=%s runs=%s", file_id, refunded)
+        logger.info("refunded processing count for file_id=%s runs=%s", file_id, refunded)
 
     return refunded
 

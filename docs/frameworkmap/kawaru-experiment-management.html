@@ -5580,7 +5580,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>配额管理</h3>
         </div>
         <ul>
-          <li>&bull; processed_file_size 原子累加</li>
+          <li>&bull; processing_count_used 原子累加（直转不计）</li>
           <li>&bull; output_size 记录每个 Run</li>
           <li>&bull; DELETING → DELETE_FAILED（失败可重试）→ 配额原子退还</li>
         </ul>

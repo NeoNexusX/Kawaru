@@ -517,8 +517,8 @@ async def get_user_quota(
         file_count=current_user.file_count,
         max_files_per_user=current_user.max_file_count,
         max_total_file_size=current_user.max_total_file_size,
-        max_processing_size_gb=current_user.max_processing_size,
-        total_processed_size_bytes=current_user.processed_file_size,
+        processing_count_used=current_user.processing_count_used,
+        max_processing_count=current_user.max_processing_count,
         download_used=current_user.download_used or 0,
         max_download_count=current_user.max_download_count,
     )
@@ -555,7 +555,7 @@ async def update_user_quota(
     return UserQuotaLimits(
         max_total_file_size=user.max_total_file_size,
         max_file_count=user.max_file_count,
-        max_processing_size=user.max_processing_size,
+        max_processing_count=user.max_processing_count,
         max_download_count=user.max_download_count,
     )
 

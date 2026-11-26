@@ -72,7 +72,7 @@ storage:
   cleanup_download_zip_interval_minutes: 60
   cleanup_failed_experiments_interval_minutes: 60
   preflight_ttl_minutes: 600      # 预检记录 TTL 下限（分钟）；与下方带宽公式计算值取较大者
-  max_file_size_gb: 20            # 允许的最大单文件（GB）；预检校验 + TTL 公式输入，不配置则不启用
+  max_file_size_gb: 220           # 允许的最大单文件（GB）；预检校验 + TTL 公式输入，不配置则不启用
   min_upload_bandwidth_mbps: 10   # 最低上传带宽假设（Mbps），TTL 公式输入，不配置则不启用公式
   upload_ttl_safety_factor: 1.5   # TTL 安全余量系数（乘式）
   download_zip_ttl_minutes: 30
@@ -88,8 +88,8 @@ storage:
 
 oss:
   # dev：按你的真实 dev OSS/FC 资源填写（access key 等凭证放 .env）
-  region_id: cn-hangzhou
-  bucket_name: kawaru-oss
+  region_id: cn-hongkong
+  bucket_name: test-dev-oss
   # 上传 STS Token 有效期（分钟）：大文件慢速上传时需加大；上限 480 = 8 小时，
   # 且必须 <= 阿里云 RAM 角色「最大会话时长」（控制台：RAM 访问管理 → 角色 → 编辑最大会话时长）
   oss_upload_sts_token_expire_minutes: 480
@@ -103,13 +103,14 @@ oss:
   oss_delete_prefix_timeout_seconds: 300
   # 中转下载专用内网 endpoint（服务器与 OSS 同地域时可达，OSS→服务器这跳免费）。
   # 本地开发机上内网域名不可达：改用 CONFIG_PATH 指向覆盖配置，把它临时设为公网
-  # endpoint（https://oss-cn-hangzhou.aliyuncs.com）即可完整验证中转链路。
-  oss_internal_endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com
+  # endpoint（https://oss-cn-hongkong.aliyuncs.com）即可完整验证中转链路。
+  oss_internal_endpoint: https://oss-cn-hongkong-internal.aliyuncs.com
   relay_max_concurrency: 10         # 中转下载最大并发数（保护服务器带宽）
   relay_acquire_timeout_seconds: 10 # 排队等待上限，超时返回 429
   relay_idle_timeout_seconds: 30    # 空闲超时：客户端 30s 不消费数据则中断
   # RAW 下载与 zarr 读取共用的 CDN 域名（须带 https://），接口返回免签 CDN 链接。
-  # 测试服用 https://gdn.neonexus.top，正式服用 https://cdn.neonexus.top。
+  # 测试服用 https://gdn.neonexus.top（源站 test-dev-oss），正式服用 https://cdn.neonexus.top（源站 official-oss）。
+  # CDN 回源的 Bucket 必须与上面 bucket_name 是同一个，否则链接 404。
   # CDN 须开启私有 Bucket 回源并放行 origin/ 与 processed/。未配置时这两个接口返回 503。
   oss_cdn_domain: https://gdn.neonexus.top
 
@@ -121,8 +122,9 @@ oss:
 #   ACR_PULL_USERNAME / ACR_PULL_PASSWORD      private_registry=true 时拉镜像用
 #   FC_CALLBACK_TOKEN                          callback_enabled=true 时下发给容器的回调鉴权 token
 ehpc:
-  region: cn-hangzhou               # 作业地域：INSTANT 服务、交换机/安全组、OSS 内网 endpoint 必须同地域
-  # 容器镜像。建议固定 digest（:tag 会漂移）；跨地域拉取（如香港 ACR → 杭州作业）必须用公网地址，不能带 -vpc
+  region: cn-hongkong               # 作业地域：INSTANT 服务、交换机/安全组、OSS 内网 endpoint 必须同地域
+  # 容器镜像。建议固定 digest（:tag 会漂移）；与 ACR 同地域可改用 -vpc 内网域名（免公网流量），
+  # 跨地域拉取必须用公网地址，不能带 -vpc
   image: "crpi-<instance-id>.cn-hongkong.personal.cr.aliyuncs.com/kawaru/sxo@sha256:<digest>"
   private_registry: true            # 镜像仓库需要认证；true 时读取 .env 的 ACR_PULL_USERNAME/PASSWORD
   vswitch_id: vsw-<replace>         # 作业弹性网卡挂载的交换机（VPC 子网）；决定作业落在哪个可用区、能用到哪些规格的库存，需与 region 同地域
@@ -187,9 +189,9 @@ admin_info:
   orcid: admin
   homepage: admin
   email: admin@example.com
-  max_total_file_size: 50
+  max_total_file_size: 220   # GB，不小于单文件上限 220 GB
   max_file_count: 50
-  max_processing_size: 50
+  max_processing_count: 50   # 最多处理次数
   max_download_count: 50
 
 user:

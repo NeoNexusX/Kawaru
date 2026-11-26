@@ -3,6 +3,7 @@
 """
 import os
 import threading
+import time
 import zipfile
 import hashlib
 import logging
@@ -17,13 +18,6 @@ from config import get_config, Config
 
 config: Config = get_config()
 
-# Constants
-CHUNK_BUFFER_SIZE = 1 * 1024 * 1024
-# 分片并发上传的线程数：读取与上传重叠，整体耗时 ≈ max(解压, 上传) 而不是两者之和
-UPLOAD_CONCURRENCY = max(1, int(os.environ.get("FC_UNZIP_UPLOAD_CONCURRENCY", "8")))
-# SDK 分片直传的分片大小（16MB）：并发上传时内存峰值 ≈ 分片大小 × 并发数（16MB × 8 ≈ 128MB）；
-# 20GB 级文件约 1280 片，远低于 OSS 10000 片上限
-MULTIPART_PART_SIZE = max(1, int(os.environ.get("FC_UNZIP_PART_SIZE_MB", "16"))) * 1024 * 1024
 OSS_UPLOAD_CALLBACK_ENDPOINT = os.getenv("OSS_UPLOAD_CALLBACK_ENDPOINT")
 GET_EXPECTED_HASH_ENDPOINT = os.getenv("GET_EXPECTED_HASH_ENDPOINT")
 PROCESSED_DIR = config.oss.oss_origin_storage_root
@@ -94,6 +88,83 @@ async def oss_upload_callback(
         res.raise_for_status()
 
 
+def _cleanup_stale_download_artifacts(base_dir: str, cfg) -> None:
+    """清理过期的下载残留（续传临时文件、已完成的目标 zip、checkpoint），
+    避免实例被强杀后残留占满 NAS。"""
+    cutoff = time.time() - cfg.download_stale_hours * 3600
+
+    try:
+        with os.scandir(base_dir) as entries:
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                # 两类残留，均按 mtime 超过 cutoff 判定过期：
+                #  - 续传中的临时文件：{file_id}.zip.tmp-xxxxxxxxxxxx
+                #  - 已下载完成的目标文件：{file_id}.zip（每次尝试都在解压阶段被强杀、
+                #    重试耗尽后 finally 从未执行；窗口内到达的正常重试会被 download_zip
+                #    按大小复用，不受影响。窗口 = download_stale_hours）
+                name_base, sep, _ = entry.name.partition(".zip.tmp-")
+                is_artifact = (sep and name_base.isdigit()) or (
+                    entry.name.endswith(".zip") and entry.name[:-4].isdigit()
+                )
+                if is_artifact and entry.stat().st_mtime < cutoff:
+                    try:
+                        os.remove(entry.path)
+                        logger.info("removed stale download artifact: %s", entry.path)
+                    except OSError as e:
+                        logger.warning("remove stale download artifact failed: %s: %s", entry.path, e)
+    except OSError as e:
+        logger.warning("scan download dir failed: %s: %s", base_dir, e)
+
+    checkpoint_dir = os.path.join(base_dir, cfg.download_checkpoint_dirname)
+    try:
+        with os.scandir(checkpoint_dir) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    try:
+                        os.remove(entry.path)
+                        logger.info("removed stale download checkpoint: %s", entry.path)
+                    except OSError as e:
+                        logger.warning("remove stale download checkpoint failed: %s: %s", entry.path, e)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("scan download checkpoint dir failed: %s: %s", checkpoint_dir, e)
+
+
+def download_zip(bucket: "oss2.Bucket", object_name: str, dest_path: str,
+                 expected_size: int, cfg) -> None:
+    """多线程 Range 下载 ZIP 到本地/NAS。
+
+    实例被强杀（超时/OOM）后 FC 重试时：zip 已完整落盘则按 expected_size 跳过下载，
+    否则从 checkpoint 续传。下载异常被 index 捕获后走失败回调，不复用 checkpoint，
+    残留由 _cleanup_stale_download_artifacts 过期回收。
+    """
+    if os.path.isfile(dest_path) and os.path.getsize(dest_path) == expected_size:
+        logger.info("zip already downloaded with expected size, skip: %s", dest_path)
+        return
+
+    base_dir = os.path.dirname(dest_path) or "."
+    _cleanup_stale_download_artifacts(base_dir, cfg)
+    store = oss2.ResumableDownloadStore(root=base_dir, dir=cfg.download_checkpoint_dirname)
+    logger.info(
+        "resumable download started: key=%s, dest=%s, part_size=%.2fMB, "
+        "concurrency=%d, threshold=%.2fMB",
+        object_name, dest_path, cfg.download_part_size / 1024 / 1024,
+        cfg.download_concurrency, cfg.download_multiget_threshold / 1024 / 1024,
+    )
+    oss2.resumable_download(
+        bucket,
+        object_name,
+        dest_path,
+        store=store,
+        multiget_threshold=cfg.download_multiget_threshold,
+        part_size=cfg.download_part_size,
+        num_threads=cfg.download_concurrency,
+    )
+    logger.info("resumable download done: key=%s, dest=%s", object_name, dest_path)
+
+
 class ConcurrentPartUploader:
     """分片并发上传器。
 
@@ -106,6 +177,7 @@ class ConcurrentPartUploader:
 
     def __init__(self, bucket: "oss2.Bucket", concurrency: int):
         self._bucket = bucket
+        self.concurrency = concurrency  # 仅供日志读取；实际并发由 _pool / _slots 控制
         self._pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="oss-upload")
         self._slots = threading.BoundedSemaphore(concurrency)
         self._lock = threading.Lock()
@@ -173,12 +245,23 @@ class ConcurrentPartUploader:
         self._bucket.put_object(key, data)
 
 
+def part_size_for(member_size: int, cfg) -> int:
+    """按成员解压后大小计算分片大小，保证分片数不超过 cfg.oss_max_parts。
+
+    以 32 MiB 为下限：220 GiB 成员约 7040 片；只有更大成员才会放大分片。
+    """
+    required = max(1, -(-member_size // cfg.oss_max_parts))
+    size = max(cfg.multipart_part_size, required)
+    size = -(-size // 1024 ** 2) * 1024 ** 2  # 向上取整到 MiB
+    return min(size, cfg.oss_max_part_size)
+
+
 def _read_and_put_object(uploader: ConcurrentPartUploader, key: str, src: "zipfile.ZipExtFile",
-                         digest) -> int:
-    """读取整个成员（不大于一个分片，含空文件）并整对象直传 OSS，返回解压后字节数"""
+                         digest, chunk_size: int) -> int:
+    """读取整个成员（不大于整对象阈值，含空文件）并整对象直传 OSS，返回解压后字节数"""
     data = bytearray()
     while True:
-        chunk = src.read(CHUNK_BUFFER_SIZE)
+        chunk = src.read(chunk_size)
         if not chunk:
             break
         digest.update(chunk)
@@ -188,26 +271,30 @@ def _read_and_put_object(uploader: ConcurrentPartUploader, key: str, src: "zipfi
 
 
 def _read_and_upload_parts(uploader: ConcurrentPartUploader, key: str, upload_id: str,
-                           src: "zipfile.ZipExtFile", digest, member_size: int) -> int:
+                           src: "zipfile.ZipExtFile", digest, member_size: int,
+                           part_size: int, chunk_size: int) -> int:
     """流式读取成员并分片并发直传 OSS，返回解压后字节数"""
+    expected_parts = -(-member_size // part_size)
     logger.info(
-        "multipart upload started: key=%s, size=%.2fMB, part_size=%.2fMB, concurrency=%d",
-        key, member_size / 1024 / 1024, MULTIPART_PART_SIZE / 1024 / 1024, UPLOAD_CONCURRENCY,
+        "multipart upload started: key=%s, size=%.2fMB, part_size=%.2fMB, "
+        "expected_parts=%d, concurrency=%d",
+        key, member_size / 1024 / 1024, part_size / 1024 / 1024,
+        expected_parts, uploader.concurrency,
     )
     part_number = 1
     total = 0
     buffer = bytearray()
     while True:
-        chunk = src.read(CHUNK_BUFFER_SIZE)
+        chunk = src.read(chunk_size)
         if not chunk:
             break
         # 哈希必须按成员在 namelist 中的先后顺序逐字节累加，因此留在读取线程里做
         digest.update(chunk)
         buffer += chunk
         total += len(chunk)
-        while len(buffer) >= MULTIPART_PART_SIZE:
-            data = bytes(buffer[:MULTIPART_PART_SIZE])
-            del buffer[:MULTIPART_PART_SIZE]
+        while len(buffer) >= part_size:
+            data = bytes(buffer[:part_size])
+            del buffer[:part_size]
             uploader.upload_part(key, upload_id, part_number, data)
             part_number += 1
     if buffer:
@@ -217,15 +304,15 @@ def _read_and_upload_parts(uploader: ConcurrentPartUploader, key: str, upload_id
 
 
 def extract_zip_and_compute_hash(
-    bucket: "oss2.Bucket", zip_file_path: Path, key_prefix: str
+    bucket: "oss2.Bucket", zip_file_path: Path, key_prefix: str, cfg
 ) -> tuple[str, str, str, int, int]:
     """
     流式解压 ZIP 文件，同时计算整体哈希，并通过 OSS SDK 分片直传（不经过 ossfs 挂载盘）。
 
     数据只读取一遍。在解压流中分块读取数据，同时：
     - 更新 MD5 哈希
-    - 攒满一个分片（MULTIPART_PART_SIZE）即交给线程池并发 upload_part 直传 OSS
-      （默认 8 线程），读取与上传重叠，整体耗时 ≈ max(解压, 上传)。
+    - 按 part_size_for() 计算的分片大小（默认下限 32 MiB）交给线程池并发
+      upload_part 直传 OSS（默认 16 线程），读取与上传重叠，整体耗时 ≈ max(解压, 上传)。
       每个分片携带 Content-MD5 并由 OSS 服务端强制校验，失败立即抛异常，
       不存在"写入返回成功但数据未上传"的静默损坏。
 
@@ -252,7 +339,7 @@ def extract_zip_and_compute_hash(
     imzml_size = 0
     ibd_size = 0
 
-    uploader = ConcurrentPartUploader(bucket, UPLOAD_CONCURRENCY)
+    uploader = ConcurrentPartUploader(bucket, cfg.upload_concurrency)
     # 已开启但尚未合并的分片上传 (key, upload_id)，任何异常都要 abort，
     # 否则未完成的分片会残留在 OSS 上持续计费
     pending_multiparts: list[tuple[str, str]] = []
@@ -273,14 +360,18 @@ def extract_zip_and_compute_hash(
                 member_size = zip_ref.getinfo(member).file_size
 
                 with zip_ref.open(member) as src:
-                    if member_size <= MULTIPART_PART_SIZE:
-                        # 一个分片就装得下：整对象直传，省掉 init/complete 两次往返
-                        file_size = _read_and_put_object(uploader, key, src, file_verify_code)
+                    if member_size <= cfg.whole_object_max_size:
+                        # 小成员：整对象直传，省掉 init/complete 两次往返
+                        file_size = _read_and_put_object(
+                            uploader, key, src, file_verify_code, cfg.chunk_buffer_size
+                        )
                     else:
+                        part_size = part_size_for(member_size, cfg)
                         upload_id = bucket.init_multipart_upload(key).upload_id
                         pending_multiparts.append((key, upload_id))
                         file_size = _read_and_upload_parts(
-                            uploader, key, upload_id, src, file_verify_code, member_size
+                            uploader, key, upload_id, src, file_verify_code, member_size,
+                            part_size, cfg.chunk_buffer_size
                         )
 
                 # 记录 imzML 和 ibd 文件的对象键与大小

@@ -213,7 +213,7 @@ class AdminInfo(BaseModel):
     email: str
     max_total_file_size: int
     max_file_count: int
-    max_processing_size: int
+    max_processing_count: int
     max_download_count: int
 
 
