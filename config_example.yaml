@@ -122,8 +122,9 @@ oss:
 #   ACR_PULL_USERNAME / ACR_PULL_PASSWORD      private_registry=true 时拉镜像用
 #   FC_CALLBACK_TOKEN                          callback_enabled=true 时下发给容器的回调鉴权 token
 ehpc:
-  region: cn-hangzhou               # 作业地域：INSTANT 服务、交换机/安全组、OSS 内网 endpoint 必须同地域
-  # 容器镜像。建议固定 digest（:tag 会漂移）；跨地域拉取（如香港 ACR → 杭州作业）必须用公网地址，不能带 -vpc
+  region: cn-hongkong               # 作业地域：INSTANT 服务、交换机/安全组、OSS 内网 endpoint 必须同地域
+  # 容器镜像。建议固定 digest（:tag 会漂移）；与 ACR 同地域可改用 -vpc 内网域名（免公网流量），
+  # 跨地域拉取必须用公网地址，不能带 -vpc
   image: "crpi-<instance-id>.cn-hongkong.personal.cr.aliyuncs.com/kawaru/sxo@sha256:<digest>"
   private_registry: true            # 镜像仓库需要认证；true 时读取 .env 的 ACR_PULL_USERNAME/PASSWORD
   vswitch_id: vsw-<replace>         # 作业弹性网卡挂载的交换机（VPC 子网）；决定作业落在哪个可用区、能用到哪些规格的库存，需与 region 同地域

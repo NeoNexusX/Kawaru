@@ -12,7 +12,9 @@ test_delete_run_flow  [deletion]  清扫残留 → 真实上传链（无 FC，�
      行在则未退、行删则已退）
   ★4 run 行最终被 worker 删除（「要么都删除」DB 侧）
   ★5 直转 run 不占处理次数：删除 raw_convert run 不改变 processing_count_used
-     （算法 run 的退还由场景 ④ test_deletion_failed_experiments 覆盖）
+     （非直转 run 经 run 级删除恰好退 1 次由本文件的
+     test_delete_algorithm_run_refunds_processing_count 覆盖；文件级路径的退还
+     见场景 ④ test_deletion_failed_experiments）
   ★6 finalize 清 default_run_id（raw_convert run 且仍被引用时）
   ★7 OSS out_path 前缀删净；文件本身（主 zip / origin）不受 run 删除影响
   附  重复删除即手动重试入口（DELETING 中重复调用幂等分支 200）
@@ -51,6 +53,8 @@ from .helpers.uploads import upload_completed_file
 
 # 删除测试专用文件名前缀（与 oss / 场景 1/3/4 组隔离；sweep 按前缀清扫残留）
 DELETION_RUN_FILENAME = "test_del_run_flow"
+# 非直转 run 退还用例的前缀（与上面的直转用例隔离，避免两个用例互相清扫）
+DELETION_ALGO_RUN_FILENAME = "test_del_algo_run_flow"
 # 小尺寸文件（256KB × 2）：上传与回调都快，删除流程本身与文件大小无关
 DELETION_IMZML_SIZE = 256 * 1024
 DELETION_IBD_SIZE = 256 * 1024
@@ -216,3 +220,78 @@ async def test_delete_run_flow(admin_login: Tuple[AsyncClient, str, str]):
     for key in (up["oss_path"], up["imzml_path"], up["ibd_path"]):
         assert not await OssStorage.check_file_exist(key), f"cleanup file object still exists: {key}"
     logger.info("test_delete_run_flow passed: run_id=%s file_id=%s", run_id, up["file_id"])
+
+
+@pytest.mark.deletion
+async def test_delete_algorithm_run_refunds_processing_count(admin_login: Tuple[AsyncClient, str, str]):
+    """非直转 COMPLETED run 走 run 级删除：finalize 恰好退还 1 次处理次数。
+
+    覆盖 finalize_run_deletion → run_counts_toward_quota=True → refund_processing_count，
+    与 test_delete_run_flow 的 ★5（直转 run 不退）互补。
+    """
+    client, token, token_type = admin_login
+    auth = {"Authorization": f"{token_type.title()} {token}"}
+
+    # 0. 清扫残留 + 真实上传链造 COMPLETED 文件
+    await sweep_file_rows_by_prefix(DELETION_ALGO_RUN_FILENAME)
+    admin_id = await get_user_id_by_username(TEST_USER)
+    assert admin_id is not None, f"admin user row not found for TEST_USER={TEST_USER}"
+    up = await upload_completed_file(
+        client, auth,
+        filename=DELETION_ALGO_RUN_FILENAME,
+        imzml_size=DELETION_IMZML_SIZE,
+        ibd_size=DELETION_IBD_SIZE,
+    )
+
+    # 1. 配额基线在直插之前读：helper 直插非直转 run 时会模拟完成回调 +1
+    rs = await client.get("/users/quota", headers=auth)
+    assert rs.status_code == 200, rs.text
+    quota_before = rs.json()["processing_count_used"]
+
+    run_info = await insert_completed_run(
+        file_id=up["file_id"],
+        user_id=admin_id,
+        output_size=RUN_OUTPUT_SIZE,
+        object_count=RUN_OBJECT_COUNT,
+        wire_default_run=False,
+    )
+    run_id, run_keys = run_info["run_id"], run_info["keys"]
+
+    rs = await client.get("/users/quota", headers=auth)
+    assert rs.status_code == 200, rs.text
+    assert rs.json()["processing_count_used"] == quota_before + 1, (
+        "helper must simulate the completion-callback +1: "
+        f"before={quota_before} after={rs.json()['processing_count_used']}"
+    )
+
+    # 2. 删除 → 等 worker 删净 out_path 并 finalize 删行
+    rs = await client.delete(f"/processes/{run_id}", headers=auth)
+    assert rs.status_code == 200, rs.text
+    await wait_db_row_gone(
+        ExperimentProcessRunInDB, ExperimentProcessRunInDB.id == run_id,
+        timeout=CONVERGE_MAX_WAIT, desc=f"algorithm run_id={run_id}",
+    )
+
+    # 3. 恰好退还 1 次（多退 = 重复退；没退 = 永久虚占）
+    rs = await client.get("/users/quota", headers=auth)
+    assert rs.status_code == 200, rs.text
+    quota_after = rs.json()["processing_count_used"]
+    assert quota_after == quota_before, (
+        "processing count must be refunded exactly once: "
+        f"before={quota_before} after={quota_after}"
+    )
+    logger.info("algorithm run refunded exactly 1 processing count: before=%s after=%s",
+                quota_before, quota_after)
+
+    # 4. OSS out_path 前缀删净
+    for key in run_keys:
+        assert not await OssStorage.check_file_exist(key), f"run output still exists: {key}"
+
+    # 5. 收尾：文件行走正常用户删除（run 行已不在，文件级 finalize 不会再退一次）
+    rs = await client.delete(f"/files/{up['public_id']}", headers=auth)
+    assert rs.status_code == 200, f"file cleanup delete failed: {rs.text}"
+    await wait_db_row_gone(
+        FileInDB, FileInDB.file_id == up["file_id"],
+        timeout=CONVERGE_MAX_WAIT, desc=f"cleanup file_id={up['file_id']}",
+    )
+    logger.info("test_delete_algorithm_run_refunds_processing_count passed: run_id=%s", run_id)

@@ -117,9 +117,9 @@ async def insert_completed_run(
             file_row.default_run_id = run_id
             session.add(file_row)
 
-        # 模拟 run 完成回调的处理次数计入：只有非直转 run 计 1 次；
-        # 直转 run 不占处理次数，finalize 也不会退还。
-        if not wire_default_run:
+        # 模拟 run 完成回调的处理次数计入：按 params_json 判定（与 finalize_run_deletion
+        # 同一谓词）——非直转 run 计 1 次；直转 run 不占处理次数，finalize 也不会退还。
+        if run.params_json != RAW_CONVERT_MARKER:
             user_row = (await session.exec(
                 select(UserInDB).where(UserInDB.id == user_id))).first()
             assert user_row is not None, f"user row missing user_id={user_id}"

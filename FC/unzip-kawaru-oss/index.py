@@ -54,7 +54,7 @@ UNZIP_CONFIG = SimpleNamespace(
     download_concurrency=16,
     download_part_size=32 * 1024 * 1024,
     download_multiget_threshold=100 * 1024 * 1024,
-    download_stale_hours=48,
+    download_stale_hours=6,
     download_checkpoint_dirname=".fc-unzip-download-checkpoints",
 )
 
@@ -148,8 +148,6 @@ async def _async_handler(event, context):
     endpoint = "oss-" + evt["region"] + "-internal.aliyuncs.com"
     bucket = oss2.Bucket(auth, endpoint, bucket_name)
     object_name = evt["oss"]["object"]["key"]
-    object_sizeMB = evt["oss"]["object"]["size"] / 1024 / 1024 # pylint: disable=C0103
-    LOGGER.info(f"{object_name,} size is = {object_sizeMB}MB") # pylint: disable=W1203
 
 
     file_type = os.path.splitext(object_name)[1]
@@ -247,18 +245,23 @@ async def _async_handler(event, context):
         imzml_key, ibd_key, imzml_size, ibd_size = None, None, None, None
 
     finally:
-        # 清理 /tmp/ 或 NAS 下的临时 zip 文件
-        if tmp_zip_path and os.path.exists(tmp_zip_path):
-            os.remove(tmp_zip_path)
-            LOGGER.info(f"cleaned up tmp zip: {tmp_zip_path}")
-
         LOGGER.info("start to callback oss, params are:")
         LOGGER.info(
             f"file_id: {file_id}, file_path: {file_path}, file_verify_code: {file_verify_code}, is_success: {is_success},\n"
             f"imzml_key: {imzml_key}, ibd_key: {ibd_key}, imzml_size: {imzml_size}, "
             f"ibd_size: {ibd_size}, error_type: {error_type}"
         )
+        # 先回调、后删 zip：回调失败会 raise → FC 重试时 download_zip 按大小命中已完整
+        # 下载的 zip 直接复用，不必重下；后端回调幂等（已有 origin 即返回）
         await oss_upload_callback(
             file_id, file_path, is_success, imzml_key,
             ibd_key, imzml_size, ibd_size, file_verify_code, error_type
         )
+        # 清理 /tmp/ 或 NAS 下的临时 zip 文件
+        if tmp_zip_path and os.path.exists(tmp_zip_path):
+            try:
+                os.remove(tmp_zip_path)
+                LOGGER.info(f"cleaned up tmp zip: {tmp_zip_path}")
+            except OSError as e:
+                # 后端已收到回调；删本地文件失败不能让 FC 判失败而重跑整个解压
+                LOGGER.warning(f"failed to clean up tmp zip: {tmp_zip_path}, error: {e}")

@@ -89,7 +89,8 @@ async def oss_upload_callback(
 
 
 def _cleanup_stale_download_artifacts(base_dir: str, cfg) -> None:
-    """清理过期的下载临时文件与 checkpoint，避免实例被强杀后残留占满 NAS。"""
+    """清理过期的下载残留（续传临时文件、已完成的目标 zip、checkpoint），
+    避免实例被强杀后残留占满 NAS。"""
     cutoff = time.time() - cfg.download_stale_hours * 3600
 
     try:
@@ -97,14 +98,21 @@ def _cleanup_stale_download_artifacts(base_dir: str, cfg) -> None:
             for entry in entries:
                 if not entry.is_file():
                     continue
-                # resumable_download 的临时文件：{file_id}.zip.tmp-xxxxxxxxxxxx
+                # 两类残留，均按 mtime 超过 cutoff 判定过期：
+                #  - 续传中的临时文件：{file_id}.zip.tmp-xxxxxxxxxxxx
+                #  - 已下载完成的目标文件：{file_id}.zip（每次尝试都在解压阶段被强杀、
+                #    重试耗尽后 finally 从未执行；窗口内到达的正常重试会被 download_zip
+                #    按大小复用，不受影响。窗口 = download_stale_hours）
                 name_base, sep, _ = entry.name.partition(".zip.tmp-")
-                if sep and name_base.isdigit() and entry.stat().st_mtime < cutoff:
+                is_artifact = (sep and name_base.isdigit()) or (
+                    entry.name.endswith(".zip") and entry.name[:-4].isdigit()
+                )
+                if is_artifact and entry.stat().st_mtime < cutoff:
                     try:
                         os.remove(entry.path)
-                        logger.info("removed stale download temp file: %s", entry.path)
+                        logger.info("removed stale download artifact: %s", entry.path)
                     except OSError as e:
-                        logger.warning("remove stale download temp failed: %s: %s", entry.path, e)
+                        logger.warning("remove stale download artifact failed: %s: %s", entry.path, e)
     except OSError as e:
         logger.warning("scan download dir failed: %s: %s", base_dir, e)
 
@@ -126,9 +134,11 @@ def _cleanup_stale_download_artifacts(base_dir: str, cfg) -> None:
 
 def download_zip(bucket: "oss2.Bucket", object_name: str, dest_path: str,
                  expected_size: int, cfg) -> None:
-    """多线程 Range 下载 ZIP 到本地/NAS；失败时保留 checkpoint，供事件重试续传。
+    """多线程 Range 下载 ZIP 到本地/NAS。
 
-    expected_size 用于跳过已完整下载的文件（例如上次在解压/上传阶段超时被强杀）。
+    实例被强杀（超时/OOM）后 FC 重试时：zip 已完整落盘则按 expected_size 跳过下载，
+    否则从 checkpoint 续传。下载异常被 index 捕获后走失败回调，不复用 checkpoint，
+    残留由 _cleanup_stale_download_artifacts 过期回收。
     """
     if os.path.isfile(dest_path) and os.path.getsize(dest_path) == expected_size:
         logger.info("zip already downloaded with expected size, skip: %s", dest_path)
@@ -167,6 +177,7 @@ class ConcurrentPartUploader:
 
     def __init__(self, bucket: "oss2.Bucket", concurrency: int):
         self._bucket = bucket
+        self.concurrency = concurrency  # 仅供日志读取；实际并发由 _pool / _slots 控制
         self._pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="oss-upload")
         self._slots = threading.BoundedSemaphore(concurrency)
         self._lock = threading.Lock()
@@ -261,14 +272,14 @@ def _read_and_put_object(uploader: ConcurrentPartUploader, key: str, src: "zipfi
 
 def _read_and_upload_parts(uploader: ConcurrentPartUploader, key: str, upload_id: str,
                            src: "zipfile.ZipExtFile", digest, member_size: int,
-                           part_size: int, chunk_size: int, concurrency: int) -> int:
+                           part_size: int, chunk_size: int) -> int:
     """流式读取成员并分片并发直传 OSS，返回解压后字节数"""
-    expected_parts = -(-member_size // part_size) if member_size else 0
+    expected_parts = -(-member_size // part_size)
     logger.info(
         "multipart upload started: key=%s, size=%.2fMB, part_size=%.2fMB, "
         "expected_parts=%d, concurrency=%d",
         key, member_size / 1024 / 1024, part_size / 1024 / 1024,
-        expected_parts, concurrency,
+        expected_parts, uploader.concurrency,
     )
     part_number = 1
     total = 0
@@ -360,7 +371,7 @@ def extract_zip_and_compute_hash(
                         pending_multiparts.append((key, upload_id))
                         file_size = _read_and_upload_parts(
                             uploader, key, upload_id, src, file_verify_code, member_size,
-                            part_size, cfg.chunk_buffer_size, cfg.upload_concurrency
+                            part_size, cfg.chunk_buffer_size
                         )
 
                 # 记录 imzML 和 ibd 文件的对象键与大小
